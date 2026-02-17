@@ -3,9 +3,10 @@
 from typing import Any, Callable
 import json
 
-from eth_utils import to_checksum_address
+from eth_utils.address import to_checksum_address
+from rlp import decode as rlp_decode
 
-from sequencer.core.crypto import private_key_to_address, keccak256
+from sequencer.core.crypto import keccak256
 
 
 def create_methods(chain) -> dict[str, Callable]:
@@ -103,10 +104,21 @@ def create_methods(chain) -> dict[str, Callable]:
         tx_hash = chain.send_transaction(signed_tx)
         return "0x" + tx_hash.hex()
 
+    def eth_sendRawTransaction(params: list) -> str:
+        raw_tx = _parse_bytes(params[0])
+        signed_tx = _decode_raw_transaction(raw_tx)
+        tx_hash = chain.send_transaction(signed_tx)
+        return "0x" + tx_hash.hex()
+
     def eth_estimateGas(params: list) -> str:
         tx_params = params[0]
-        block = params[1] if len(params) > 1 else "latest"
-        return hex(30_000_000)
+        data = _parse_bytes(tx_params.get("data", "0x"))
+        to = tx_params.get("to")
+        
+        if not data or len(data) == 0:
+            return hex(21_000)
+        
+        return hex(100_000)
 
     def eth_gasPrice(params: list) -> str:
         return hex(1_000_000_000)
@@ -120,6 +132,13 @@ def create_methods(chain) -> dict[str, Callable]:
     def eth_coinbase(params: list) -> str:
         return to_checksum_address(chain.coinbase)
 
+    def eth_getTransactionReceipt(params: list) -> dict | None:
+        tx_hash = _parse_bytes(params[0])
+        receipt = chain.get_transaction_receipt(tx_hash)
+        if not receipt:
+            return None
+        return _serialize_receipt(receipt, chain)
+
     return {
         "eth_chainId": eth_chainId,
         "eth_blockNumber": eth_blockNumber,
@@ -131,6 +150,8 @@ def create_methods(chain) -> dict[str, Callable]:
         "eth_getBlockByHash": eth_getBlockByHash,
         "eth_call": eth_call,
         "eth_sendTransaction": eth_sendTransaction,
+        "eth_sendRawTransaction": eth_sendRawTransaction,
+        "eth_getTransactionReceipt": eth_getTransactionReceipt,
         "eth_estimateGas": eth_estimateGas,
         "eth_gasPrice": eth_gasPrice,
         "net_version": net_version,
@@ -226,3 +247,47 @@ def _tx_hash(tx) -> bytes:
     if hasattr(tx, "encode"):
         return keccak256(tx.encode())
     return keccak256(bytes(tx))
+
+
+def _decode_raw_transaction(raw_tx: bytes):
+    from eth.vm.forks.cancun import CancunVM
+    return CancunVM.get_transaction_builder().decode(raw_tx)
+
+
+def _serialize_receipt(receipt_data, chain) -> dict:
+    block_number, tx_index, receipt = receipt_data
+    block = chain.get_block_by_number(block_number)
+    
+    tx = block.transactions[tx_index]
+    tx_hash = _tx_hash(tx)
+    
+    logs = []
+    for i, log in enumerate(receipt.logs):
+        if isinstance(log, tuple) and len(log) == 3:
+            address, topics, data = log
+            logs.append({
+                "address": to_checksum_address(address),
+                "topics": ["0x" + t.hex() for t in topics],
+                "data": "0x" + data.hex() if data else "0x",
+                "logIndex": hex(i),
+                "blockNumber": hex(block_number),
+                "blockHash": "0x" + block.hash.hex(),
+                "transactionHash": "0x" + tx_hash.hex(),
+                "transactionIndex": hex(tx_index),
+            })
+    
+    return {
+        "status": hex(receipt.status),
+        "cumulativeGasUsed": hex(receipt.cumulative_gas_used),
+        "logs": logs,
+        "logsBloom": "0x" + "00" * 256,
+        "transactionHash": "0x" + tx_hash.hex(),
+        "transactionIndex": hex(tx_index),
+        "blockHash": "0x" + block.hash.hex(),
+        "blockNumber": hex(block_number),
+        "from": to_checksum_address(tx.sender),
+        "to": to_checksum_address(tx.to) if tx.to else None,
+        "contractAddress": to_checksum_address(receipt.contract_address) if receipt.contract_address else None,
+        "gasUsed": hex(receipt.cumulative_gas_used),
+        "type": "0x0",
+    }

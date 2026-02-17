@@ -88,7 +88,7 @@ class TestSequencerIntegration:
         
         tx_hash = self.chain.send_transaction(signed_tx)
         
-        block = self.chain.build_block()
+        block = self.chain.get_latest_block()
         
         assert block is not None
         assert block.number == 1
@@ -112,7 +112,6 @@ class TestSequencerIntegration:
         )
         
         tx_hash = self.chain.send_transaction(signed_tx)
-        block = self.chain.build_block()
         
         receipts = self.chain.store.get_receipts(1)
         assert len(receipts) == 1
@@ -135,7 +134,7 @@ class TestSequencerIntegration:
         
         tx_hash = self.chain.send_transaction(signed_tx)
         
-        block = self.chain.build_block()
+        block = self.chain.get_latest_block()
         
         assert block is not None
         

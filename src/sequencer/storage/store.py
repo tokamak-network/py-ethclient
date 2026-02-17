@@ -10,12 +10,14 @@ from sequencer.core.types import Block, Receipt
 class StoredBlock:
     block: Block
     receipts: list[Receipt]
+    tx_hashes: list[bytes]
 
 
 class InMemoryStore:
     def __init__(self):
         self._blocks: dict[int, StoredBlock] = {}
         self._block_by_hash: dict[bytes, StoredBlock] = {}
+        self._tx_to_receipt: dict[bytes, tuple[int, int, Receipt]] = {}
         self._latest_number: int = -1
 
     def get_block(self, number: int) -> Optional[Block]:
@@ -30,16 +32,22 @@ class InMemoryStore:
         stored = self._blocks.get(block_number)
         return stored.receipts if stored else []
 
+    def get_transaction_receipt(self, tx_hash: bytes) -> tuple[int, int, Receipt] | None:
+        return self._tx_to_receipt.get(tx_hash)
+
     def get_latest_block(self) -> Optional[Block]:
         if self._latest_number < 0:
             return None
         return self.get_block(self._latest_number)
 
-    def save_block(self, block: Block, receipts: list[Receipt]):
-        stored = StoredBlock(block=block, receipts=receipts)
+    def save_block(self, block: Block, receipts: list[Receipt], tx_hashes: list[bytes]):
+        stored = StoredBlock(block=block, receipts=receipts, tx_hashes=tx_hashes)
         self._blocks[block.number] = stored
         self._block_by_hash[block.hash] = stored
         self._latest_number = max(self._latest_number, block.number)
+        
+        for i, (receipt, tx_hash) in enumerate(zip(receipts, tx_hashes)):
+            self._tx_to_receipt[tx_hash] = (block.number, i, receipt)
 
     def get_latest_number(self) -> int:
         return self._latest_number

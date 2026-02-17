@@ -55,7 +55,7 @@ class Chain:
         )
         
         genesis_block = chain._create_genesis_block(timestamp or int(time.time()))
-        chain.store.save_block(genesis_block, [])
+        chain.store.save_block(genesis_block, [], [])
         
         return chain
 
@@ -101,6 +101,9 @@ class Chain:
     def get_latest_block_number(self) -> int:
         return self.store.get_latest_number()
 
+    def get_transaction_receipt(self, tx_hash: bytes):
+        return self.store.get_transaction_receipt(tx_hash)
+
     def add_transaction_to_pool(self, tx) -> None:
         self._pending_transactions.append(tx)
 
@@ -139,6 +142,7 @@ class Chain:
     def send_transaction(self, signed_tx) -> bytes:
         tx_hash = keccak256(signed_tx.encode())
         self._pending_transactions.append(signed_tx)
+        self.build_block()  # Auto-mine block for single sequencer
         return tx_hash
 
     def call(
@@ -187,6 +191,8 @@ class Chain:
         parent_hash = parent.hash if parent else b"\x00" * 32
         number = (parent.number + 1) if parent else 1
         
+        tx_hashes = [keccak256(tx.encode()) for tx in pending]
+        
         header = BlockHeader(
             parent_hash=parent_hash,
             ommers_hash=EMPTY_OMMERS_HASH,
@@ -204,7 +210,7 @@ class Chain:
         )
         
         block = Block(header=header, transactions=pending)
-        self.store.save_block(block, receipts)
+        self.store.save_block(block, receipts, tx_hashes)
         
         return block
 

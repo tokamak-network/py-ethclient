@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py-ethclient"
+version = "0.1.0"
+description = "Python Ethereum L1 execution client"
+requires-python = ">=3.12"
+dependencies = [
+    "pycryptodome>=3.20",
+    "coincurve>=20.0",
+    "eth-hash[pycryptodome]>=0.7",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "python-snappy>=0.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.setuptools.packages.find]
+include = ["ethclient*"]
+
+[project.scripts]
+ethclient = "ethclient.main:main"

@@ -1,0 +1,13 @@
+"""Chain constants."""
+
+EMPTY_ROOT = bytes.fromhex(
+    "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+)
+EMPTY_CODE_HASH = bytes.fromhex(
+    "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+)
+ZERO_ADDRESS = b"\x00" * 20
+
+DEFAULT_CHAIN_ID = 1337
+DEFAULT_GAS_LIMIT = 30_000_000
+DEFAULT_BASE_FEE = 1_000_000_000  # 1 Gwei

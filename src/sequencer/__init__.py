@@ -1,0 +1,1 @@
+"""Ultra-lightweight Ethereum single sequencer L1."""

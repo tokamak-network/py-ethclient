@@ -152,13 +152,13 @@ class P2PServer:
             logger.warning("Could not start discovery: %s", e)
 
         # Start background tasks
-        asyncio.ensure_future(self._dial_loop())
-        asyncio.ensure_future(self._ping_loop())
-        asyncio.ensure_future(self._cleanup_loop())
+        asyncio.create_task(self._dial_loop())
+        asyncio.create_task(self._ping_loop())
+        asyncio.create_task(self._cleanup_loop())
 
         # Bootstrap discovery
         if self._discovery:
-            asyncio.ensure_future(self._discovery.bootstrap())
+            asyncio.create_task(self._discovery.bootstrap())
 
         logger.info("P2P server started")
 
@@ -244,7 +244,7 @@ class P2PServer:
         peer.connected = True
         logger.info("Connected to peer: %s (%s)", peer.remote_client, node.ip)
 
-        asyncio.ensure_future(self._handle_peer(peer))
+        asyncio.create_task(self._handle_peer(peer))
         return peer
 
     async def _do_protocol_handshake(self, peer: PeerConnection) -> bool:

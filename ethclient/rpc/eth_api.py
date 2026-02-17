@@ -134,7 +134,7 @@ def _format_log(log, block_hash: bytes, block_number: int,
 # Register eth_ methods
 # ---------------------------------------------------------------------------
 
-def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None) -> None:
+def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None, network_chain_id: int = 1) -> None:
     """Register all eth_ namespace methods on the RPC server."""
 
     def _resolve_block_number(block_param: str) -> Optional[int]:
@@ -180,7 +180,7 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None) -> No
         if store is None:
             return "0x"
         addr = hex_to_bytes(address)
-        code = store.get_code(addr)
+        code = store.get_account_code(addr)
         if code is None:
             return "0x"
         return bytes_to_hex(code)
@@ -309,8 +309,8 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None) -> No
     # -- Chain info --
 
     @rpc.method("eth_chainId")
-    def chain_id() -> str:
-        return int_to_hex(1)
+    def get_chain_id() -> str:
+        return int_to_hex(network_chain_id)
 
     @rpc.method("eth_syncing")
     def syncing() -> bool | dict:

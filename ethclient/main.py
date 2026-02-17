@@ -115,7 +115,7 @@ class EthNode:
 
         # RPC server
         self.rpc = RPCServer()
-        register_eth_api(self.rpc, store=self.store, mempool=self.mempool)
+        register_eth_api(self.rpc, store=self.store, mempool=self.mempool, network_chain_id=chain_config.chain_id)
 
         self._running = False
 
@@ -141,15 +141,17 @@ class EthNode:
             host="0.0.0.0",
             port=self.rpc_port,
             log_level="warning",
+            loop="asyncio",
         )
         self._rpc_server = uvicorn.Server(config)
-        asyncio.ensure_future(self._rpc_server.serve())
+        self._rpc_server.config.setup_event_loop = lambda: None
+        self._rpc_task = asyncio.create_task(self._rpc_server.serve())
 
         logger.info("Node started successfully")
 
         # Start sync after a brief delay
         await asyncio.sleep(2.0)
-        asyncio.ensure_future(self.p2p.start_sync())
+        asyncio.create_task(self.p2p.start_sync())
 
     async def stop(self) -> None:
         """Gracefully stop all subsystems."""

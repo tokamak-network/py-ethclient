@@ -281,7 +281,7 @@ class P2PServer:
         if self.store:
             head = self.store.get_latest_block_number()
             if head is not None:
-                header = self.store.get_block_header(head)
+                header = self.store.get_block_header_by_number(head)
                 if header:
                     best_hash = header.block_hash()
                 td = self.store.get_total_difficulty(best_hash)
@@ -394,7 +394,7 @@ class P2PServer:
                     block_num = origin + (i if not msg.reverse else -i) * (msg.skip + 1)
                     if block_num < 0:
                         break
-                    header = self.store.get_block_header(block_num)
+                    header = self.store.get_block_header_by_number(block_num)
                 else:
                     header = self.store.get_block_header_by_hash(origin)
                 if header:

@@ -212,7 +212,7 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None) -> No
         num = _resolve_block_number(block_param)
         if num is None:
             return None
-        header = store.get_block_header(num)
+        header = store.get_block_header_by_number(num)
         if header is None:
             return None
         result = _format_block_header(header, full_txs)

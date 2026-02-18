@@ -323,18 +323,17 @@ class L2Hook(ExecutionHook):
 | `test_storage.py` | 310 | 65 | Store CRUD, 상태 루트 (양 백엔드 parametrize) |
 | `test_blockchain.py` | 514 | 31 | 헤더 검증, 블록 실행, mempool |
 | `test_p2p.py` | 890 | 57 | RLPx, 핸드셰이크, eth 메시지, head discovery |
+| `test_rpc.py` | 700 | 70 | JSON-RPC 엔드포인트, eth_call/estimateGas, tx/receipt 조회 |
 | `test_protocol_registry.py` | 168 | 16 | 멀티 프로토콜 capability 협상 |
 | `test_snap_messages.py` | 267 | 21 | snap/1 메시지 encode/decode 라운드트립 |
 | `test_snap_sync.py` | 303 | 21 | Snap sync 상태 머신, 응답 핸들러 |
-| `test_rpc.py` | 590 | 57 | JSON-RPC 엔드포인트, eth_call/estimateGas EVM 실행 |
 | `test_integration.py` | 250 | 12 | 모듈 간 통합 |
 | `test_disk_backend.py` | 370 | 28 | LMDB 영속성, flush, 오버레이, 상태 루트 일치 |
-| **합계** | **5,343** | **511** | |
+| **합계** | **5,453** | **524** | |
 
 ## Current Limitations
 
 - **Engine API** — 미구현 (PoS 컨센서스 레이어 연동 없음)
-- **트랜잭션 인덱싱** — 해시 기반 트랜잭션/영수증 조회 미구현
 
 ## License
 

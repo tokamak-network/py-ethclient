@@ -8,7 +8,7 @@ Python으로 구현한 이더리움 L1 실행 클라이언트. ethrex (Rust)를 
 # 설치
 pip install -e ".[dev]"
 
-# 단위 테스트 (511개, ~7초)
+# 단위 테스트 (524개, ~7초)
 pytest
 
 # 특정 모듈 테스트
@@ -84,7 +84,7 @@ py-ethclient/                    # ~15,900 LOC (소스 + 테스트)
 │   └── rpc/                     # JSON-RPC 서버
 │       ├── server.py            # FastAPI 기반 디스패처
 │       └── eth_api.py           # eth_ 네임스페이스 핸들러
-├── tests/                       # pytest 단위 테스트 (511개)
+├── tests/                       # pytest 단위 테스트 (524개)
 │   ├── test_rlp.py              # RLP 인코딩/디코딩
 │   ├── test_trie.py             # MPT + 이더리움 공식 테스트 벡터
 │   ├── test_trie_proofs.py      # 트라이 머클 증명 & 범위 검증
@@ -128,7 +128,7 @@ main.py (통합 진입점)
 ### 단위 테스트 (오프라인)
 
 ```bash
-pytest                           # 전체 (511개, ~7초)
+pytest                           # 전체 (524개, ~7초)
 pytest tests/test_rlp.py         # RLP만
 pytest tests/test_evm.py -k "test_add"  # 특정 테스트
 pytest -v                        # 상세 출력
@@ -150,7 +150,7 @@ pytest --tb=short                # 짧은 트레이스백
 | test_protocol_registry.py | 16 | Capability 협상, 오프셋 계산 |
 | test_snap_messages.py | 21 | snap/1 메시지 encode/decode 라운드트립 |
 | test_snap_sync.py | 21 | Snap sync 상태 머신, 응답 핸들러 |
-| test_rpc.py | 57 | JSON-RPC, eth_call/estimateGas EVM 실행 |
+| test_rpc.py | 70 | JSON-RPC, eth_call/estimateGas EVM, tx/receipt 조회 |
 | test_integration.py | 12 | 모듈 간 통합 |
 
 ### 라이브 네트워크 테스트

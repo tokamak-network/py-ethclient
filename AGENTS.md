@@ -8,7 +8,7 @@ Python Ethereum L1 execution client. Fully independent port referencing ethrex (
 # Install
 pip install -e ".[dev]"
 
-# Unit tests (511 tests, ~7s)
+# Unit tests (524 tests, ~7s)
 pytest
 
 # Test a specific module
@@ -84,7 +84,7 @@ py-ethclient/                    # ~15,900 LOC (source + tests)
 │   └── rpc/                     # JSON-RPC server
 │       ├── server.py            # FastAPI-based dispatcher
 │       └── eth_api.py           # eth_ namespace handlers
-├── tests/                       # pytest unit tests (511 tests)
+├── tests/                       # pytest unit tests (524 tests)
 │   ├── test_rlp.py              # RLP encoding/decoding
 │   ├── test_trie.py             # MPT + Ethereum official test vectors
 │   ├── test_trie_proofs.py      # Trie Merkle proofs & range verification
@@ -128,7 +128,7 @@ Lower modules never depend on higher modules. `common` can be safely imported fr
 ### Unit Tests (offline)
 
 ```bash
-pytest                           # All tests (511, ~7s)
+pytest                           # All tests (524, ~7s)
 pytest tests/test_rlp.py         # RLP only
 pytest tests/test_evm.py -k "test_add"  # Specific test
 pytest -v                        # Verbose output
@@ -150,7 +150,7 @@ Test coverage by file:
 | test_protocol_registry.py | 16 | Capability negotiation, offset calculation |
 | test_snap_messages.py | 21 | snap/1 message encode/decode roundtrip |
 | test_snap_sync.py | 21 | Snap sync state machine, response handlers |
-| test_rpc.py | 57 | JSON-RPC, eth_call/estimateGas EVM execution |
+| test_rpc.py | 70 | JSON-RPC, eth_call/estimateGas EVM, tx/receipt lookup |
 | test_integration.py | 12 | Cross-module integration |
 
 ### Live Network Test

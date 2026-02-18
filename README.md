@@ -323,18 +323,17 @@ class L2Hook(ExecutionHook):
 | `test_storage.py` | 407 | 33 | Store CRUD, state root |
 | `test_blockchain.py` | 514 | 31 | Header validation, block execution, mempool |
 | `test_p2p.py` | 890 | 57 | RLPx, handshake, eth messages, head discovery |
+| `test_rpc.py` | 700 | 70 | JSON-RPC endpoints, eth_call/estimateGas, tx/receipt lookup |
 | `test_protocol_registry.py` | 168 | 16 | Multi-protocol capability negotiation |
 | `test_snap_messages.py` | 267 | 21 | snap/1 message encode/decode roundtrip |
 | `test_snap_sync.py` | 303 | 21 | Snap sync state machine, response handlers |
-| `test_rpc.py` | 590 | 57 | JSON-RPC endpoints, eth_call/estimateGas EVM execution |
 | `test_integration.py` | 250 | 12 | Cross-module integration |
 | `test_disk_backend.py` | 370 | 28 | LMDB persistence, flush, overlay, state root consistency |
-| **Total** | **5,343** | **511** | |
+| **Total** | **5,453** | **524** | |
 
 ## Current Limitations
 
 - **Engine API** — Not implemented (no PoS consensus layer integration)
-- **Transaction indexing** — Hash-based transaction/receipt lookups not implemented
 
 ## License
 

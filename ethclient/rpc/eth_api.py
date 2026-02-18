@@ -72,7 +72,7 @@ def _format_transaction(tx: Transaction, block_hash: bytes = b"",
         "from": bytes_to_hex(tx.sender()) if tx.v is not None else None,
         "to": bytes_to_hex(tx.to) if tx.to else None,
         "value": int_to_hex(tx.value),
-        "gas": int_to_hex(tx.gas),
+        "gas": int_to_hex(tx.gas_limit),
         "input": bytes_to_hex(tx.data),
     }
     if tx.tx_type == 0:
@@ -85,7 +85,7 @@ def _format_transaction(tx: Transaction, block_hash: bytes = b"",
 
 
 def _format_receipt(receipt, tx_hash: bytes, block_hash: bytes,
-                    block_number: int, tx_index: int) -> dict:
+                    block_number: int, tx_index: int, gas_used: int = 0) -> dict:
     """Format a transaction receipt for JSON-RPC response."""
     logs = []
     for i, log in enumerate(receipt.logs):
@@ -107,10 +107,10 @@ def _format_receipt(receipt, tx_hash: bytes, block_hash: bytes,
         "blockHash": bytes_to_hex(block_hash),
         "blockNumber": int_to_hex(block_number),
         "cumulativeGasUsed": int_to_hex(receipt.cumulative_gas_used),
-        "gasUsed": int_to_hex(receipt.gas_used),
+        "gasUsed": int_to_hex(gas_used),
         "contractAddress": None,  # TODO: derive from CREATE
         "logs": logs,
-        "logsBloom": bytes_to_hex(receipt.bloom),
+        "logsBloom": bytes_to_hex(receipt.logs_bloom),
         "status": int_to_hex(1 if receipt.succeeded else 0),
         "type": int_to_hex(receipt.tx_type),
     }
@@ -227,46 +227,93 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
         header = store.get_block_header_by_number(num)
         if header is None:
             return None
+        block_hash = header.block_hash()
         result = _format_block_header(header, full_txs)
-        result["transactions"] = []  # TODO: include transactions
+        body = store.get_block_body(block_hash)
+        if body and full_txs:
+            result["transactions"] = [
+                _format_transaction(tx, block_hash, header.number, i)
+                for i, tx in enumerate(body[0])
+            ]
+        elif body:
+            result["transactions"] = [bytes_to_hex(tx.tx_hash()) for tx in body[0]]
+        else:
+            result["transactions"] = []
         result["uncles"] = []
         result["size"] = int_to_hex(0)
         return result
 
     @rpc.method("eth_getBlockByHash")
-    def get_block_by_hash(block_hash: str, full_txs: bool = False) -> Optional[dict]:
+    def get_block_by_hash(block_hash_hex: str, full_txs: bool = False) -> Optional[dict]:
         if store is None:
             return None
-        bh = hex_to_bytes(block_hash)
-        header = store.get_block_header_by_hash(bh)
+        bh = hex_to_bytes(block_hash_hex)
+        header = store.get_block_header(bh)
         if header is None:
             return None
         result = _format_block_header(header, full_txs)
-        result["transactions"] = []
+        body = store.get_block_body(bh)
+        if body and full_txs:
+            result["transactions"] = [
+                _format_transaction(tx, bh, header.number, i)
+                for i, tx in enumerate(body[0])
+            ]
+        elif body:
+            result["transactions"] = [bytes_to_hex(tx.tx_hash()) for tx in body[0]]
+        else:
+            result["transactions"] = []
         result["uncles"] = []
         result["size"] = int_to_hex(0)
         return result
 
     @rpc.method("eth_getBlockTransactionCountByNumber")
     def get_block_tx_count_by_number(block_param: str) -> Optional[str]:
-        # Simplified — return 0 for now
-        return int_to_hex(0)
+        if store is None:
+            return int_to_hex(0)
+        num = _resolve_block_number(block_param)
+        bh = store.get_canonical_hash(num)
+        if bh is None:
+            return None
+        body = store.get_block_body(bh)
+        return int_to_hex(len(body[0])) if body else int_to_hex(0)
 
     @rpc.method("eth_getBlockTransactionCountByHash")
-    def get_block_tx_count_by_hash(block_hash: str) -> Optional[str]:
-        return int_to_hex(0)
+    def get_block_tx_count_by_hash(block_hash_hex: str) -> Optional[str]:
+        if store is None:
+            return int_to_hex(0)
+        body = store.get_block_body(hex_to_bytes(block_hash_hex))
+        return int_to_hex(len(body[0])) if body else None
 
     # -- Transaction methods --
 
     @rpc.method("eth_getTransactionByHash")
-    def get_transaction_by_hash(tx_hash: str) -> Optional[dict]:
-        # TODO: look up from tx index
-        return None
+    def get_transaction_by_hash(tx_hash_hex: str) -> Optional[dict]:
+        if store is None:
+            return None
+        result = store.get_transaction_by_hash(hex_to_bytes(tx_hash_hex))
+        if result is None:
+            return None
+        tx, block_hash, tx_index = result
+        header = store.get_block_header(block_hash)
+        block_number = header.number if header else 0
+        return _format_transaction(tx, block_hash, block_number, tx_index)
 
     @rpc.method("eth_getTransactionReceipt")
-    def get_transaction_receipt(tx_hash: str) -> Optional[dict]:
-        # TODO: look up from receipt store
-        return None
+    def get_transaction_receipt(tx_hash_hex: str) -> Optional[dict]:
+        if store is None:
+            return None
+        tx_hash = hex_to_bytes(tx_hash_hex)
+        result = store.get_transaction_receipt(tx_hash)
+        if result is None:
+            return None
+        receipt, block_hash, tx_index = result
+        header = store.get_block_header(block_hash)
+        block_number = header.number if header else 0
+        # gas_used = cumulative difference
+        receipts = store.get_receipts(block_hash)
+        prev = receipts[tx_index - 1].cumulative_gas_used if tx_index > 0 and receipts else 0
+        gas_used = receipt.cumulative_gas_used - prev
+        return _format_receipt(receipt, tx_hash, block_hash, block_number, tx_index, gas_used)
 
     @rpc.method("eth_sendRawTransaction")
     def send_raw_transaction(raw_tx: str) -> str:
@@ -366,7 +413,25 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
 
     @rpc.method("eth_getBlockReceipts")
     def get_block_receipts(block_param: str) -> Optional[list]:
-        return []
+        if store is None:
+            return []
+        num = _resolve_block_number(block_param)
+        bh = store.get_canonical_hash(num)
+        if bh is None:
+            return []
+        header = store.get_block_header(bh)
+        receipts = store.get_receipts(bh)
+        body = store.get_block_body(bh)
+        if not receipts or not body:
+            return []
+        result = []
+        for i, receipt in enumerate(receipts):
+            tx_hash = body[0][i].tx_hash() if i < len(body[0]) else b""
+            prev = receipts[i - 1].cumulative_gas_used if i > 0 else 0
+            gas_used = receipt.cumulative_gas_used - prev
+            result.append(_format_receipt(
+                receipt, tx_hash, bh, header.number if header else 0, i, gas_used))
+        return result
 
     # -- net_ methods --
 

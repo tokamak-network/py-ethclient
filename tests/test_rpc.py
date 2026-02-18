@@ -568,6 +568,172 @@ class TestSimulateCallDirect:
 # Format helper tests
 # ===================================================================
 
+# ===================================================================
+# Transaction index / receipt lookup tests
+# ===================================================================
+
+class TestTransactionIndex:
+    """Tests for tx/receipt lookup via RPC with real Store data."""
+
+    def setup_method(self):
+        from ethclient.storage.memory_backend import MemoryBackend
+        from ethclient.common.config import ChainConfig
+        from ethclient.common.types import (
+            Block, BlockHeader, Transaction, Receipt, Log, TxType,
+        )
+        from ethclient.rpc.eth_api import register_eth_api
+
+        self.store = MemoryBackend()
+        self.rpc = RPCServer()
+        register_eth_api(self.rpc, store=self.store, config=ChainConfig(chain_id=1))
+        self.client = TestClient(self.rpc.app)
+
+        # Create two transactions
+        self.tx0 = Transaction(
+            tx_type=TxType.LEGACY, nonce=0, gas_limit=21000,
+            to=b"\x01" * 20, value=1000, gas_price=10,
+            v=27, r=1, s=1,
+        )
+        self.tx1 = Transaction(
+            tx_type=TxType.FEE_MARKET, nonce=1, gas_limit=50000,
+            to=b"\x02" * 20, value=2000, chain_id=1,
+            max_fee_per_gas=20, max_priority_fee_per_gas=5,
+            v=0, r=2, s=2,
+        )
+
+        # Build block with these transactions
+        self.header = BlockHeader(
+            number=1, gas_limit=30_000_000, gas_used=71000,
+            timestamp=1700000000, base_fee_per_gas=10,
+        )
+        self.block = Block(
+            header=self.header,
+            transactions=[self.tx0, self.tx1],
+        )
+        self.block_hash = self.header.block_hash()
+
+        # Store block + receipts + canonical mapping
+        self.store.put_block(self.block)
+        self.store.put_canonical_hash(1, self.block_hash)
+
+        log0 = Log(address=b"\x01" * 20, topics=[b"\xaa" * 32], data=b"\xdd")
+        self.receipt0 = Receipt(
+            succeeded=True, cumulative_gas_used=21000,
+            logs=[log0], tx_type=TxType.LEGACY,
+        )
+        self.receipt1 = Receipt(
+            succeeded=True, cumulative_gas_used=71000,
+            logs=[], tx_type=TxType.FEE_MARKET,
+        )
+        self.store.put_receipts(self.block_hash, [self.receipt0, self.receipt1])
+
+    def _call(self, method: str, params=None, id=1):
+        body = {"jsonrpc": "2.0", "method": method, "id": id}
+        if params is not None:
+            body["params"] = params
+        return self.client.post("/", json=body).json()
+
+    def test_get_transaction_by_hash(self):
+        tx_hash_hex = bytes_to_hex(self.tx0.tx_hash())
+        result = self._call("eth_getTransactionByHash", [tx_hash_hex])
+        tx = result["result"]
+        assert tx is not None
+        assert tx["hash"] == tx_hash_hex
+        assert tx["blockNumber"] == hex(1)
+        assert tx["transactionIndex"] == hex(0)
+        assert tx["to"] == bytes_to_hex(b"\x01" * 20)
+        assert tx["gas"] == hex(21000)
+        assert tx["type"] == hex(0)
+        assert tx["gasPrice"] == hex(10)
+
+    def test_get_transaction_by_hash_second_tx(self):
+        tx_hash_hex = bytes_to_hex(self.tx1.tx_hash())
+        result = self._call("eth_getTransactionByHash", [tx_hash_hex])
+        tx = result["result"]
+        assert tx is not None
+        assert tx["transactionIndex"] == hex(1)
+        assert tx["type"] == hex(2)
+        assert tx["maxFeePerGas"] == hex(20)
+
+    def test_get_transaction_by_hash_not_found(self):
+        result = self._call("eth_getTransactionByHash", ["0x" + "ff" * 32])
+        assert result["result"] is None
+
+    def test_get_transaction_receipt(self):
+        tx_hash_hex = bytes_to_hex(self.tx0.tx_hash())
+        result = self._call("eth_getTransactionReceipt", [tx_hash_hex])
+        r = result["result"]
+        assert r is not None
+        assert r["transactionHash"] == tx_hash_hex
+        assert r["blockNumber"] == hex(1)
+        assert r["transactionIndex"] == hex(0)
+        assert r["status"] == hex(1)
+        assert r["cumulativeGasUsed"] == hex(21000)
+        assert r["gasUsed"] == hex(21000)  # first tx: cumulative == gas_used
+        assert len(r["logs"]) == 1
+        assert r["logs"][0]["logIndex"] == hex(0)
+
+    def test_get_transaction_receipt_second_tx(self):
+        tx_hash_hex = bytes_to_hex(self.tx1.tx_hash())
+        result = self._call("eth_getTransactionReceipt", [tx_hash_hex])
+        r = result["result"]
+        assert r is not None
+        assert r["gasUsed"] == hex(50000)  # 71000 - 21000
+        assert r["cumulativeGasUsed"] == hex(71000)
+        assert r["type"] == hex(2)
+
+    def test_get_transaction_receipt_not_found(self):
+        result = self._call("eth_getTransactionReceipt", ["0x" + "ff" * 32])
+        assert result["result"] is None
+
+    def test_get_block_by_number_tx_hashes(self):
+        result = self._call("eth_getBlockByNumber", [hex(1), False])
+        block = result["result"]
+        assert block is not None
+        assert len(block["transactions"]) == 2
+        # Should be tx hashes (strings), not objects
+        assert isinstance(block["transactions"][0], str)
+        assert block["transactions"][0] == bytes_to_hex(self.tx0.tx_hash())
+
+    def test_get_block_by_number_full_txs(self):
+        result = self._call("eth_getBlockByNumber", [hex(1), True])
+        block = result["result"]
+        assert block is not None
+        assert len(block["transactions"]) == 2
+        # Should be tx objects (dicts)
+        assert isinstance(block["transactions"][0], dict)
+        assert block["transactions"][0]["hash"] == bytes_to_hex(self.tx0.tx_hash())
+        assert block["transactions"][1]["transactionIndex"] == hex(1)
+
+    def test_get_block_by_hash_full_txs(self):
+        bh_hex = bytes_to_hex(self.block_hash)
+        result = self._call("eth_getBlockByHash", [bh_hex, True])
+        block = result["result"]
+        assert block is not None
+        assert len(block["transactions"]) == 2
+
+    def test_get_block_tx_count_by_number(self):
+        result = self._call("eth_getBlockTransactionCountByNumber", [hex(1)])
+        assert result["result"] == hex(2)
+
+    def test_get_block_tx_count_by_hash(self):
+        bh_hex = bytes_to_hex(self.block_hash)
+        result = self._call("eth_getBlockTransactionCountByHash", [bh_hex])
+        assert result["result"] == hex(2)
+
+    def test_get_block_tx_count_not_found(self):
+        result = self._call("eth_getBlockTransactionCountByHash", ["0x" + "ff" * 32])
+        assert result["result"] is None
+
+    def test_get_block_receipts(self):
+        result = self._call("eth_getBlockReceipts", [hex(1)])
+        receipts = result["result"]
+        assert len(receipts) == 2
+        assert receipts[0]["gasUsed"] == hex(21000)
+        assert receipts[1]["gasUsed"] == hex(50000)
+        assert receipts[0]["status"] == hex(1)
+
+
 class TestFormatHelpers:
     def test_format_block_header(self):
         from ethclient.rpc.eth_api import _format_block_header

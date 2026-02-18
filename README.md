@@ -38,6 +38,32 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+## Docker
+
+```bash
+# Build and run (mainnet)
+docker compose up -d
+
+# Sepolia testnet
+NETWORK=sepolia docker compose up -d
+
+# Debug logging
+LOG_LEVEL=DEBUG docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+Or build manually:
+
+```bash
+docker build -t py-ethclient .
+docker run -p 30303:30303 -p 8545:8545 py-ethclient --network sepolia
+```
+
 ## Quick Start
 
 ```bash

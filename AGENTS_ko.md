@@ -20,6 +20,12 @@ python3 test_full_sync.py
 
 # 노드 실행
 python -m ethclient.main --network mainnet --port 30303
+
+# Docker
+docker compose up -d                        # 메인넷
+NETWORK=sepolia docker compose up -d        # Sepolia
+docker compose logs -f                      # 로그 확인
+docker compose down                         # 종료
 ```
 
 ## 프로젝트 구조
@@ -77,6 +83,9 @@ py-ethclient/                    # ~13,400 LOC
 │   ├── test_rpc.py              # JSON-RPC 엔드포인트
 │   └── test_integration.py      # 모듈 간 통합 테스트
 ├── test_full_sync.py            # 라이브 메인넷 검증 테스트 (별도 실행)
+├── Dockerfile                   # Ubuntu 기반 컨테이너 이미지
+├── docker-compose.yml           # 원커맨드 배포
+├── .dockerignore                # 빌드 컨텍스트 제외 목록
 └── pyproject.toml               # Python 3.12+, 의존성 정의
 ```
 

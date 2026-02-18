@@ -38,6 +38,32 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+## Docker
+
+```bash
+# 빌드 및 실행 (메인넷)
+docker compose up -d
+
+# Sepolia 테스트넷
+NETWORK=sepolia docker compose up -d
+
+# 디버그 로깅
+LOG_LEVEL=DEBUG docker compose up -d
+
+# 로그 확인
+docker compose logs -f
+
+# 종료
+docker compose down
+```
+
+수동 빌드:
+
+```bash
+docker build -t py-ethclient .
+docker run -p 30303:30303 -p 8545:8545 py-ethclient --network sepolia
+```
+
 ## Quick Start
 
 ```bash

@@ -20,6 +20,12 @@ python3 test_full_sync.py
 
 # Run the node
 python -m ethclient.main --network mainnet --port 30303
+
+# Docker
+docker compose up -d                        # Mainnet
+NETWORK=sepolia docker compose up -d        # Sepolia
+docker compose logs -f                      # View logs
+docker compose down                         # Stop
 ```
 
 ## Project Structure
@@ -77,6 +83,9 @@ py-ethclient/                    # ~13,400 LOC
 │   ├── test_rpc.py              # JSON-RPC endpoints
 │   └── test_integration.py      # Cross-module integration tests
 ├── test_full_sync.py            # Live mainnet verification test (standalone)
+├── Dockerfile                   # Ubuntu-based container image
+├── docker-compose.yml           # One-command deployment
+├── .dockerignore                # Build context exclusions
 └── pyproject.toml               # Python 3.12+, dependency definitions
 ```
 

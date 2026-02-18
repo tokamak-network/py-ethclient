@@ -1,0 +1,16 @@
+services:
+  ethclient:
+    build: .
+    ports:
+      - "30303:30303/tcp"
+      - "30303:30303/udp"
+      - "8545:8545/tcp"
+    environment:
+      - NETWORK=mainnet
+      - LOG_LEVEL=INFO
+    command: >
+      --network ${NETWORK:-mainnet}
+      --port 30303
+      --rpc-port 8545
+      --log-level ${LOG_LEVEL:-INFO}
+    restart: unless-stopped

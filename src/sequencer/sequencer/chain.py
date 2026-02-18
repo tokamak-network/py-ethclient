@@ -17,9 +17,11 @@ from sequencer.core.types import Block, BlockHeader, Receipt
 from sequencer.core.crypto import keccak256, private_key_to_address
 from sequencer.evm.adapter import EVMAdapter, ChainConfig, ExecutionResult
 from sequencer.storage.store import InMemoryStore
+from sequencer.sequencer.mempool import Mempool
 
 
 EMPTY_OMMERS_HASH = keccak256(b"\xc0")
+DEFAULT_BLOCK_TIME = 10
 
 
 def calc_base_fee(parent_gas_used: int, parent_gas_limit: int, parent_base_fee: int) -> int:
@@ -43,11 +45,15 @@ class Chain:
         gas_limit: int = DEFAULT_GAS_LIMIT,
         coinbase: bytes = b"\x00" * 20,
         genesis_state: dict | None = None,
+        block_time: int = DEFAULT_BLOCK_TIME,
     ):
         self.chain_id = chain_id
         self.gas_limit = gas_limit
         self.coinbase = coinbase
+        self.block_time = block_time
         self.store = InMemoryStore()
+        self.mempool = Mempool()
+        self._last_block_time: int = 0
         
         config = ChainConfig(
             chain_id=chain_id,
@@ -56,7 +62,6 @@ class Chain:
             genesis_state=genesis_state,
         )
         self.evm = EVMAdapter(config)
-        self._pending_transactions: list = []
 
     @classmethod
     def from_genesis(
@@ -66,16 +71,19 @@ class Chain:
         gas_limit: int = DEFAULT_GAS_LIMIT,
         coinbase: bytes = b"\x00" * 20,
         timestamp: int | None = None,
+        block_time: int = DEFAULT_BLOCK_TIME,
     ) -> "Chain":
         chain = cls(
             chain_id=chain_id, 
             gas_limit=gas_limit, 
             coinbase=coinbase,
             genesis_state=genesis_state,
+            block_time=block_time,
         )
         
         genesis_block = chain._create_genesis_block(timestamp or int(time.time()))
         chain.store.save_block(genesis_block, [], [])
+        chain._last_block_time = genesis_block.header.timestamp
         
         return chain
 
@@ -124,8 +132,10 @@ class Chain:
     def get_transaction_receipt(self, tx_hash: bytes):
         return self.store.get_transaction_receipt(tx_hash)
 
-    def add_transaction_to_pool(self, tx) -> None:
-        self._pending_transactions.append(tx)
+    def add_transaction_to_pool(self, tx) -> bool:
+        sender = tx.sender
+        current_nonce = self.get_nonce(sender)
+        return self.mempool.add(tx, current_nonce)
 
     def create_transaction(
         self,
@@ -202,9 +212,17 @@ class Chain:
 
     def send_transaction(self, signed_tx) -> bytes:
         tx_hash = keccak256(signed_tx.encode())
-        self._pending_transactions.append(signed_tx)
-        self.build_block()  # Auto-mine block for single sequencer
+        self.add_transaction_to_pool(signed_tx)
         return tx_hash
+    
+    def should_build_block(self) -> bool:
+        if len(self.mempool) == 0:
+            return False
+        
+        current_time = int(time.time())
+        time_elapsed = current_time - self._last_block_time
+        
+        return time_elapsed >= self.block_time
 
     def call(
         self,
@@ -221,8 +239,11 @@ class Chain:
         import time as time_module
         current_time = int(time_module.time())
         
-        pending = self._pending_transactions.copy()
-        self._pending_transactions = []
+        current_nonces = {}
+        for sender in self.mempool.by_sender.keys():
+            current_nonces[sender] = self.get_nonce(sender)
+        
+        pending = self.mempool.get_pending(100, current_nonces)
         
         receipts = []
         gas_used = 0
@@ -281,6 +302,11 @@ class Chain:
         
         block = Block(header=header, transactions=pending)
         self.store.save_block(block, receipts, tx_hashes)
+        
+        for tx_hash in tx_hashes:
+            self.mempool.remove(tx_hash)
+        
+        self._last_block_time = block_timestamp
         
         return block
 

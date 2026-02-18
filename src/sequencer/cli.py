@@ -24,6 +24,12 @@ def main():
         default="01" * 32,
         help="Private key for prefunded account",
     )
+    parser.add_argument(
+        "--block-time",
+        type=int,
+        default=10,
+        help="Block production interval in seconds (default: 10)",
+    )
     
     args = parser.parse_args()
     
@@ -42,8 +48,9 @@ def main():
     print(f"Initializing sequencer with chain ID {args.chain_id}")
     print(f"Prefunded account: {prefunded_address.hex()}")
     print(f"Balance: 100 ETH")
+    print(f"Block time: {args.block_time}s")
     
-    chain = Chain.from_genesis(genesis_state, chain_id=args.chain_id)
+    chain = Chain.from_genesis(genesis_state, chain_id=args.chain_id, block_time=args.block_time)
     
     print(f"Genesis block created: {chain.get_latest_block().hash.hex()}")
     print(f"Starting RPC server on {args.host}:{args.port}")

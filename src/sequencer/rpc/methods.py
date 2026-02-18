@@ -134,14 +134,26 @@ def create_methods(chain) -> dict[str, Callable]:
                 nonce=nonce,
             )
         
-        tx_hash = chain.send_transaction(signed_tx)
-        return "0x" + tx_hash.hex()
+        try:
+            tx_hash = chain.send_transaction(signed_tx)
+            return "0x" + tx_hash.hex()
+        except Exception as e:
+            error_msg = str(e)
+            if "nonce too low" in error_msg.lower():
+                raise ValueError(f"nonce too low")
+            raise
 
     def eth_sendRawTransaction(params: list) -> str:
         raw_tx = _parse_bytes(params[0])
         signed_tx = _decode_raw_transaction(raw_tx)
-        tx_hash = chain.send_transaction(signed_tx)
-        return "0x" + tx_hash.hex()
+        try:
+            tx_hash = chain.send_transaction(signed_tx)
+            return "0x" + tx_hash.hex()
+        except Exception as e:
+            error_msg = str(e)
+            if "nonce too low" in error_msg.lower():
+                raise ValueError(f"nonce too low")
+            raise
 
     def eth_estimateGas(params: list) -> str:
         tx_params = params[0]

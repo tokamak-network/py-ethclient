@@ -20,7 +20,6 @@ A port from the Rust `ethrex` Ethereum client, simplified for single sequencer e
 | P2P (DiscV4, RLPx, eth/68) | No external peers |
 | Block Sync | No external block sources |
 | Tx Broadcasting | Only self-generated transactions |
-| Mempool | Only process self-created transactions |
 
 ## Installation
 
@@ -130,6 +129,18 @@ storage = chain.get_storage_at(address, 0)
 | State Root Computation | ✅ | Via py-evm |
 | Transactions Root | ✅ | Via trie library |
 | Receipts Root | ✅ | Via trie library |
+| Block Time | ✅ | Timer-based periodic block building |
+| Mempool Integration | ✅ | Priority-based tx pool |
+
+### Mempool (~140 LOC)
+| Feature | Status | Description |
+|---------|--------|-------------|
+| Priority Ordering | ✅ | Sort by max_priority_fee_per_gas |
+| Nonce Tracking | ✅ | Per-sender nonce management |
+| Gap Handling | ✅ | Queue tx with nonce gaps |
+| Tx Replacement | ✅ | Replace with 10% higher fee |
+| Size Limit | ✅ | Evict lowest fee when full |
+| Nonce Validation | ✅ | Reject nonce < current_nonce |
 
 ### RPC Server (~420 LOC total)
 | Method | Status | Notes |
@@ -160,7 +171,7 @@ storage = chain.get_storage_at(address, 0)
 | Prefunded account setup | ✅ |
 | RPC server startup | ✅ |
 
-### Tests (~320 LOC)
+### Tests (~650 LOC)
 | Test | Status | Description |
 |------|--------|-------------|
 | `test_get_balance` | ✅ | Balance query |
@@ -182,6 +193,22 @@ storage = chain.get_storage_at(address, 0)
 | `test_fee_history_after_transactions` | ✅ | feeHistory with multiple blocks |
 | `test_fee_history_with_reward_percentiles` | ✅ | feeHistory with percentiles |
 | `test_fee_history_base_fee_increases_with_high_gas` | ✅ | Verify base fee increase |
+| **Mempool Tests** | | |
+| `test_mempool_add_and_get_pending` | ✅ | Add tx and get pending |
+| `test_mempool_nonce_ordering` | ✅ | Nonce ordering in pending |
+| `test_mempool_tx_replacement` | ✅ | Replace tx with higher fee |
+| `test_mempool_reject_low_fee_replacement` | ✅ | Reject underpriced replacement |
+| `test_mempool_priority_sorting` | ✅ | Priority-based sorting |
+| `test_mempool_size_limit_eviction` | ✅ | Evict lowest fee when full |
+| `test_mempool_with_chain_integration` | ✅ | Mempool + chain integration |
+| `test_mempool_reject_nonce_too_low` | ✅ | Reject nonce < current |
+| `test_mempool_pending_high_nonce` | ✅ | High nonce waits for gap |
+| `test_mempool_nonce_gap_filled` | ✅ | Gap filled when missing tx arrives |
+| `test_mempool_out_of_order_nonce_same_block` | ✅ | Out-of-order nonces in same block |
+| **Block Time Tests** | | |
+| `test_block_time_prevents_immediate_mining` | ✅ | No mining before elapsed |
+| `test_block_time_allows_mining_after_elapsed` | ✅ | Mining after elapsed |
+| `test_send_transaction_respects_block_time` | ✅ | sendTransaction respects block_time |
 
 ## Development Roadmap
 
@@ -234,42 +261,25 @@ class Sequencer:
             await self.produce_block(batch)
 ```
 
-### Phase 2: Improved Operations (~230 LOC)
+### ✅ Phase 2: Improved Operations (COMPLETED)
 
-| # | Feature | Current State | Required Work | LOC |
-|---|---------|---------------|---------------|-----|
-| 1 | `estimateGas` | Hardcoded (21k/100k) | Transaction simulation with actual gas measurement | ~50 |
-| 2 | Transaction Pool (Mempool) | Simple list (FIFO) | Priority-based with nonce tracking | ~120 |
-| 3 | Periodic Block Production | Mine on every tx | Timer-based block building | ~60 |
+| # | Feature | Status | Description |
+|---|---------|--------|-------------|
+| 1 | Transaction Pool (Mempool) | ✅ Done | Priority-based with nonce tracking, replacement, eviction |
+| 2 | Periodic Block Production | ✅ Done | Timer-based block building with `block_time` parameter |
+| 3 | `estimateGas` | ⚠️ Partial | Simple estimation (hardcoded) |
 
-**Periodic Block Building Pattern:**
-```python
-import asyncio
+**Implemented Mempool Features:**
+- Priority-based transaction ordering (by max_priority_fee_per_gas)
+- Nonce tracking per sender with gap handling
+- Transaction replacement (requires 10% fee increase)
+- Size limit with lowest-fee eviction
+- Out-of-order nonce queueing (tx with nonce gap waits until gap filled)
 
-class Sequencer:
-    def __init__(self, block_time=2.0, max_txs=100):
-        self.tx_pool = asyncio.Queue()
-        self.block_time = block_time
-        self.max_txs = max_txs
-
-    async def run(self):
-        while True:
-            first_tx = await self.tx_pool.get()
-            batch = [first_tx]
-            start_time = time.monotonic()
-            
-            while len(batch) < self.max_txs:
-                remaining = self.block_time - (time.monotonic() - start_time)
-                if remaining <= 0:
-                    break
-                try:
-                    tx = await asyncio.wait_for(self.tx_pool.get(), timeout=remaining)
-                    batch.append(tx)
-                except asyncio.TimeoutError:
-                    break
-            
-            await self.produce_block(batch)
-```
+**Block Time Features:**
+- `block_time` parameter in `Chain.from_genesis()`
+- `should_build_block()` checks if enough time elapsed
+- Prevents immediate mining on `send_transaction()`
 
 ### Phase 3: Improved Compatibility (~150 LOC)
 
@@ -320,12 +330,12 @@ class Sequencer:
 ├── [x] EIP-1559 base fee calculation (chain.py)
 ├── [x] EIP-1559 tx type 0x02 support (methods.py, chain.py, adapter.py)
 ├── [x] eth_feeHistory RPC endpoint (rpc/methods.py)
-└── [x] Unit tests for EIP-1559 (tests/test_sequencer.py)
+├── [x] Mempool with priority queue and nonce tracking (sequencer/mempool.py)
+├── [x] Block time support for periodic block building (chain.py)
+└── [x] Unit tests for EIP-1559, Mempool, Block Time (tests/test_sequencer.py)
 
-Phase 2 - Operations:
-├── [ ] Real estimateGas implementation (rpc/methods.py)
-├── [ ] Mempool class with priority queue (new: sequencer/mempool.py)
-└── [ ] asyncio-based sequencer loop with block_time
+Phase 2 - Operations (Remaining):
+└── [ ] Real estimateGas implementation (rpc/methods.py)
 
 Phase 3 - Compatibility:
 ├── [ ] eth_call actual execution
@@ -342,10 +352,10 @@ Phase 4 - Prague Preparation:
 
 | Phase | Components | LOC |
 |-------|------------|-----|
-| Current | All (with EIP-1559) | ~1,250 |
-| Phase 2 | Improved operations | +~230 |
+| Current | All (with Mempool + Block Time) | ~1,500 |
+| Phase 2 | estimateGas | +~50 |
 | Phase 3 | Improved compatibility | +~150 |
-| **Total** | | **~1,630** |
+| **Total** | | **~1,700** |
 
 ## Architecture
 
@@ -364,7 +374,8 @@ py-ethclient/
 │   │   └── store.py             # dict-based store (~53 LOC)
 │   │
 │   ├── sequencer/               # Sequencer logic
-│   │   └── chain.py             # Block building (~270 LOC)
+│   │   ├── chain.py             # Block building (~270 LOC)
+│   │   └── mempool.py           # Tx pool with priority (~140 LOC)
 │   │
 │   ├── rpc/                     # JSON-RPC
 │   │   ├── server.py            # http.server (~85 LOC)
@@ -373,10 +384,10 @@ py-ethclient/
 │   └── cli.py                   # Entry point (~55 LOC)
 │
 └── tests/
-    └── test_sequencer.py        # Integration tests (~320 LOC)
+    └── test_sequencer.py        # Integration tests (~650 LOC)
 ```
 
-**Total: ~1,250 LOC** (Target: ~1,630 LOC)
+**Total: ~1,500 LOC** (Target: ~1,700 LOC)
 
 ## Dependencies
 

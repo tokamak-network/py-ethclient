@@ -1,6 +1,8 @@
 """HTTP JSON-RPC server using stdlib."""
 
 import json
+import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any, Callable
 
@@ -79,7 +81,19 @@ def create_server(chain, host: str = "127.0.0.1", port: int = 8545) -> HTTPServe
     return HTTPServer((host, port), RPCHandler)
 
 
+def _block_producer(chain):
+    while True:
+        time.sleep(1)
+        if chain.should_build_block():
+            chain.build_block()
+
+
 def serve(chain, host: str = "127.0.0.1", port: int = 8545):
     server = create_server(chain, host, port)
+    
+    block_thread = threading.Thread(target=_block_producer, args=(chain,), daemon=True)
+    block_thread.start()
+    
     print(f"JSON-RPC server listening on {host}:{port}")
+    print(f"Block production interval: {chain.block_time}s")
     server.serve_forever()

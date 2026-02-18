@@ -8,7 +8,7 @@ Python으로 구현한 이더리움 L1 실행 클라이언트. ethrex (Rust)를 
 # 설치
 pip install -e ".[dev]"
 
-# 단위 테스트 (418개, ~1초)
+# 단위 테스트 (434개, ~1초)
 pytest
 
 # 특정 모듈 테스트
@@ -37,7 +37,7 @@ docker compose down                         # 종료
 ## 프로젝트 구조
 
 ```
-py-ethclient/                    # ~15,400 LOC (소스 + 테스트)
+py-ethclient/                    # ~15,900 LOC (소스 + 테스트)
 ├── ethclient/
 │   ├── main.py                  # CLI 진입점 (argparse, asyncio 이벤트 루프)
 │   ├── common/                  # 기초 모듈 (의존성 없음)
@@ -58,7 +58,7 @@ py-ethclient/                    # ~15,400 LOC (소스 + 테스트)
 │   │   ├── store.py             # Store 인터페이스 (계정/코드/스토리지 CRUD + snap sync)
 │   │   └── memory_backend.py    # dict 기반 인메모리 백엔드
 │   ├── blockchain/              # 블록체인 엔진
-│   │   ├── chain.py             # 블록 검증/실행, PoW 보상, base fee 계산
+│   │   ├── chain.py             # 블록 검증/실행, PoW 보상, base fee, simulate_call
 │   │   ├── mempool.py           # 트랜잭션 풀 (논스 정렬, replacement)
 │   │   └── fork_choice.py       # Canonical chain, 리오그 처리
 │   ├── networking/              # P2P 네트워킹
@@ -83,7 +83,7 @@ py-ethclient/                    # ~15,400 LOC (소스 + 테스트)
 │   └── rpc/                     # JSON-RPC 서버
 │       ├── server.py            # FastAPI 기반 디스패처
 │       └── eth_api.py           # eth_ 네임스페이스 핸들러
-├── tests/                       # pytest 단위 테스트 (418개)
+├── tests/                       # pytest 단위 테스트 (434개)
 │   ├── test_rlp.py              # RLP 인코딩/디코딩
 │   ├── test_trie.py             # MPT + 이더리움 공식 테스트 벡터
 │   ├── test_trie_proofs.py      # 트라이 머클 증명 & 범위 검증
@@ -127,7 +127,7 @@ main.py (통합 진입점)
 ### 단위 테스트 (오프라인)
 
 ```bash
-pytest                           # 전체 (418개, ~1초)
+pytest                           # 전체 (434개, ~1초)
 pytest tests/test_rlp.py         # RLP만
 pytest tests/test_evm.py -k "test_add"  # 특정 테스트
 pytest -v                        # 상세 출력
@@ -149,7 +149,7 @@ pytest --tb=short                # 짧은 트레이스백
 | test_protocol_registry.py | 16 | Capability 협상, 오프셋 계산 |
 | test_snap_messages.py | 21 | snap/1 메시지 encode/decode 라운드트립 |
 | test_snap_sync.py | 21 | Snap sync 상태 머신, 응답 핸들러 |
-| test_rpc.py | 41 | JSON-RPC |
+| test_rpc.py | 57 | JSON-RPC, eth_call/estimateGas EVM 실행 |
 | test_integration.py | 12 | 모듈 간 통합 |
 
 ### 라이브 네트워크 테스트
@@ -301,6 +301,6 @@ CLI: `ethclient --network sepolia --bootnodes enode://...`
 3. `vm/` 수정 시 → `test_evm.py` 실행
 4. `networking/` 수정 시 → `test_p2p.py`, `test_protocol_registry.py`, `test_snap_messages.py` 실행
 5. `networking/sync/` 수정 시 → `test_snap_sync.py` + `test_full_sync.py` 실행
-6. `blockchain/` 수정 시 → `test_blockchain.py` + `test_integration.py` 실행
+6. `blockchain/` 수정 시 → `test_blockchain.py` + `test_integration.py` + `test_rpc.py` 실행
 7. 새 하드포크 지원 시 → `config.py`에 포크 블록/타임스탬프 추가, `types.py`에 새 필드 추가
 8. 전체 회귀 테스트: `pytest && python3 test_full_sync.py`

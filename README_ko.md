@@ -115,8 +115,8 @@ ethclient --genesis ./genesis.json --port 30303
 | `eth_getCode` | 컨트랙트 코드 조회 |
 | `eth_getStorageAt` | 스토리지 슬롯 조회 |
 | `eth_sendRawTransaction` | 서명된 트랜잭션 제출 |
-| `eth_call` | 읽기 전용 컨트랙트 호출 |
-| `eth_estimateGas` | 가스 추정 |
+| `eth_call` | EVM을 통한 읽기 전용 컨트랙트 호출 |
+| `eth_estimateGas` | EVM 실행 기반 가스 추정 |
 | `eth_gasPrice` | 현재 가스 가격 |
 | `eth_maxPriorityFeePerGas` | 우선순위 수수료 |
 | `eth_feeHistory` | 수수료 히스토리 |
@@ -201,7 +201,7 @@ ethclient/
 │   ├── store.py                     # 추상 Store 인터페이스 (+ snap sync 메서드)
 │   └── memory_backend.py            # 인메모리 구현, 상태 루트 계산
 ├── blockchain/                      # 블록체인 엔진
-│   ├── chain.py                     # 블록 검증, 트랜잭션/블록 실행
+│   ├── chain.py                     # 블록 검증, 트랜잭션/블록 실행, simulate_call
 │   ├── mempool.py                   # 트랜잭션 풀 (논스 정렬, 교체 정책)
 │   └── fork_choice.py               # Canonical chain 관리, 리오그
 ├── networking/                      # P2P 네트워킹
@@ -300,11 +300,11 @@ class L2Hook(ExecutionHook):
 | `common/` | 6 | 2,256 | RLP, types, trie (+ 증명), crypto, config |
 | `vm/` | 8 | 2,502 | EVM, opcodes, precompiles, gas |
 | `storage/` | 3 | 672 | Store 인터페이스 (+ snap 메서드), 인메모리 백엔드 |
-| `blockchain/` | 4 | 966 | 블록 검증, mempool, fork choice |
+| `blockchain/` | 4 | 1,114 | 블록 검증, mempool, fork choice, simulate_call |
 | `networking/` | 19 | 3,684 | RLPx, discovery, eth/68, snap/1, 프로토콜 레지스트리, sync, server |
-| `rpc/` | 3 | 550 | JSON-RPC 서버, eth API |
+| `rpc/` | 3 | 590 | JSON-RPC 서버, eth API |
 | `main.py` | 1 | 352 | CLI 진입점 |
-| **합계** | **44** | **10,982** | |
+| **합계** | **44** | **11,171** | |
 
 ### 테스트 코드
 
@@ -321,14 +321,13 @@ class L2Hook(ExecutionHook):
 | `test_protocol_registry.py` | 168 | 16 | 멀티 프로토콜 capability 협상 |
 | `test_snap_messages.py` | 267 | 21 | snap/1 메시지 encode/decode 라운드트립 |
 | `test_snap_sync.py` | 303 | 21 | Snap sync 상태 머신, 응답 핸들러 |
-| `test_rpc.py` | 306 | 41 | JSON-RPC 엔드포인트 |
+| `test_rpc.py` | 590 | 57 | JSON-RPC 엔드포인트, eth_call/estimateGas EVM 실행 |
 | `test_integration.py` | 250 | 12 | 모듈 간 통합 |
-| **합계** | **4,417** | **418** | |
+| **합계** | **4,701** | **434** | |
 
 ## Current Limitations
 
 - **저장소** — 인메모리 전용 (디스크 백엔드 미구현, 재시작 시 상태 유실)
-- **eth_call / estimateGas** — 실제 EVM 실행 미연결 (스텁 응답)
 - **BN128 / KZG** — 프리컴파일 스텁 (pairing 연산 미구현)
 - **Engine API** — 미구현 (PoS 컨센서스 레이어 연동 없음)
 - **트랜잭션 인덱싱** — 해시 기반 트랜잭션/영수증 조회 미구현

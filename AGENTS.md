@@ -8,7 +8,7 @@ Python Ethereum L1 execution client. Fully independent port referencing ethrex (
 # Install
 pip install -e ".[dev]"
 
-# Unit tests (418 tests, ~1s)
+# Unit tests (434 tests, ~1s)
 pytest
 
 # Test a specific module
@@ -37,7 +37,7 @@ docker compose down                         # Stop
 ## Project Structure
 
 ```
-py-ethclient/                    # ~15,400 LOC (source + tests)
+py-ethclient/                    # ~15,900 LOC (source + tests)
 ├── ethclient/
 │   ├── main.py                  # CLI entry point (argparse, asyncio event loop)
 │   ├── common/                  # Foundation modules (no internal dependencies)
@@ -58,7 +58,7 @@ py-ethclient/                    # ~15,400 LOC (source + tests)
 │   │   ├── store.py             # Store interface (account/code/storage CRUD + snap sync)
 │   │   └── memory_backend.py    # Dict-based in-memory backend
 │   ├── blockchain/              # Blockchain engine
-│   │   ├── chain.py             # Block validation/execution, PoW rewards, base fee
+│   │   ├── chain.py             # Block validation/execution, PoW rewards, base fee, simulate_call
 │   │   ├── mempool.py           # Transaction pool (nonce ordering, replacement)
 │   │   └── fork_choice.py       # Canonical chain, reorg handling
 │   ├── networking/              # P2P networking
@@ -83,7 +83,7 @@ py-ethclient/                    # ~15,400 LOC (source + tests)
 │   └── rpc/                     # JSON-RPC server
 │       ├── server.py            # FastAPI-based dispatcher
 │       └── eth_api.py           # eth_ namespace handlers
-├── tests/                       # pytest unit tests (418 tests)
+├── tests/                       # pytest unit tests (434 tests)
 │   ├── test_rlp.py              # RLP encoding/decoding
 │   ├── test_trie.py             # MPT + Ethereum official test vectors
 │   ├── test_trie_proofs.py      # Trie Merkle proofs & range verification
@@ -127,7 +127,7 @@ Lower modules never depend on higher modules. `common` can be safely imported fr
 ### Unit Tests (offline)
 
 ```bash
-pytest                           # All tests (418, ~1s)
+pytest                           # All tests (434, ~1s)
 pytest tests/test_rlp.py         # RLP only
 pytest tests/test_evm.py -k "test_add"  # Specific test
 pytest -v                        # Verbose output
@@ -149,7 +149,7 @@ Test coverage by file:
 | test_protocol_registry.py | 16 | Capability negotiation, offset calculation |
 | test_snap_messages.py | 21 | snap/1 message encode/decode roundtrip |
 | test_snap_sync.py | 21 | Snap sync state machine, response handlers |
-| test_rpc.py | 41 | JSON-RPC |
+| test_rpc.py | 57 | JSON-RPC, eth_call/estimateGas EVM execution |
 | test_integration.py | 12 | Cross-module integration |
 
 ### Live Network Test
@@ -300,6 +300,6 @@ CLI: `ethclient --network sepolia --bootnodes enode://...`
 3. `vm/` changed → run `test_evm.py`
 4. `networking/` changed → run `test_p2p.py`, `test_protocol_registry.py`, `test_snap_messages.py`
 5. `networking/sync/` changed → run `test_snap_sync.py` + `test_full_sync.py`
-6. `blockchain/` changed → run `test_blockchain.py` + `test_integration.py`
+6. `blockchain/` changed → run `test_blockchain.py` + `test_integration.py` + `test_rpc.py`
 7. New hardfork support → add fork block/timestamp to `config.py`, add new fields to `types.py`
 8. Full regression: `pytest && python3 test_full_sync.py`

@@ -115,8 +115,8 @@ A JSON-RPC 2.0 endpoint is served at `http://localhost:8545`.
 | `eth_getCode` | Contract bytecode |
 | `eth_getStorageAt` | Storage slot value |
 | `eth_sendRawTransaction` | Submit a signed transaction |
-| `eth_call` | Read-only contract call |
-| `eth_estimateGas` | Gas estimation |
+| `eth_call` | Execute read-only contract call via EVM |
+| `eth_estimateGas` | Estimate gas via EVM execution |
 | `eth_gasPrice` | Current gas price |
 | `eth_maxPriorityFeePerGas` | Priority fee suggestion |
 | `eth_feeHistory` | Fee history |
@@ -201,7 +201,7 @@ ethclient/
 │   ├── store.py                     # Abstract Store interface (+ snap sync methods)
 │   └── memory_backend.py            # In-memory implementation, state root computation
 ├── blockchain/                      # Blockchain engine
-│   ├── chain.py                     # Block validation, transaction/block execution
+│   ├── chain.py                     # Block validation, tx/block execution, simulate_call
 │   ├── mempool.py                   # Transaction pool (nonce ordering, replacement)
 │   └── fork_choice.py               # Canonical chain management, reorgs
 ├── networking/                      # P2P networking
@@ -300,11 +300,11 @@ class L2Hook(ExecutionHook):
 | `common/` | 6 | 2,256 | RLP, types, trie (+ proofs), crypto, config |
 | `vm/` | 8 | 2,502 | EVM, opcodes, precompiles, gas |
 | `storage/` | 3 | 672 | Store interface (+ snap methods), in-memory backend |
-| `blockchain/` | 4 | 966 | Block validation, mempool, fork choice |
+| `blockchain/` | 4 | 1,114 | Block validation, mempool, fork choice, simulate_call |
 | `networking/` | 19 | 3,684 | RLPx, discovery, eth/68, snap/1, protocol registry, sync, server |
-| `rpc/` | 3 | 550 | JSON-RPC server, eth API |
+| `rpc/` | 3 | 590 | JSON-RPC server, eth API |
 | `main.py` | 1 | 352 | CLI entry point |
-| **Total** | **44** | **10,982** | |
+| **Total** | **44** | **11,171** | |
 
 ### Test Code
 
@@ -321,14 +321,13 @@ class L2Hook(ExecutionHook):
 | `test_protocol_registry.py` | 168 | 16 | Multi-protocol capability negotiation |
 | `test_snap_messages.py` | 267 | 21 | snap/1 message encode/decode roundtrip |
 | `test_snap_sync.py` | 303 | 21 | Snap sync state machine, response handlers |
-| `test_rpc.py` | 306 | 41 | JSON-RPC endpoints |
+| `test_rpc.py` | 590 | 57 | JSON-RPC endpoints, eth_call/estimateGas EVM execution |
 | `test_integration.py` | 250 | 12 | Cross-module integration |
-| **Total** | **4,417** | **418** | |
+| **Total** | **4,701** | **434** | |
 
 ## Current Limitations
 
 - **Storage** — In-memory only (no disk backend; state is lost on restart)
-- **eth_call / estimateGas** — Stub responses (not yet wired to actual EVM execution)
 - **BN128 / KZG** — Precompile stubs (pairing operations not implemented)
 - **Engine API** — Not implemented (no PoS consensus layer integration)
 - **Transaction indexing** — Hash-based transaction/receipt lookups not implemented

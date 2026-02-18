@@ -222,7 +222,7 @@ ethclient/
 │   │   ├── discovery.py             # Discovery v4 UDP 프로토콜
 │   │   └── routing.py               # Kademlia k-bucket 라우팅 테이블
 │   └── sync/
-│       ├── full_sync.py             # Full sync 파이프라인
+│       ├── full_sync.py             # Full sync 파이프라인 (+ head discovery)
 │       └── snap_sync.py             # Snap sync 4단계 상태 머신
 └── rpc/                             # JSON-RPC 서버
     ├── server.py                    # FastAPI 기반 JSON-RPC 2.0 디스패처
@@ -263,7 +263,7 @@ ethclient/
 - **eth/68 프로토콜** — Status, GetBlockHeaders, BlockHeaders, Transactions 등 전체 메시지 타입
 - **snap/1 프로토콜** — GetAccountRange, AccountRange, GetStorageRanges, StorageRanges, GetByteCodes, ByteCodes, GetTrieNodes, TrieNodes
 - **Discovery v4** — UDP Ping/Pong/FindNeighbours/Neighbours, Kademlia 라우팅 테이블
-- **Full Sync** — 헤더 다운로드 → 바디 다운로드 → 블록 실행 파이프라인
+- **Full Sync** — best_hash 기반 피어 head 발견 → 헤더 다운로드 → 바디 다운로드 → 블록 실행 파이프라인
 - **Snap Sync** — 4단계 상태 머신: 계정 다운로드 → 스토리지 다운로드 → 바이트코드 다운로드 → 트라이 힐링
 - **JSON-RPC 2.0** — 요청 파싱, 배치 지원, 에러 핸들링, 메서드 디스패치
 
@@ -322,14 +322,14 @@ class L2Hook(ExecutionHook):
 | `test_evm.py` | 798 | 84 | 스택, 메모리, 옵코드, 프리컴파일 |
 | `test_storage.py` | 310 | 65 | Store CRUD, 상태 루트 (양 백엔드 parametrize) |
 | `test_blockchain.py` | 514 | 31 | 헤더 검증, 블록 실행, mempool |
-| `test_p2p.py` | 769 | 51 | RLPx, 핸드셰이크, eth 메시지 |
+| `test_p2p.py` | 890 | 57 | RLPx, 핸드셰이크, eth 메시지, head discovery |
 | `test_protocol_registry.py` | 168 | 16 | 멀티 프로토콜 capability 협상 |
 | `test_snap_messages.py` | 267 | 21 | snap/1 메시지 encode/decode 라운드트립 |
 | `test_snap_sync.py` | 303 | 21 | Snap sync 상태 머신, 응답 핸들러 |
 | `test_rpc.py` | 590 | 57 | JSON-RPC 엔드포인트, eth_call/estimateGas EVM 실행 |
 | `test_integration.py` | 250 | 12 | 모듈 간 통합 |
 | `test_disk_backend.py` | 370 | 28 | LMDB 영속성, flush, 오버레이, 상태 루트 일치 |
-| **합계** | **5,222** | **505** | |
+| **합계** | **5,343** | **511** | |
 
 ## Current Limitations
 

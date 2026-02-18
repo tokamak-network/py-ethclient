@@ -8,7 +8,7 @@ Python으로 구현한 이더리움 L1 실행 클라이언트. ethrex (Rust)를 
 # 설치
 pip install -e ".[dev]"
 
-# 단위 테스트 (445개, ~7초)
+# 단위 테스트 (511개, ~7초)
 pytest
 
 # 특정 모듈 테스트
@@ -79,12 +79,12 @@ py-ethclient/                    # ~15,900 LOC (소스 + 테스트)
 │   │   │   ├── discovery.py     # Ping/Pong/FindNeighbours/Neighbours
 │   │   │   └── routing.py       # k-bucket 라우팅 테이블
 │   │   └── sync/                # 동기화 엔진
-│   │       ├── full_sync.py     # Full sync 파이프라인
+│   │       ├── full_sync.py     # Full sync 파이프라인 (+ head discovery)
 │   │       └── snap_sync.py     # Snap sync 4단계 상태 머신
 │   └── rpc/                     # JSON-RPC 서버
 │       ├── server.py            # FastAPI 기반 디스패처
 │       └── eth_api.py           # eth_ 네임스페이스 핸들러
-├── tests/                       # pytest 단위 테스트 (445개)
+├── tests/                       # pytest 단위 테스트 (511개)
 │   ├── test_rlp.py              # RLP 인코딩/디코딩
 │   ├── test_trie.py             # MPT + 이더리움 공식 테스트 벡터
 │   ├── test_trie_proofs.py      # 트라이 머클 증명 & 범위 검증
@@ -128,7 +128,7 @@ main.py (통합 진입점)
 ### 단위 테스트 (오프라인)
 
 ```bash
-pytest                           # 전체 (445개, ~7초)
+pytest                           # 전체 (511개, ~7초)
 pytest tests/test_rlp.py         # RLP만
 pytest tests/test_evm.py -k "test_add"  # 특정 테스트
 pytest -v                        # 상세 출력
@@ -146,7 +146,7 @@ pytest --tb=short                # 짧은 트레이스백
 | test_evm.py | 84 | 스택, 메모리, 모든 옵코드, 프리컴파일 (BN128, KZG) |
 | test_storage.py | 33 | Store CRUD, 상태 루트, snap 저장소 |
 | test_blockchain.py | 31 | 헤더 검증, base fee, 블록 실행, mempool |
-| test_p2p.py | 51 | RLPx, 핸드셰이크, eth 메시지 |
+| test_p2p.py | 57 | RLPx, 핸드셰이크, eth 메시지, head discovery |
 | test_protocol_registry.py | 16 | Capability 협상, 오프셋 계산 |
 | test_snap_messages.py | 21 | snap/1 메시지 encode/decode 라운드트립 |
 | test_snap_sync.py | 21 | Snap sync 상태 머신, 응답 핸들러 |

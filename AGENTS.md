@@ -8,7 +8,7 @@ Python Ethereum L1 execution client. Fully independent port referencing ethrex (
 # Install
 pip install -e ".[dev]"
 
-# Unit tests (445 tests, ~7s)
+# Unit tests (511 tests, ~7s)
 pytest
 
 # Test a specific module
@@ -79,12 +79,12 @@ py-ethclient/                    # ~15,900 LOC (source + tests)
 │   │   │   ├── discovery.py     # Ping/Pong/FindNeighbours/Neighbours
 │   │   │   └── routing.py       # k-bucket routing table
 │   │   └── sync/                # Sync engines
-│   │       ├── full_sync.py     # Full sync pipeline
+│   │       ├── full_sync.py     # Full sync pipeline (+ head discovery)
 │   │       └── snap_sync.py     # Snap sync 4-phase state machine
 │   └── rpc/                     # JSON-RPC server
 │       ├── server.py            # FastAPI-based dispatcher
 │       └── eth_api.py           # eth_ namespace handlers
-├── tests/                       # pytest unit tests (445 tests)
+├── tests/                       # pytest unit tests (511 tests)
 │   ├── test_rlp.py              # RLP encoding/decoding
 │   ├── test_trie.py             # MPT + Ethereum official test vectors
 │   ├── test_trie_proofs.py      # Trie Merkle proofs & range verification
@@ -128,7 +128,7 @@ Lower modules never depend on higher modules. `common` can be safely imported fr
 ### Unit Tests (offline)
 
 ```bash
-pytest                           # All tests (445, ~7s)
+pytest                           # All tests (511, ~7s)
 pytest tests/test_rlp.py         # RLP only
 pytest tests/test_evm.py -k "test_add"  # Specific test
 pytest -v                        # Verbose output
@@ -146,7 +146,7 @@ Test coverage by file:
 | test_evm.py | 84 | Stack, memory, all opcodes, precompiles (BN128, KZG) |
 | test_storage.py | 33 | Store CRUD, state root, snap storage |
 | test_blockchain.py | 31 | Header validation, base fee, block execution, mempool |
-| test_p2p.py | 51 | RLPx, handshake, eth messages |
+| test_p2p.py | 57 | RLPx, handshake, eth messages, head discovery |
 | test_protocol_registry.py | 16 | Capability negotiation, offset calculation |
 | test_snap_messages.py | 21 | snap/1 message encode/decode roundtrip |
 | test_snap_sync.py | 21 | Snap sync state machine, response handlers |

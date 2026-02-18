@@ -222,7 +222,7 @@ ethclient/
 │   │   ├── discovery.py             # Discovery v4 UDP protocol
 │   │   └── routing.py               # Kademlia k-bucket routing table
 │   └── sync/
-│       ├── full_sync.py             # Full sync pipeline
+│       ├── full_sync.py             # Full sync pipeline (+ head discovery)
 │       └── snap_sync.py             # Snap sync 4-phase state machine
 └── rpc/                             # JSON-RPC server
     ├── server.py                    # FastAPI-based JSON-RPC 2.0 dispatcher
@@ -263,7 +263,7 @@ ethclient/
 - **eth/68 Protocol** — Status, GetBlockHeaders, BlockHeaders, Transactions, and all other message types
 - **snap/1 Protocol** — GetAccountRange, AccountRange, GetStorageRanges, StorageRanges, GetByteCodes, ByteCodes, GetTrieNodes, TrieNodes
 - **Discovery v4** — UDP Ping/Pong/FindNeighbours/Neighbours, Kademlia routing table
-- **Full Sync** — Header download → body download → block execution pipeline
+- **Full Sync** — Peer head discovery via best_hash → header download → body download → block execution pipeline
 - **Snap Sync** — 4-phase state machine: account download → storage download → bytecode download → trie healing
 - **JSON-RPC 2.0** — Request parsing, batch support, error handling, method dispatch
 
@@ -322,14 +322,14 @@ class L2Hook(ExecutionHook):
 | `test_evm.py` | 798 | 84 | Stack, memory, opcodes, precompiles |
 | `test_storage.py` | 407 | 33 | Store CRUD, state root |
 | `test_blockchain.py` | 514 | 31 | Header validation, block execution, mempool |
-| `test_p2p.py` | 769 | 51 | RLPx, handshake, eth messages |
+| `test_p2p.py` | 890 | 57 | RLPx, handshake, eth messages, head discovery |
 | `test_protocol_registry.py` | 168 | 16 | Multi-protocol capability negotiation |
 | `test_snap_messages.py` | 267 | 21 | snap/1 message encode/decode roundtrip |
 | `test_snap_sync.py` | 303 | 21 | Snap sync state machine, response handlers |
 | `test_rpc.py` | 590 | 57 | JSON-RPC endpoints, eth_call/estimateGas EVM execution |
 | `test_integration.py` | 250 | 12 | Cross-module integration |
 | `test_disk_backend.py` | 370 | 28 | LMDB persistence, flush, overlay, state root consistency |
-| **Total** | **5,222** | **505** | |
+| **Total** | **5,343** | **511** | |
 
 ## Current Limitations
 

@@ -10,6 +10,7 @@ import logging
 from typing import Optional
 
 from ethclient.common.types import Transaction, BlockHeader
+from ethclient.common.config import ChainConfig
 from ethclient.rpc.server import (
     RPCServer,
     RPCError,
@@ -134,7 +135,18 @@ def _format_log(log, block_hash: bytes, block_number: int,
 # Register eth_ methods
 # ---------------------------------------------------------------------------
 
-def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None, network_chain_id: int = 1) -> None:
+def _parse_call_params(tx_obj: dict) -> tuple[bytes, Optional[bytes], bytes, int, int]:
+    """Parse JSON-RPC transaction object into call parameters."""
+    sender = hex_to_bytes(tx_obj["from"]) if tx_obj.get("from") else b"\x00" * 20
+    to = hex_to_bytes(tx_obj["to"]) if tx_obj.get("to") else None
+    data = hex_to_bytes(tx_obj.get("data") or tx_obj.get("input") or "0x")
+    value = hex_to_int(tx_obj["value"]) if tx_obj.get("value") else 0
+    gas_limit = hex_to_int(tx_obj["gas"]) if tx_obj.get("gas") else 30_000_000
+    return sender, to, data, value, gas_limit
+
+
+def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
+                     network_chain_id: int = 1, config: Optional[ChainConfig] = None) -> None:
     """Register all eth_ namespace methods on the RPC server."""
 
     def _resolve_block_number(block_param: str) -> Optional[int]:
@@ -274,18 +286,46 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None, netwo
 
     # -- Call/Estimate --
 
+    def _get_block_header(block_param: str) -> BlockHeader:
+        """Resolve block parameter to a BlockHeader."""
+        block_num = _resolve_block_number(block_param)
+        if store is not None:
+            header = store.get_block_header_by_number(block_num)
+            if header is not None:
+                return header
+        # Fallback header for pre-sync state
+        header = BlockHeader()
+        header.gas_limit = 30_000_000
+        header.base_fee_per_gas = 0
+        header.number = block_num or 0
+        return header
+
     @rpc.method("eth_call")
     def eth_call(tx_obj: dict, block: str = "latest") -> str:
         """Execute a call without creating a transaction."""
-        # Simplified: return empty data
-        # TODO: actually execute via EVM
-        return "0x"
+        if store is None or config is None:
+            return "0x"
+        sender, to, data, value, gas_limit = _parse_call_params(tx_obj)
+        header = _get_block_header(block)
+        from ethclient.blockchain.chain import simulate_call
+        result = simulate_call(sender, to, data, value, gas_limit, header, store, config)
+        if not result.success:
+            raise RPCError(3, f"execution reverted: {result.error or ''}",
+                           bytes_to_hex(result.return_data))
+        return bytes_to_hex(result.return_data)
 
     @rpc.method("eth_estimateGas")
     def estimate_gas(tx_obj: dict, block: str = "latest") -> str:
         """Estimate gas for a transaction."""
-        # Simplified: return default gas
-        return int_to_hex(21000)
+        if store is None or config is None:
+            return int_to_hex(21000)
+        sender, to, data, value, gas_limit = _parse_call_params(tx_obj)
+        header = _get_block_header(block)
+        from ethclient.blockchain.chain import simulate_call
+        result = simulate_call(sender, to, data, value, gas_limit, header, store, config)
+        if not result.success:
+            raise RPCError(3, f"execution reverted: {result.error or ''}")
+        return int_to_hex(result.gas_used)
 
     # -- Fee methods --
 

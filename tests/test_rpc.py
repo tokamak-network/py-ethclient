@@ -205,13 +205,13 @@ class TestEthAPI:
         result = self._call("eth_getTransactionReceipt", ["0x" + "ab" * 32])
         assert result["result"] is None
 
-    # -- Call/Estimate --
+    # -- Call/Estimate (no store) --
 
-    def test_eth_call(self):
+    def test_eth_call_no_store(self):
         result = self._call("eth_call", [{"to": "0x" + "00" * 20}, "latest"])
         assert result["result"] == "0x"
 
-    def test_estimate_gas(self):
+    def test_estimate_gas_no_store(self):
         result = self._call("eth_estimateGas", [{"to": "0x" + "00" * 20}])
         assert result["result"] == hex(21000)
 
@@ -278,6 +278,290 @@ class TestEthAPI:
         # keccak256(b"") is a known value
         assert result["result"].startswith("0x")
         assert len(result["result"]) == 66  # 0x + 32 bytes hex
+
+
+# ===================================================================
+# Format helper tests
+# ===================================================================
+
+# ===================================================================
+# eth_call / eth_estimateGas with real EVM execution
+# ===================================================================
+
+class TestEthCallEVM:
+    """Tests for eth_call and eth_estimateGas with actual EVM execution."""
+
+    def setup_method(self):
+        from ethclient.storage.memory_backend import MemoryBackend
+        from ethclient.common.config import ChainConfig
+        from ethclient.rpc.eth_api import register_eth_api
+
+        self.store = MemoryBackend()
+        self.config = ChainConfig(chain_id=1)
+        self.rpc = RPCServer()
+        register_eth_api(self.rpc, store=self.store, config=self.config)
+        self.client = TestClient(self.rpc.app)
+
+    def _call(self, method: str, params=None, id=1):
+        body = {"jsonrpc": "2.0", "method": method, "id": id}
+        if params is not None:
+            body["params"] = params
+        return self.client.post("/", json=body).json()
+
+    def _deploy_code(self, address_hex: str, code: bytes):
+        """Deploy bytecode at the given address."""
+        from ethclient.common.types import Account, EMPTY_CODE_HASH
+        from ethclient.common.crypto import keccak256
+        addr = hex_to_bytes(address_hex)
+        acc = self.store.get_account(addr)
+        if acc is None:
+            acc = Account()
+            self.store.put_account(addr, acc)
+        code_hash = keccak256(code)
+        acc.code_hash = code_hash
+        self.store._code[code_hash] = code
+
+    # -- eth_call tests --
+
+    def test_eth_call_simple_transfer(self):
+        """EOA → EOA transfer (no code) returns 0x."""
+        result = self._call("eth_call", [{"to": "0x" + "01" * 20}, "latest"])
+        assert result["result"] == "0x"
+
+    def test_eth_call_contract_return(self):
+        """Contract returns a value: PUSH1 42 PUSH1 0 MSTORE PUSH1 32 PUSH1 0 RETURN."""
+        # Bytecode: PUSH1 0x2a PUSH1 0 MSTORE PUSH1 0x20 PUSH1 0 RETURN
+        code = bytes([
+            0x60, 0x2a,  # PUSH1 42
+            0x60, 0x00,  # PUSH1 0
+            0x52,        # MSTORE
+            0x60, 0x20,  # PUSH1 32
+            0x60, 0x00,  # PUSH1 0
+            0xf3,        # RETURN
+        ])
+        contract = "0x" + "cc" * 20
+        self._deploy_code(contract, code)
+
+        result = self._call("eth_call", [{"to": contract}, "latest"])
+        assert "result" in result
+        # Should return 32 bytes with value 42 at the last byte
+        ret = hex_to_bytes(result["result"])
+        assert len(ret) == 32
+        assert int.from_bytes(ret, "big") == 42
+
+    def test_eth_call_with_value(self):
+        """Call with value to an address without code succeeds."""
+        result = self._call("eth_call", [
+            {"to": "0x" + "01" * 20, "value": "0x1"},
+            "latest",
+        ])
+        assert result["result"] == "0x"
+
+    def test_eth_call_revert(self):
+        """Contract that REVERTs returns RPC error code 3."""
+        # PUSH1 0 PUSH1 0 REVERT
+        code = bytes([0x60, 0x00, 0x60, 0x00, 0xfd])
+        contract = "0x" + "dd" * 20
+        self._deploy_code(contract, code)
+
+        result = self._call("eth_call", [{"to": contract}, "latest"])
+        assert "error" in result
+        assert result["error"]["code"] == 3
+
+    def test_eth_call_no_from(self):
+        """Call without 'from' field uses zero address."""
+        result = self._call("eth_call", [{"to": "0x" + "01" * 20}, "latest"])
+        assert result["result"] == "0x"
+
+    def test_eth_call_no_gas(self):
+        """Call without 'gas' field uses 30M default."""
+        code = bytes([
+            0x60, 0x2a,  # PUSH1 42
+            0x60, 0x00, 0x52,  # MSTORE at 0
+            0x60, 0x20, 0x60, 0x00, 0xf3,  # RETURN 32 bytes from 0
+        ])
+        contract = "0x" + "ee" * 20
+        self._deploy_code(contract, code)
+
+        result = self._call("eth_call", [{"to": contract}, "latest"])
+        assert "result" in result
+        assert hex_to_bytes(result["result"]) != b""
+
+    def test_eth_call_state_unchanged(self):
+        """eth_call with SSTORE does not persist state changes."""
+        # PUSH1 1 PUSH1 0 SSTORE STOP
+        code = bytes([
+            0x60, 0x01,  # PUSH1 1
+            0x60, 0x00,  # PUSH1 0
+            0x55,        # SSTORE
+            0x00,        # STOP
+        ])
+        contract = "0x" + "ff" * 20
+        self._deploy_code(contract, code)
+
+        # Call — should execute SSTORE but not persist
+        self._call("eth_call", [{"to": contract}, "latest"])
+
+        # Verify storage is unchanged
+        val = self.store.get_storage(hex_to_bytes(contract), 0)
+        assert val == 0
+
+    def test_eth_call_storage_read(self):
+        """SLOAD reads pre-existing storage."""
+        contract_addr = hex_to_bytes("0x" + "ab" * 20)
+        # Set storage slot 0 = 99
+        self.store.put_storage(contract_addr, 0, 99)
+        # PUSH1 0 SLOAD PUSH1 0 MSTORE PUSH1 32 PUSH1 0 RETURN
+        code = bytes([
+            0x60, 0x00,  # PUSH1 0
+            0x54,        # SLOAD
+            0x60, 0x00,  # PUSH1 0
+            0x52,        # MSTORE
+            0x60, 0x20,  # PUSH1 32
+            0x60, 0x00,  # PUSH1 0
+            0xf3,        # RETURN
+        ])
+        self._deploy_code("0x" + "ab" * 20, code)
+
+        result = self._call("eth_call", [{"to": "0x" + "ab" * 20}, "latest"])
+        assert "result" in result
+        ret = hex_to_bytes(result["result"])
+        assert int.from_bytes(ret, "big") == 99
+
+    def test_eth_call_input_data(self):
+        """CALLDATALOAD reads input data correctly."""
+        # PUSH1 0 CALLDATALOAD PUSH1 0 MSTORE PUSH1 32 PUSH1 0 RETURN
+        code = bytes([
+            0x60, 0x00,  # PUSH1 0
+            0x35,        # CALLDATALOAD
+            0x60, 0x00,  # PUSH1 0
+            0x52,        # MSTORE
+            0x60, 0x20,  # PUSH1 32
+            0x60, 0x00,  # PUSH1 0
+            0xf3,        # RETURN
+        ])
+        contract = "0x" + "ca" * 20
+        self._deploy_code(contract, code)
+
+        # Send data = 0x00...05 (32 bytes with value 5)
+        calldata = "0x" + "00" * 31 + "05"
+        result = self._call("eth_call", [{"to": contract, "data": calldata}, "latest"])
+        assert "result" in result
+        ret = hex_to_bytes(result["result"])
+        assert int.from_bytes(ret, "big") == 5
+
+    def test_eth_call_precompile_identity(self):
+        """Call to identity precompile (0x04) echoes input."""
+        # Identity precompile at address 0x04
+        precompile = "0x" + "00" * 19 + "04"
+        data = "0x" + "aabbccdd"
+        result = self._call("eth_call", [{"to": precompile, "data": data}, "latest"])
+        assert "result" in result
+        assert result["result"] == "0xaabbccdd"
+
+    # -- eth_estimateGas tests --
+
+    def test_estimate_simple_transfer(self):
+        """Simple transfer estimation = 21000."""
+        result = self._call("eth_estimateGas", [{"to": "0x" + "01" * 20}])
+        assert "result" in result
+        assert hex_to_int(result["result"]) == 21000
+
+    def test_estimate_contract_call(self):
+        """Contract call gas > 21000 (includes opcode gas)."""
+        # PUSH1 42 PUSH1 0 MSTORE PUSH1 32 PUSH1 0 RETURN
+        code = bytes([
+            0x60, 0x2a, 0x60, 0x00, 0x52,
+            0x60, 0x20, 0x60, 0x00, 0xf3,
+        ])
+        contract = "0x" + "bb" * 20
+        self._deploy_code(contract, code)
+
+        result = self._call("eth_estimateGas", [{"to": contract}])
+        assert "result" in result
+        gas = hex_to_int(result["result"])
+        assert gas > 21000  # Intrinsic 21000 + opcode costs
+
+    def test_estimate_contract_create(self):
+        """Contract creation gas includes CREATE overhead."""
+        # Simple initcode: PUSH1 0 PUSH1 0 RETURN (returns empty code)
+        initcode = "0x" + "60006000f3".ljust(10, "0")
+        result = self._call("eth_estimateGas", [{"data": initcode}])
+        assert "result" in result
+        gas = hex_to_int(result["result"])
+        # CREATE intrinsic = 21000 + 32000 = 53000 minimum
+        assert gas >= 53000
+
+    def test_estimate_revert(self):
+        """Reverted contract returns RPC error."""
+        code = bytes([0x60, 0x00, 0x60, 0x00, 0xfd])  # REVERT
+        contract = "0x" + "dd" * 20
+        self._deploy_code(contract, code)
+
+        result = self._call("eth_estimateGas", [{"to": contract}])
+        assert "error" in result
+        assert result["error"]["code"] == 3
+
+
+class TestSimulateCallDirect:
+    """Direct tests for simulate_call() function."""
+
+    def test_simulate_call_basic(self):
+        from ethclient.storage.memory_backend import MemoryBackend
+        from ethclient.common.config import ChainConfig
+        from ethclient.common.types import BlockHeader
+        from ethclient.blockchain.chain import simulate_call
+
+        store = MemoryBackend()
+        config = ChainConfig(chain_id=1)
+        header = BlockHeader(gas_limit=30_000_000, base_fee_per_gas=0)
+
+        result = simulate_call(
+            sender=b"\x00" * 20,
+            to=b"\x01" * 20,
+            data=b"",
+            value=0,
+            gas_limit=100_000,
+            header=header,
+            store=store,
+            config=config,
+        )
+        assert result.success is True
+        assert result.return_data == b""
+        assert result.gas_used == 21000  # simple transfer
+
+    def test_simulate_call_with_code(self):
+        from ethclient.storage.memory_backend import MemoryBackend
+        from ethclient.common.config import ChainConfig
+        from ethclient.common.types import BlockHeader, Account
+        from ethclient.common.crypto import keccak256
+        from ethclient.blockchain.chain import simulate_call
+
+        store = MemoryBackend()
+        config = ChainConfig(chain_id=1)
+        header = BlockHeader(gas_limit=30_000_000, base_fee_per_gas=0)
+
+        # Deploy simple return bytecode
+        code = bytes([0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3])
+        to_addr = b"\xcc" * 20
+        acc = Account()
+        acc.code_hash = keccak256(code)
+        store.put_account(to_addr, acc)
+        store._code[acc.code_hash] = code
+
+        result = simulate_call(
+            sender=b"\x00" * 20,
+            to=to_addr,
+            data=b"",
+            value=0,
+            gas_limit=100_000,
+            header=header,
+            store=store,
+            config=config,
+        )
+        assert result.success is True
+        assert int.from_bytes(result.return_data, "big") == 42
+        assert result.gas_used > 21000
 
 
 # ===================================================================

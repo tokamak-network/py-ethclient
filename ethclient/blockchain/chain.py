@@ -51,6 +51,154 @@ class TransactionError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Simulated call (eth_call / eth_estimateGas)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CallResult:
+    """Result of a simulated call (eth_call / eth_estimateGas)."""
+    success: bool = True
+    return_data: bytes = b""
+    gas_used: int = 0
+    error: Optional[str] = None
+
+
+def simulate_call(
+    sender: bytes,
+    to: Optional[bytes],
+    data: bytes,
+    value: int,
+    gas_limit: int,
+    header: BlockHeader,
+    store: MemoryBackend,
+    config: ChainConfig,
+) -> CallResult:
+    """Execute a call against current state without modifying it.
+
+    Used by eth_call and eth_estimateGas. Unlike execute_transaction(),
+    this skips signature verification, nonce checks, balance deduction,
+    coinbase payment, and always rolls back state changes.
+    """
+    # Snapshot store so we can roll back all changes
+    store_snap = store.snapshot()
+
+    try:
+        is_create = to is None
+        base_gas = intrinsic_gas(data, is_create)
+        if base_gas > gas_limit:
+            return CallResult(success=False, gas_used=gas_limit,
+                              error="intrinsic gas exceeds gas limit")
+
+        base_fee = header.base_fee_per_gas or 0
+
+        # Set up EVM execution environment
+        env = ExecutionEnvironment()
+        env.block_number = header.number
+        env.timestamp = header.timestamp
+        env.coinbase = header.coinbase
+        env.gas_limit = header.gas_limit
+        env.chain_id = config.chain_id
+        env.base_fee = base_fee
+        env.gas_price = base_fee  # effective gas price = base_fee for calls
+        env.prevrandao = int.from_bytes(header.mix_hash, "big")
+        env.hook = DefaultHook()
+
+        _bind_env_to_store(env, store)
+
+        # Pre-warm access lists (EIP-2929)
+        env.access_sets.mark_warm_address(sender)
+        if to is not None:
+            env.access_sets.mark_warm_address(to)
+        env.access_sets.mark_warm_address(header.coinbase)
+        for precompile_addr in PRECOMPILES:
+            env.access_sets.mark_warm_address(precompile_addr)
+
+        gas_available = gas_limit - base_gas
+        snap = env.snapshot()
+
+        if to is None:
+            # Contract creation
+            nonce = store.get_nonce(sender)
+            contract_addr = keccak256(rlp.encode([sender, nonce]))[12:]
+            env.set_nonce(contract_addr, 1)
+            if value > 0:
+                env.add_balance(contract_addr, value)
+                env.sub_balance(sender, value)
+
+            frame = CallFrame(
+                caller=sender, address=contract_addr,
+                code_address=contract_addr, origin=sender,
+                code=data, gas=gas_available, value=value, depth=0,
+            )
+            success, return_data = run_bytecode(frame, env)
+
+            if success and return_data:
+                if len(return_data) <= 24576:
+                    code_cost = G_CODEDEPOSIT * len(return_data)
+                    if frame.gas_used + code_cost <= gas_available:
+                        frame.gas_used += code_cost
+                    else:
+                        success = False
+                        frame.gas_used = gas_available
+                else:
+                    success = False
+                    frame.gas_used = gas_available
+        else:
+            # Message call
+            if value > 0:
+                env.sub_balance(sender, value)
+                env.add_balance(to, value)
+
+            if is_precompile(to):
+                result = run_precompile(to, data)
+                if result is not None:
+                    pc_gas, output = result
+                    frame = CallFrame(gas=gas_available)
+                    frame.gas_used = pc_gas
+                    success = True
+                    return_data = output
+                else:
+                    frame = CallFrame(gas=gas_available)
+                    frame.gas_used = gas_available
+                    success = False
+                    return_data = b""
+            else:
+                code = env.get_code(to)
+                frame = CallFrame(
+                    caller=sender, address=to, code_address=to,
+                    origin=sender, code=code, gas=gas_available,
+                    value=value, calldata=data, depth=0,
+                )
+                if code:
+                    success, return_data = run_bytecode(frame, env)
+                else:
+                    success = True
+                    return_data = b""
+
+        evm_gas_used = frame.gas_used
+        total_gas_used = base_gas + evm_gas_used
+
+        if success:
+            max_refund = total_gas_used // MAX_REFUND_QUOTIENT
+            actual_refund = min(env.refund, max_refund)
+            total_gas_used -= actual_refund
+
+        error_msg = None
+        if not success:
+            error_msg = "execution reverted"
+
+        return CallResult(
+            success=success,
+            return_data=return_data,
+            gas_used=total_gas_used,
+            error=error_msg,
+        )
+    finally:
+        # Always roll back store state
+        store.rollback(store_snap)
+
+
+# ---------------------------------------------------------------------------
 # Header validation
 # ---------------------------------------------------------------------------
 

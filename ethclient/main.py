@@ -140,7 +140,8 @@ class EthNode:
 
         # RPC server
         self.rpc = RPCServer()
-        register_eth_api(self.rpc, store=self.store, mempool=self.mempool, network_chain_id=chain_config.chain_id)
+        register_eth_api(self.rpc, store=self.store, mempool=self.mempool,
+                         network_chain_id=chain_config.chain_id, config=chain_config)
 
         self._running = False
 

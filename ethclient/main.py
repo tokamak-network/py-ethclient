@@ -24,7 +24,10 @@ from typing import Optional
 
 from coincurve import PrivateKey
 
-from ethclient.common.config import ChainConfig, Genesis, MAINNET_CONFIG, SEPOLIA_CONFIG, HOLESKY_CONFIG
+from ethclient.common.config import (
+    ChainConfig, Genesis, MAINNET_CONFIG, SEPOLIA_CONFIG, HOLESKY_CONFIG,
+    GENESIS_HASHES, get_network_fork_id,
+)
 from ethclient.storage.memory_backend import MemoryBackend
 from ethclient.blockchain.mempool import Mempool
 from ethclient.blockchain.fork_choice import ForkChoice
@@ -47,7 +50,12 @@ MAINNET_BOOTNODES = [
 ]
 
 SEPOLIA_BOOTNODES = [
-    "enode://4e5e92199ee224a01932a377160aa432f31d0b351f84ab413a8e0a42f4f36476f8fb1cbe914af0d9aef0d51571571e4f12f31d53e6250b6521bfbac9a6879fc8@135.181.140.168:30303",
+    # EF DevOps bootnodes (go-ethereum)
+    "enode://4e5e92199ee224a01932a377160aa432f31d0b351f84ab413a8e0a42f4f36476f8fb1cbe914af0d9aef0d51665c214cf653c651c4bbd9d5550a934f241f1682b@138.197.51.181:30303",
+    "enode://143e11fb766781d22d92a2e33f8f104cddae4411a122295ed1fdb6638de96a6ce65f5b7c964ba3763bba27961738fef7d3ecc739268f3e5e771fb4c87b6234ba@146.190.1.103:30303",
+    "enode://8b61dc2d06c3f96fddcbebb0efb29d60d3598650275dc469c22229d3e5620369b0d3dedafd929835fe7f489618f19f456fe7c0df572bf2d914a9f4e006f783a9@170.64.250.88:30303",
+    "enode://10d62eff032205fcef19497f35ca8477bea0eadfff6d769a147e895d8b2b8f8ae6341630c645c30f5df6e67547c03494ced3d9c5764e8622a26587b083b028e8@139.59.49.206:30303",
+    "enode://9e9492e2e8836114cc75f5b929784f4f46c324ad01daf87d956f98b3b6c5fcba95524d6e5cf9861dc96a2c8a171ea7105bb554a197455058de185fa870970c7c@138.68.123.152:30303",
 ]
 
 
@@ -96,7 +104,11 @@ class EthNode:
             header0 = self.store.get_block_header_by_number(0)
             self.genesis_hash = header0.block_hash() if header0 else b"\x00" * 32
         else:
-            self.genesis_hash = b"\x00" * 32
+            # Use well-known genesis hash for known networks
+            self.genesis_hash = GENESIS_HASHES.get(chain_config.chain_id, b"\x00" * 32)
+
+        # Compute ForkID for Status handshake
+        self.fork_id = get_network_fork_id(chain_config.chain_id)
 
         # Blockchain engine
         self.mempool = Mempool()
@@ -110,6 +122,7 @@ class EthNode:
             boot_nodes=boot_nodes or [],
             network_id=chain_config.chain_id,
             genesis_hash=self.genesis_hash,
+            fork_id=self.fork_id,
             store=self.store,
         )
 

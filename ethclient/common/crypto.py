@@ -19,6 +19,25 @@ def keccak256(data: bytes) -> bytes:
     return h.digest()
 
 
+class KeccakState:
+    """Streaming Keccak-256 that supports non-finalizing digest().
+
+    pycryptodome's Keccak finalizes on digest() and doesn't support copy().
+    This wrapper buffers all input data and re-hashes on each digest() call.
+    Matches go-ethereum's sha3.NewLegacyKeccak256() behavior for RLPx MAC.
+    """
+
+    def __init__(self) -> None:
+        self._data = bytearray()
+
+    def update(self, data: bytes) -> None:
+        self._data.extend(data)
+
+    def digest(self) -> bytes:
+        h = _keccak_mod.new(digest_bits=256, data=bytes(self._data))
+        return h.digest()
+
+
 def sha256(data: bytes) -> bytes:
     """Compute SHA-256 hash."""
     from Crypto.Hash import SHA256

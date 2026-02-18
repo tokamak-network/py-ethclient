@@ -190,21 +190,29 @@ class GetBlockBodiesMessage:
 
 @dataclass
 class BlockBodiesMessage:
-    """Response with block bodies (transactions + ommers)."""
+    """Response with block bodies (transactions + ommers + optional withdrawals)."""
     request_id: int = 0
-    bodies: list[tuple[list, list]] = field(default_factory=list)  # [(txs_rlp, ommers_rlp), ...]
+    bodies: list[tuple] = field(default_factory=list)  # [(txs_rlp, ommers_rlp, [withdrawals_rlp]), ...]
 
     def encode(self) -> bytes:
-        return rlp.encode([
-            self.request_id,
-            [[txs, ommers] for txs, ommers in self.bodies],
-        ])
+        encoded_bodies = []
+        for body in self.bodies:
+            if len(body) > 2 and body[2] is not None:
+                encoded_bodies.append([body[0], body[1], body[2]])
+            else:
+                encoded_bodies.append([body[0], body[1]])
+        return rlp.encode([self.request_id, encoded_bodies])
 
     @classmethod
     def decode(cls, data: bytes) -> BlockBodiesMessage:
         items = rlp.decode_list(data)
         req_id = rlp.decode_uint(items[0])
-        bodies = [(body[0], body[1]) for body in items[1]]
+        bodies = []
+        for body in items[1]:
+            if len(body) > 2:
+                bodies.append((body[0], body[1], body[2]))
+            else:
+                bodies.append((body[0], body[1], []))
         return cls(request_id=req_id, bodies=bodies)
 
 

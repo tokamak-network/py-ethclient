@@ -147,34 +147,40 @@ class FrameCoder:
     # MAC operations
 
     def _update_egress_mac(self, header_cipher: bytes) -> bytes:
-        """Update egress MAC with header and return 16-byte MAC tag."""
-        # seed = aes(mac-secret, keccak256-state ^ header-cipher)
+        """Update egress MAC with header and return 16-byte MAC tag.
+
+        go-ethereum order: AES_encrypt(digest) XOR seed → feed to MAC.
+        """
         mac_digest = self.egress_mac.digest()[:16]
-        seed = self.mac_enc.encrypt(bytes(a ^ b for a, b in zip(mac_digest, header_cipher)))
-        self.egress_mac.update(seed)
+        aes_result = self.mac_enc.encrypt(mac_digest)
+        xored = bytes(a ^ b for a, b in zip(aes_result, header_cipher))
+        self.egress_mac.update(xored)
         return self.egress_mac.digest()[:16]
 
     def _update_egress_mac_body(self, body_cipher: bytes) -> bytes:
         """Update egress MAC with body and return 16-byte MAC tag."""
         self.egress_mac.update(body_cipher)
         mac_digest = self.egress_mac.digest()[:16]
-        seed = self.mac_enc.encrypt(bytes(a ^ b for a, b in zip(mac_digest, b"\x00" * 16)))
-        self.egress_mac.update(seed)
+        aes_result = self.mac_enc.encrypt(mac_digest)
+        xored = bytes(a ^ b for a, b in zip(aes_result, mac_digest))
+        self.egress_mac.update(xored)
         return self.egress_mac.digest()[:16]
 
     def _update_ingress_mac(self, header_cipher: bytes) -> bytes:
         """Update ingress MAC with header and return 16-byte MAC tag."""
         mac_digest = self.ingress_mac.digest()[:16]
-        seed = self.mac_enc.encrypt(bytes(a ^ b for a, b in zip(mac_digest, header_cipher)))
-        self.ingress_mac.update(seed)
+        aes_result = self.mac_enc.encrypt(mac_digest)
+        xored = bytes(a ^ b for a, b in zip(aes_result, header_cipher))
+        self.ingress_mac.update(xored)
         return self.ingress_mac.digest()[:16]
 
     def _update_ingress_mac_body(self, body_cipher: bytes) -> bytes:
         """Update ingress MAC with body and return 16-byte MAC tag."""
         self.ingress_mac.update(body_cipher)
         mac_digest = self.ingress_mac.digest()[:16]
-        seed = self.mac_enc.encrypt(bytes(a ^ b for a, b in zip(mac_digest, b"\x00" * 16)))
-        self.ingress_mac.update(seed)
+        aes_result = self.mac_enc.encrypt(mac_digest)
+        xored = bytes(a ^ b for a, b in zip(aes_result, mac_digest))
+        self.ingress_mac.update(xored)
         return self.ingress_mac.digest()[:16]
 
 

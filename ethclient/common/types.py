@@ -81,6 +81,7 @@ class TxType(IntEnum):
     ACCESS_LIST = 1   # EIP-2930
     FEE_MARKET = 2    # EIP-1559
     BLOB = 3          # EIP-4844
+    SET_CODE = 4      # EIP-7702
 
 
 @dataclass
@@ -125,6 +126,9 @@ class Transaction:
     # EIP-4844
     max_fee_per_blob_gas: int = 0
     blob_versioned_hashes: list[bytes] = field(default_factory=list)
+
+    # EIP-7702 (Set EOA Code)
+    authorization_list: list[list] = field(default_factory=list)  # [[chain_id, addr, nonce, y, r, s], ...]
 
     # Signature
     v: int = 0
@@ -189,6 +193,22 @@ class Transaction:
                 al,
                 self.max_fee_per_blob_gas,
                 self.blob_versioned_hashes,
+                self.v,
+                self.r,
+                self.s,
+            ]
+        elif self.tx_type == TxType.SET_CODE:
+            return [
+                self.chain_id,
+                self.nonce,
+                self.max_priority_fee_per_gas,
+                self.max_fee_per_gas,
+                self.gas_limit,
+                to_bytes,
+                self.value,
+                self.data,
+                al,
+                self.authorization_list,
                 self.v,
                 self.r,
                 self.s,
@@ -265,6 +285,23 @@ class Transaction:
                 r=rlp.decode_uint(items[12]),
                 s=rlp.decode_uint(items[13]),
             )
+        elif tx_type == TxType.SET_CODE:
+            return cls(
+                tx_type=TxType.SET_CODE,
+                chain_id=rlp.decode_uint(items[0]),
+                nonce=rlp.decode_uint(items[1]),
+                max_priority_fee_per_gas=rlp.decode_uint(items[2]),
+                max_fee_per_gas=rlp.decode_uint(items[3]),
+                gas_limit=rlp.decode_uint(items[4]),
+                to=parse_to(items[5]),
+                value=rlp.decode_uint(items[6]),
+                data=items[7],
+                access_list=parse_al(items[8]),
+                authorization_list=items[9],  # keep as raw RLP
+                v=rlp.decode_uint(items[10]),
+                r=rlp.decode_uint(items[11]),
+                s=rlp.decode_uint(items[12]),
+            )
         raise ValueError(f"Unknown tx type: {tx_type}")
 
     def encode_rlp(self) -> bytes:
@@ -330,6 +367,14 @@ class Transaction:
                 self.max_fee_per_blob_gas, self.blob_versioned_hashes,
             ]
             return keccak256(bytes([0x03]) + rlp.encode(items))
+        elif self.tx_type == TxType.SET_CODE:
+            items = [
+                self.chain_id, self.nonce, self.max_priority_fee_per_gas,
+                self.max_fee_per_gas, self.gas_limit,
+                to_bytes, self.value, self.data, al,
+                self.authorization_list,
+            ]
+            return keccak256(bytes([0x04]) + rlp.encode(items))
         raise ValueError(f"Unknown tx type: {self.tx_type}")
 
     def tx_hash(self) -> bytes:
@@ -337,7 +382,7 @@ class Transaction:
         return keccak256(self.encode_rlp())
 
     def effective_gas_price(self, base_fee: int = 0) -> int:
-        if self.tx_type in (TxType.FEE_MARKET, TxType.BLOB):
+        if self.tx_type in (TxType.FEE_MARKET, TxType.BLOB, TxType.SET_CODE):
             return min(
                 self.max_fee_per_gas,
                 base_fee + self.max_priority_fee_per_gas,
@@ -419,6 +464,8 @@ class BlockHeader:
     blob_gas_used: Optional[int] = None
     excess_blob_gas: Optional[int] = None
     parent_beacon_block_root: Optional[bytes] = None
+    # Post-Prague (EIP-7685)
+    requests_hash: Optional[bytes] = None
 
     def to_rlp_list(self) -> list:
         items: list = [
@@ -448,6 +495,8 @@ class BlockHeader:
             items.append(self.excess_blob_gas)
         if self.parent_beacon_block_root is not None:
             items.append(self.parent_beacon_block_root)
+        if self.requests_hash is not None:
+            items.append(self.requests_hash)
         return items
 
     @classmethod
@@ -480,6 +529,8 @@ class BlockHeader:
             header.excess_blob_gas = rlp.decode_uint(items[18])
         if n > 19:
             header.parent_beacon_block_root = items[19]
+        if n > 20:
+            header.requests_hash = items[20]
         return header
 
     def encode_rlp(self) -> bytes:

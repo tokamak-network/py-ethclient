@@ -16,13 +16,33 @@ from typing import Optional
 from Crypto.Cipher import AES
 from coincurve import PrivateKey, PublicKey
 
-from ethclient.common.crypto import keccak256
+from ethclient.common.crypto import keccak256, KeccakState
 from ethclient.common import rlp
+
+
+# ---------------------------------------------------------------------------
+# ECDH
+# ---------------------------------------------------------------------------
+
+def _ecdh_raw(private_key_bytes: bytes, public_key_bytes: bytes) -> bytes:
+    """ECDH returning the raw x-coordinate (32 bytes).
+
+    go-ethereum compatible: returns the x-coordinate of (private * public_point),
+    NOT hashed like coincurve's default pk.ecdh().
+    """
+    pub = PublicKey(public_key_bytes)
+    shared_point = pub.multiply(private_key_bytes)
+    uncompressed = shared_point.format(compressed=False)
+    return uncompressed[1:33]  # x-coordinate
 
 
 # ---------------------------------------------------------------------------
 # ECIES encryption/decryption
 # ---------------------------------------------------------------------------
+
+# ECIES overhead: ephemeral pubkey(65) + IV(16) + HMAC tag(32) = 113 bytes
+ECIES_OVERHEAD = 65 + 16 + 32
+
 
 def ecies_encrypt(
     recipient_pubkey: bytes,
@@ -37,9 +57,8 @@ def ecies_encrypt(
     ephemeral_key = PrivateKey()
     ephemeral_pub = ephemeral_key.public_key.format(compressed=False)
 
-    # ECDH shared secret
-    recipient_pk = PublicKey(recipient_pubkey)
-    shared = ephemeral_key.ecdh(recipient_pk.format())
+    # ECDH shared secret (raw x-coordinate)
+    shared = _ecdh_raw(ephemeral_key.secret, recipient_pubkey)
 
     # Key derivation (concatenation KDF)
     key_material = _concat_kdf(shared)
@@ -72,10 +91,8 @@ def ecies_decrypt(
     tag = data[-32:]
     ciphertext = data[81:-32]
 
-    # ECDH shared secret
-    pk = PrivateKey(private_key)
-    recipient_pk = PublicKey(ephemeral_pub)
-    shared = pk.ecdh(recipient_pk.format())
+    # ECDH shared secret (raw x-coordinate)
+    shared = _ecdh_raw(private_key, ephemeral_pub)
 
     # Key derivation
     key_material = _concat_kdf(shared)
@@ -127,7 +144,7 @@ class AuthMessage:
 
     @classmethod
     def decode(cls, data: bytes) -> AuthMessage:
-        items = rlp.decode_list(data)
+        items = rlp.decode_list(data, strict=False)
         return cls(
             signature=items[0],
             initiator_pubkey=items[1],
@@ -152,7 +169,7 @@ class AckMessage:
 
     @classmethod
     def decode(cls, data: bytes) -> AckMessage:
-        items = rlp.decode_list(data)
+        items = rlp.decode_list(data, strict=False)
         return cls(
             recipient_pubkey=items[0],
             nonce=items[1],
@@ -192,12 +209,10 @@ class Handshake:
     def create_auth(self, remote_pubkey: bytes) -> bytes:
         """Create the auth message for the initiator side.
 
-        Returns the ECIES-encrypted auth message with size prefix.
+        Returns the ECIES-encrypted auth message with size prefix (EIP-8).
         """
-        # Compute shared secret for signature
         # static-shared-secret = ecdh(initiator-privkey, recipient-pubkey)
-        remote_pk = PublicKey(remote_pubkey)
-        shared = self.pk.ecdh(remote_pk.format())
+        shared = _ecdh_raw(self.private_key, remote_pubkey)
 
         # XOR with nonce: shared ^ nonce
         xor_val = bytes(a ^ b for a, b in zip(shared[:32], self.nonce))
@@ -212,38 +227,55 @@ class Handshake:
             version=4,
         )
         plaintext = auth.encode()
-        encrypted = ecies_encrypt(remote_pubkey, plaintext)
 
-        # Prepend size (2 bytes big-endian)
-        size = len(encrypted)
-        self._auth_msg = size.to_bytes(2, "big") + encrypted
+        # EIP-8: add random padding (100-300 bytes)
+        padding = os.urandom(100 + os.urandom(1)[0] % 200)
+        padded_plaintext = plaintext + padding
+
+        # Compute size prefix first (needed as shared MAC data)
+        size = len(padded_plaintext) + ECIES_OVERHEAD
+        prefix = size.to_bytes(2, "big")
+
+        encrypted = ecies_encrypt(remote_pubkey, padded_plaintext, shared_mac_data=prefix)
+        self._auth_msg = prefix + encrypted
         return self._auth_msg
 
     def handle_auth(self, data: bytes) -> AuthMessage:
         """Decrypt and parse an incoming auth message (recipient side)."""
         size = int.from_bytes(data[:2], "big")
         encrypted = data[2:2 + size]
-        plaintext = ecies_decrypt(self.private_key, encrypted)
+        prefix = data[:2]
+        plaintext = ecies_decrypt(self.private_key, encrypted, shared_mac_data=prefix)
         self._auth_msg = data[:2 + size]
         return AuthMessage.decode(plaintext)
 
-    def create_ack(self) -> bytes:
-        """Create the ack message for the recipient side."""
+    def create_ack(self, remote_pubkey: bytes) -> bytes:
+        """Create the ack message for the recipient side (EIP-8)."""
         ack = AckMessage(
             recipient_pubkey=self.ephemeral_key.public_key.format(compressed=False)[1:],
             nonce=self.nonce,
             version=4,
         )
-        # Note: for ack, we'd need the initiator's pubkey, but here we
-        # just return it encrypted with a placeholder. In real use, pass remote_pubkey.
         plaintext = ack.encode()
-        return plaintext
 
-    def handle_ack(self, data: bytes, remote_pubkey: bytes) -> AckMessage:
+        # EIP-8: add random padding
+        padding = os.urandom(100 + os.urandom(1)[0] % 200)
+        padded_plaintext = plaintext + padding
+
+        # Compute size prefix (shared MAC data)
+        size = len(padded_plaintext) + ECIES_OVERHEAD
+        prefix = size.to_bytes(2, "big")
+
+        encrypted = ecies_encrypt(remote_pubkey, padded_plaintext, shared_mac_data=prefix)
+        self._ack_msg = prefix + encrypted
+        return self._ack_msg
+
+    def handle_ack(self, data: bytes) -> AckMessage:
         """Decrypt and parse an incoming ack message (initiator side)."""
         size = int.from_bytes(data[:2], "big")
         encrypted = data[2:2 + size]
-        plaintext = ecies_decrypt(self.private_key, encrypted)
+        prefix = data[:2]
+        plaintext = ecies_decrypt(self.private_key, encrypted, shared_mac_data=prefix)
         self._ack_msg = data[:2 + size]
         return AckMessage.decode(plaintext)
 
@@ -255,12 +287,19 @@ class Handshake:
         remote_ephemeral_pubkey: bytes,
         is_initiator: bool,
     ) -> SessionKeys:
-        """Derive session keys from the handshake."""
-        # ephemeral-shared-secret = ecdh(ephemeral-privkey, remote-ephemeral-pubkey)
-        remote_eph_pk = PublicKey(b"\x04" + remote_ephemeral_pubkey)
-        eph_shared = self.ephemeral_key.ecdh(remote_eph_pk.format())
+        """Derive session keys from the handshake.
 
-        # shared-secret = keccak256(eph-shared || keccak256(nonce-r || nonce-i))
+        auth_msg: the full auth message bytes (sent by initiator)
+        ack_msg: the full ack message bytes (sent by responder)
+
+        For initiator: auth_msg = what we sent, ack_msg = what we received
+        For responder: auth_msg = what we received, ack_msg = what we sent
+        """
+        # ephemeral-shared-secret = ecdh(ephemeral-privkey, remote-ephemeral-pubkey)
+        remote_eph_pub = b"\x04" + remote_ephemeral_pubkey
+        eph_shared = _ecdh_raw(self.ephemeral_key.secret, remote_eph_pub)
+
+        # nonce_hash = keccak256(responder_nonce || initiator_nonce)
         if is_initiator:
             nonce_hash = keccak256(remote_nonce + self.nonce)
         else:
@@ -273,22 +312,33 @@ class Handshake:
         # mac-secret = keccak256(eph-shared || aes-secret)
         mac_secret = keccak256(eph_shared + aes_secret)
 
-        # Initialize MAC states
+        # MAC initialization (go-ethereum compatible):
+        # mac1 = keccak256(xor(mac_secret, resp_nonce) || auth)
+        # mac2 = keccak256(xor(mac_secret, init_nonce) || ack)
+        # Initiator: egress=mac1, ingress=mac2
+        # Responder: egress=mac2, ingress=mac1
+        # IMPORTANT: Must use Keccak-256 (NOT SHA3-256/FIPS 202)
+
+        egress_mac_init = _xor_bytes(mac_secret, remote_nonce)
+        ingress_mac_init = _xor_bytes(mac_secret, self.nonce)
+
+        egress_mac = KeccakState()
+        ingress_mac = KeccakState()
+
         if is_initiator:
-            egress_mac_init = _xor_bytes(mac_secret, remote_nonce)
-            ingress_mac_init = _xor_bytes(mac_secret, self.nonce)
+            # egress = mac1: xor(mac, resp_nonce) || auth
+            # ingress = mac2: xor(mac, init_nonce) || ack
+            egress_mac.update(egress_mac_init)
+            egress_mac.update(auth_msg)
+            ingress_mac.update(ingress_mac_init)
+            ingress_mac.update(ack_msg)
         else:
-            egress_mac_init = _xor_bytes(mac_secret, self.nonce)
-            ingress_mac_init = _xor_bytes(mac_secret, remote_nonce)
-
-        import hashlib as _hashlib
-        egress_mac = _hashlib.new("sha3_256")
-        egress_mac.update(egress_mac_init)
-        egress_mac.update(auth_msg)
-
-        ingress_mac = _hashlib.new("sha3_256")
-        ingress_mac.update(ingress_mac_init)
-        ingress_mac.update(ack_msg)
+            # egress = mac2: xor(mac, init_nonce=remote) || ack
+            # ingress = mac1: xor(mac, resp_nonce=self) || auth
+            egress_mac.update(egress_mac_init)
+            egress_mac.update(ack_msg)
+            ingress_mac.update(ingress_mac_init)
+            ingress_mac.update(auth_msg)
 
         return SessionKeys(
             aes_secret=aes_secret,

@@ -7,6 +7,7 @@ Tracks hardfork activation blocks/timestamps.
 
 from __future__ import annotations
 
+import binascii
 import json
 from dataclasses import dataclass, field
 from typing import Optional
@@ -25,6 +26,27 @@ from ethclient.common.types import (
 
 
 # ---------------------------------------------------------------------------
+# Well-known genesis hashes
+# ---------------------------------------------------------------------------
+
+MAINNET_GENESIS_HASH = bytes.fromhex(
+    "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"
+)
+SEPOLIA_GENESIS_HASH = bytes.fromhex(
+    "25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6dd9"
+)
+HOLESKY_GENESIS_HASH = bytes.fromhex(
+    "b5f7f912443c940f21fd611f12828d75b534364ed9e95ca4e307572a72ff25e7"
+)
+
+GENESIS_HASHES: dict[int, bytes] = {
+    1: MAINNET_GENESIS_HASH,
+    11155111: SEPOLIA_GENESIS_HASH,
+    17000: HOLESKY_GENESIS_HASH,
+}
+
+
+# ---------------------------------------------------------------------------
 # Hardfork schedule
 # ---------------------------------------------------------------------------
 
@@ -35,6 +57,7 @@ class ChainConfig:
 
     # Block-based forks
     homestead_block: Optional[int] = None
+    dao_fork_block: Optional[int] = None       # DAO fork
     eip150_block: Optional[int] = None         # Tangerine Whistle
     eip155_block: Optional[int] = None         # Spurious Dragon
     eip158_block: Optional[int] = None         # Spurious Dragon
@@ -53,6 +76,10 @@ class ChainConfig:
     shanghai_time: Optional[int] = None
     cancun_time: Optional[int] = None
     prague_time: Optional[int] = None
+    osaka_time: Optional[int] = None
+
+    # Extra fork timestamps (e.g. BPO1, BPO2 on Sepolia testnet)
+    extra_fork_times: list[int] = field(default_factory=list)
 
     # Terminal total difficulty for the merge
     terminal_total_difficulty: Optional[int] = None
@@ -99,6 +126,7 @@ MAINNET_CONFIG = ChainConfig(
     chain_id=1,
     chain_name="mainnet",
     homestead_block=1_150_000,
+    dao_fork_block=1_920_000,
     eip150_block=2_463_000,
     eip155_block=2_675_000,
     eip158_block=2_675_000,
@@ -114,6 +142,9 @@ MAINNET_CONFIG = ChainConfig(
     terminal_total_difficulty=58_750_000_000_000_000_000_000,
     shanghai_time=1_681_338_455,
     cancun_time=1_710_338_135,
+    prague_time=1_746_612_311,
+    osaka_time=1_764_798_551,
+    extra_fork_times=[1_765_290_071, 1_767_747_671],  # BPO1, BPO2
 )
 
 SEPOLIA_CONFIG = ChainConfig(
@@ -129,9 +160,13 @@ SEPOLIA_CONFIG = ChainConfig(
     istanbul_block=0,
     berlin_block=0,
     london_block=0,
+    merge_netsplit_block=1_735_371,
     terminal_total_difficulty=17_000_000_000_000_000,
     shanghai_time=1_677_557_088,
     cancun_time=1_706_655_072,
+    prague_time=1_741_159_776,
+    osaka_time=1_760_427_360,
+    extra_fork_times=[1_761_017_184, 1_761_607_008],  # BPO1, BPO2
 )
 
 HOLESKY_CONFIG = ChainConfig(
@@ -221,6 +256,7 @@ class Genesis:
         chain_config = ChainConfig(
             chain_id=config_data.get("chainId", 1),
             homestead_block=config_data.get("homesteadBlock"),
+            dao_fork_block=config_data.get("daoForkBlock"),
             eip150_block=config_data.get("eip150Block"),
             eip155_block=config_data.get("eip155Block"),
             eip158_block=config_data.get("eip158Block"),
@@ -311,3 +347,85 @@ class Genesis:
     def from_json_file(cls, path: str) -> Genesis:
         with open(path) as f:
             return cls.from_json(json.load(f))
+
+
+# ---------------------------------------------------------------------------
+# ForkID (EIP-2124)
+# ---------------------------------------------------------------------------
+
+def compute_fork_id(genesis_hash: bytes, config: ChainConfig, head_block: int = 0, head_time: int = 0) -> tuple[bytes, int]:
+    """Compute EIP-2124 ForkID = (fork_hash, fork_next).
+
+    fork_hash: CRC32 checksum of genesis hash and all past fork block numbers/timestamps.
+    fork_next: next upcoming fork block/timestamp (0 if none known).
+    """
+    # Gather all fork points (block-based, non-zero, deduplicated)
+    block_forks: list[int] = []
+    for val in [
+        config.homestead_block, config.dao_fork_block,
+        config.eip150_block, config.eip155_block,
+        config.eip158_block, config.byzantium_block, config.constantinople_block,
+        config.petersburg_block, config.istanbul_block, config.muir_glacier_block,
+        config.berlin_block, config.london_block, config.arrow_glacier_block,
+        config.gray_glacier_block, config.merge_netsplit_block,
+    ]:
+        if val is not None and val > 0 and val not in block_forks:
+            block_forks.append(val)
+    block_forks.sort()
+
+    # Gather timestamp-based forks
+    time_forks: list[int] = []
+    for val in [config.shanghai_time, config.cancun_time, config.prague_time, config.osaka_time]:
+        if val is not None and val > 0 and val not in time_forks:
+            time_forks.append(val)
+    for val in config.extra_fork_times:
+        if val > 0 and val not in time_forks:
+            time_forks.append(val)
+    time_forks.sort()
+
+    # Compute fork_hash
+    h = binascii.crc32(genesis_hash) & 0xFFFFFFFF
+
+    # Track which forks are past
+    past_forks: list[int] = []
+
+    # Block-based forks: past if head_block >= fork_block
+    for f in block_forks:
+        if head_block >= f:
+            h = binascii.crc32(f.to_bytes(8, "big"), h) & 0xFFFFFFFF
+            past_forks.append(f)
+
+    # Time-based forks: past if head_time >= fork_time
+    for f in time_forks:
+        if head_time >= f:
+            h = binascii.crc32(f.to_bytes(8, "big"), h) & 0xFFFFFFFF
+            past_forks.append(f)
+
+    fork_hash = (h & 0xFFFFFFFF).to_bytes(4, "big")
+
+    # Determine fork_next: first upcoming fork
+    fork_next = 0
+    for f in block_forks:
+        if head_block < f:
+            fork_next = f
+            break
+    if fork_next == 0:
+        for f in time_forks:
+            if head_time < f:
+                fork_next = f
+                break
+
+    return fork_hash, fork_next
+
+
+def get_network_fork_id(chain_id: int) -> tuple[bytes, int]:
+    """Get the current ForkID for a well-known network.
+
+    Uses a very high head block/time to include all known forks.
+    """
+    config = CHAIN_CONFIGS.get(chain_id)
+    genesis_hash = GENESIS_HASHES.get(chain_id)
+    if config is None or genesis_hash is None:
+        return (b"\x00" * 4, 0)
+    # Use a high block/time to include all past forks
+    return compute_fork_id(genesis_hash, config, head_block=100_000_000, head_time=2_000_000_000)

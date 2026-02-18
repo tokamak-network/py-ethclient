@@ -93,6 +93,7 @@ class P2PServer:
         boot_nodes: Optional[list[Node]] = None,
         network_id: int = 1,
         genesis_hash: bytes = b"\x00" * 32,
+        fork_id: tuple[bytes, int] = (b"\x00" * 4, 0),
         store=None,
         chain=None,
     ) -> None:
@@ -102,6 +103,7 @@ class P2PServer:
         self.boot_nodes = boot_nodes or []
         self.network_id = network_id
         self.genesis_hash = genesis_hash
+        self.fork_id = fork_id
         self.store = store
         self.chain = chain
 
@@ -219,30 +221,35 @@ class P2PServer:
         if len(self.peers) >= self.max_peers:
             return None
 
+        logger.info("Connecting to %s:%d ...", node.ip, node.tcp_port or node.udp_port)
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(node.ip, node.tcp_port or node.udp_port),
-                timeout=5.0,
+                timeout=10.0,
             )
         except (asyncio.TimeoutError, ConnectionError, OSError) as e:
-            logger.debug("Failed to connect to %s:%d: %s", node.ip, node.tcp_port, e)
+            logger.info("TCP connect failed to %s:%d: %s", node.ip, node.tcp_port, e)
             return None
 
+        logger.info("TCP connected, starting RLPx handshake...")
         remote_pubkey = b"\x04" + node.id  # add uncompressed prefix
         conn = RLPxConnection(self.private_key, reader, writer)
         if not await conn.initiate_handshake(remote_pubkey):
+            logger.info("RLPx handshake failed with %s", node.ip)
             conn.close()
             return None
 
+        logger.info("RLPx handshake OK, starting protocol handshake...")
         peer = PeerConnection(conn=conn, remote_id=node.id)
 
         if not await self._do_protocol_handshake(peer):
+            logger.info("Protocol handshake failed with %s", node.ip)
             conn.close()
             return None
 
         self.peers[peer.remote_id] = peer
         peer.connected = True
-        logger.info("Connected to peer: %s (%s)", peer.remote_client, node.ip)
+        logger.info("Peer connected: %s (%s:%d)", peer.remote_client, node.ip, node.tcp_port)
 
         asyncio.create_task(self._handle_peer(peer))
         return peer
@@ -250,32 +257,52 @@ class P2PServer:
     async def _do_protocol_handshake(self, peer: PeerConnection) -> bool:
         """Exchange Hello and Status messages."""
         # Send Hello
-        hello = HelloMessage(node_id=self.public_key)
+        hello = HelloMessage(node_id=self.public_key, listen_port=self.listen_port)
         await peer.send_p2p_message(P2PMsg.HELLO, hello.encode())
+        logger.debug("Sent Hello message")
 
         # Receive Hello
-        result = await peer.conn.recv_message()
+        result = await peer.conn.recv_message(timeout=15.0)
         if result is None:
+            logger.debug("No Hello response received")
             return False
 
         msg_code, payload = result
+        if msg_code == P2PMsg.DISCONNECT:
+            try:
+                disc = DisconnectMessage.decode(payload)
+                logger.info("Peer sent Disconnect during Hello: reason=%d", disc.reason)
+            except Exception:
+                logger.info("Peer sent Disconnect during Hello")
+            return False
         if msg_code != P2PMsg.HELLO:
+            logger.debug("Expected Hello (0x00), got 0x%02x", msg_code)
             return False
 
         remote_hello = HelloMessage.decode(payload)
         peer.remote_client = remote_hello.client_id
+        logger.info("Remote Hello: %s, caps=%s", remote_hello.client_id,
+                     remote_hello.capabilities)
 
         # Check eth capability
-        has_eth = any(cap == "eth" and ver >= 67 for cap, ver in remote_hello.capabilities)
+        eth_caps = [(cap, ver) for cap, ver in remote_hello.capabilities if cap == "eth"]
+        has_eth = any(ver >= 67 for _, ver in eth_caps)
         if not has_eth:
+            logger.info("Peer lacks eth/67+, disconnecting")
             await self._disconnect_peer(peer, DisconnectReason.INCOMPATIBLE_VERSION)
             return False
 
-        peer.eth_version = max(
-            ver for cap, ver in remote_hello.capabilities if cap == "eth"
-        )
+        peer.eth_version = max(ver for _, ver in eth_caps)
 
-        # Send Status
+        # Send Status (wrapped in try/except to catch connection failures)
+        try:
+            return await self._exchange_status(peer)
+        except Exception as e:
+            logger.info("Status exchange error: %s: %s", type(e).__name__, e)
+            return False
+
+    async def _exchange_status(self, peer: PeerConnection) -> bool:
+        """Exchange eth Status messages. Separated for clean error handling."""
         total_difficulty = 0
         best_hash = self.genesis_hash
         if self.store:
@@ -284,9 +311,6 @@ class P2PServer:
                 header = self.store.get_block_header_by_number(head)
                 if header:
                     best_hash = header.block_hash()
-                td = self.store.get_total_difficulty(best_hash)
-                if td is not None:
-                    total_difficulty = td
 
         status = StatusMessage(
             protocol_version=ETH_VERSION,
@@ -294,25 +318,52 @@ class P2PServer:
             total_difficulty=total_difficulty,
             best_hash=best_hash,
             genesis_hash=self.genesis_hash,
+            fork_id=self.fork_id,
         )
-        await peer.send_eth_message(EthMsg.STATUS, status.encode())
+        try:
+            await peer.send_eth_message(EthMsg.STATUS, status.encode())
+        except (ConnectionError, OSError) as e:
+            logger.info("Failed to send Status: %s", e)
+            return False
 
         # Receive Status
-        result = await peer.conn.recv_message()
+        result = await peer.conn.recv_message(timeout=15.0)
         if result is None:
+            logger.info("No Status response received")
             return False
 
         msg_code, payload = result
+        if msg_code == P2PMsg.DISCONNECT:
+            try:
+                disc = DisconnectMessage.decode(payload)
+                logger.info("Peer Disconnect during Status: reason=%d", disc.reason)
+            except Exception:
+                logger.info("Peer Disconnect during Status")
+            return False
         if msg_code != EthMsg.STATUS:
+            logger.info("Expected Status (0x10), got 0x%02x", msg_code)
             return False
 
-        remote_status = StatusMessage.decode(payload)
+        try:
+            remote_status = StatusMessage.decode(payload)
+        except Exception as e:
+            logger.info("Failed to decode Status: %s", e)
+            return False
+
+        logger.info("Remote Status: network=%d, td=%d, genesis=%s, fork_id=(%s, %d)",
+                     remote_status.network_id, remote_status.total_difficulty,
+                     remote_status.genesis_hash.hex()[:16],
+                     remote_status.fork_id[0].hex(), remote_status.fork_id[1])
 
         # Verify genesis hash and network ID
         if remote_status.genesis_hash != self.genesis_hash:
+            logger.info("Genesis mismatch — ours=%s remote=%s",
+                         self.genesis_hash.hex()[:16], remote_status.genesis_hash.hex()[:16])
             await self._disconnect_peer(peer, DisconnectReason.SUBPROTOCOL_ERROR)
             return False
         if remote_status.network_id != self.network_id:
+            logger.info("Network ID mismatch — ours=%d remote=%d",
+                         self.network_id, remote_status.network_id)
             await self._disconnect_peer(peer, DisconnectReason.SUBPROTOCOL_ERROR)
             return False
 
@@ -474,8 +525,8 @@ class P2PServer:
                     if node.id not in self.peers and node.tcp_port > 0:
                         try:
                             await self.connect_to_peer(node)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug("Dial error: %s", e)
                         if len(self.peers) >= self.max_peers:
                             break
 

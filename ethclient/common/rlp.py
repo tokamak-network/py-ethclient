@@ -82,20 +82,24 @@ class RLPDecodingError(Exception):
     pass
 
 
-def decode(data: bytes | bytearray | memoryview) -> RLPItem:
-    """Decode RLP bytes into a Python object (bytes or nested list of bytes)."""
+def decode(data: bytes | bytearray | memoryview, strict: bool = True) -> RLPItem:
+    """Decode RLP bytes into a Python object (bytes or nested list of bytes).
+
+    If strict=False, trailing bytes after the first RLP item are ignored
+    (used for EIP-8 handshake messages with random padding).
+    """
     data = memoryview(bytes(data))
     item, consumed = _decode_item(data, 0)
-    if consumed != len(data):
+    if strict and consumed != len(data):
         raise RLPDecodingError(
             f"Trailing bytes: consumed {consumed} of {len(data)}"
         )
     return item
 
 
-def decode_list(data: bytes | bytearray | memoryview) -> list[RLPItem]:
+def decode_list(data: bytes | bytearray | memoryview, strict: bool = True) -> list[RLPItem]:
     """Decode RLP bytes, asserting the top-level item is a list."""
-    result = decode(data)
+    result = decode(data, strict=strict)
     if not isinstance(result, list):
         raise RLPDecodingError("Expected RLP list, got bytes")
     return result

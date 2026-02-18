@@ -456,6 +456,10 @@ def execute_block(
         for j in range(BLOOM_BYTE_SIZE):
             block_bloom[j] |= result.receipt.logs_bloom[j]
 
+    # Block reward (PoW blocks only — pre-merge)
+    if block.header.difficulty > 0:
+        _apply_block_reward(block, store, config)
+
     # Process withdrawals (post-Shanghai)
     if block.withdrawals is not None:
         for w in block.withdrawals:
@@ -480,6 +484,46 @@ def execute_block(
         receipts_root=receipts_root,
         logs_bloom=bytes(block_bloom),
     )
+
+
+def _apply_block_reward(
+    block: Block,
+    store: MemoryBackend,
+    config: ChainConfig,
+) -> None:
+    """Apply PoW block reward to miner and uncle miners.
+
+    Reward schedule:
+      - Frontier/Homestead: 5 ETH
+      - Byzantium:          3 ETH
+      - Constantinople+:    2 ETH
+      - Post-merge:         0 ETH (difficulty == 0)
+    """
+    WEI = 10**18
+
+    if config.is_constantinople(block.header.number):
+        base_reward = 2 * WEI
+    elif config.is_byzantium(block.header.number):
+        base_reward = 3 * WEI
+    else:
+        base_reward = 5 * WEI
+
+    # Miner reward = base + (base / 32) * num_uncles
+    num_ommers = len(block.ommers)
+    miner_reward = base_reward + (base_reward // 32) * num_ommers
+    store.set_balance(
+        block.header.coinbase,
+        store.get_balance(block.header.coinbase) + miner_reward,
+    )
+
+    # Uncle rewards: ((uncle_number + 8 - block_number) / 8) * base_reward
+    for ommer in block.ommers:
+        uncle_reward = ((ommer.number + 8 - block.header.number) * base_reward) // 8
+        if uncle_reward > 0:
+            store.set_balance(
+                ommer.coinbase,
+                store.get_balance(ommer.coinbase) + uncle_reward,
+            )
 
 
 def validate_and_execute_block(

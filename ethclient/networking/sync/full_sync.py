@@ -71,6 +71,37 @@ class FullSync:
         self._body_responses: dict[int, list[tuple[list, list]]] = {}
         self._response_events: dict[int, asyncio.Event] = {}
 
+    async def _discover_head(self, peer: PeerConnection) -> int:
+        """Discover peer's head block number by requesting the header for best_hash."""
+        if not peer.best_hash or peer.best_hash == b"\x00" * 32:
+            return 0
+
+        req_id = self.state.next_request_id()
+        msg = GetBlockHeadersMessage(
+            request_id=req_id,
+            origin=peer.best_hash,
+            amount=1,
+        )
+
+        event = asyncio.Event()
+        self._response_events[req_id] = event
+        await peer.send_eth_message(EthMsg.GET_BLOCK_HEADERS, msg.encode())
+
+        try:
+            await asyncio.wait_for(event.wait(), timeout=SYNC_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning("Head discovery timed out")
+            return 0
+        finally:
+            self._response_events.pop(req_id, None)
+
+        headers = self._header_responses.pop(req_id, [])
+        if headers:
+            head_number = headers[0].number
+            logger.info("Discovered peer head: block #%d", head_number)
+            return head_number
+        return 0
+
     async def start(self, peers: list[PeerConnection]) -> None:
         """Start full sync with available peers."""
         if not peers:
@@ -80,6 +111,11 @@ class FullSync:
         # Find best peer (highest total difficulty)
         best = max(peers, key=lambda p: p.total_difficulty)
         self.state.best_peer = best
+
+        # Discover head block number from best_hash (eth/68 Status has no block number)
+        head_number = await self._discover_head(best)
+        if head_number > 0:
+            best.best_block_number = head_number
         self.state.target_block = best.best_block_number
         self.state.syncing = True
 

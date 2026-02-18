@@ -731,6 +731,127 @@ class TestFullSync:
 
         assert 42 in sync._header_responses or event.is_set()
 
+    @pytest.mark.asyncio
+    async def test_discover_head_returns_block_number(self):
+        """_discover_head sends GetBlockHeaders(hash, 1) and extracts block number."""
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+        from ethclient.networking.eth.messages import BlockHeadersMessage
+        from ethclient.common.types import BlockHeader
+
+        sync = FullSync()
+
+        # Create mock peer with a best_hash
+        peer = MagicMock()
+        peer.best_hash = b"\xab" * 32
+
+        # Capture the send call and simulate a response
+        async def fake_send(msg_code, payload):
+            # Simulate the peer responding with a header at block 7_654_321
+            header = BlockHeader(number=7_654_321)
+            resp = BlockHeadersMessage(request_id=1, headers=[header])
+            sync.handle_block_headers(resp.encode())
+
+        peer.send_eth_message = AsyncMock(side_effect=fake_send)
+
+        result = await sync._discover_head(peer)
+        assert result == 7_654_321
+        peer.send_eth_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_discover_head_empty_hash_returns_zero(self):
+        """_discover_head returns 0 when best_hash is all zeros."""
+        from unittest.mock import MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+
+        sync = FullSync()
+        peer = MagicMock()
+        peer.best_hash = b"\x00" * 32
+
+        result = await sync._discover_head(peer)
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_discover_head_no_hash_returns_zero(self):
+        """_discover_head returns 0 when best_hash is empty."""
+        from unittest.mock import MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+
+        sync = FullSync()
+        peer = MagicMock()
+        peer.best_hash = b""
+
+        result = await sync._discover_head(peer)
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_discover_head_timeout_returns_zero(self):
+        """_discover_head returns 0 on timeout."""
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+
+        sync = FullSync()
+        peer = MagicMock()
+        peer.best_hash = b"\xab" * 32
+
+        # send_eth_message does nothing → event never set → timeout
+        peer.send_eth_message = AsyncMock()
+
+        # Use a very short timeout by monkeypatching
+        import ethclient.networking.sync.full_sync as fs_mod
+        original_timeout = fs_mod.SYNC_TIMEOUT
+        fs_mod.SYNC_TIMEOUT = 0.05
+        try:
+            result = await sync._discover_head(peer)
+        finally:
+            fs_mod.SYNC_TIMEOUT = original_timeout
+
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_discover_head_empty_response_returns_zero(self):
+        """_discover_head returns 0 when peer responds with no headers."""
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+        from ethclient.networking.eth.messages import BlockHeadersMessage
+
+        sync = FullSync()
+        peer = MagicMock()
+        peer.best_hash = b"\xab" * 32
+
+        async def fake_send(msg_code, payload):
+            # Respond with empty headers
+            resp = BlockHeadersMessage(request_id=1, headers=[])
+            sync.handle_block_headers(resp.encode())
+
+        peer.send_eth_message = AsyncMock(side_effect=fake_send)
+
+        result = await sync._discover_head(peer)
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_start_uses_discovered_head(self):
+        """start() uses _discover_head to set target_block."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from ethclient.networking.sync.full_sync import FullSync
+
+        sync = FullSync()
+
+        peer = MagicMock()
+        peer.best_hash = b"\xab" * 32
+        peer.best_block_number = 0
+        peer.total_difficulty = 100
+        peer.connected = True
+        peer.remote_id = b"\x01" * 64
+        peer.send_eth_message = AsyncMock()
+
+        with patch.object(sync, '_discover_head', new_callable=AsyncMock, return_value=5_000_000):
+            with patch.object(sync, '_sync_loop', new_callable=AsyncMock):
+                await sync.start([peer])
+
+        assert sync.state.target_block == 5_000_000
+        assert peer.best_block_number == 5_000_000
+
 
 # ===================================================================
 # P2P Server component tests

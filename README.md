@@ -167,33 +167,143 @@ storage = chain.get_storage_at(address, 0)
 | `test_eth_call_read_storage` | ✅ | eth_call (limited) |
 | `test_simple_transfer` | ✅ | ETH transfer |
 
-## Not Yet Implemented
+## Development Roadmap
 
-### High Priority
-| Feature | Description |
-|---------|-------------|
-| `eth_call` full implementation | Execute call without state change |
-| `eth_getTransactionByHash` | Get transaction by hash |
-| `eth_getBlockTransactionCountByNumber` | Transaction count in block |
-| `eth_getTransactionByBlockHashAndIndex` | Transaction by block + index |
-| Contract address calculation | Compute create address for receipts |
-| Logs bloom computation | Actual bloom filter for logs |
+> **Note**: `py-evm` was archived on September 8, 2025. It supports up to Prague but will not receive Osaka updates.
 
-### Medium Priority
-| Feature | Description |
-|---------|-------------|
-| EIP-1559 transactions | Type 2 transactions with max_fee_per_gas |
-| Better error handling | Custom error types, clearer messages |
-| Gas estimation improvement | Trace-based gas estimation |
-| Block/Transaction range queries | Filter by block range |
+### Phase 1: Essential for Public Network (~200 LOC)
 
-### Low Priority (Future)
-| Feature | Description |
-|---------|-------------|
-| Persistent storage (SQLite) | Replace dict with SQLite backend |
-| WebSocket support | Real-time event subscriptions |
-| eth_subscribe | New block/transaction subscriptions |
-| Debug/trace endpoints | For development |
+Required for operating a public network with standard wallet compatibility (MetaMask, etc.).
+
+| # | Feature | Current State | Required Work | LOC |
+|---|---------|---------------|---------------|-----|
+| 1 | EIP-1559 Base Fee | Fixed at 1 Gwei | Dynamic calculation per EIP-1559 formula | ~30 |
+| 2 | EIP-1559 Tx Type 0x02 | Not supported | `maxFeePerGas` / `maxPriorityFeePerGas` support | ~50 |
+| 3 | Real `estimateGas` | Hardcoded (21k/100k) | Transaction simulation with actual gas measurement | ~40 |
+| 4 | Transaction Pool (Mempool) | Simple list (FIFO) | Priority-based with nonce tracking | ~120 |
+| 5 | Periodic Block Production | Mine on every tx | Timer-based block building with batch collection | ~60 |
+
+**EIP-1559 Base Fee Formula:**
+```python
+def calc_base_fee(parent_gas_used, parent_gas_limit, parent_base_fee):
+    gas_target = parent_gas_limit // 2
+    if parent_gas_used == gas_target:
+        return parent_base_fee
+    elif parent_gas_used > gas_target:
+        gas_delta = parent_gas_used - gas_target
+        fee_delta = max(parent_base_fee * gas_delta // gas_target // 8, 1)
+        return parent_base_fee + fee_delta
+    else:
+        gas_delta = gas_target - parent_gas_used
+        fee_delta = parent_base_fee * gas_delta // gas_target // 8
+        return max(parent_base_fee - fee_delta, 1)
+```
+
+**Periodic Block Building Pattern:**
+```python
+import asyncio
+
+class Sequencer:
+    def __init__(self, block_time=2.0, max_txs=100):
+        self.tx_pool = asyncio.Queue()
+        self.block_time = block_time
+        self.max_txs = max_txs
+
+    async def run(self):
+        while True:
+            first_tx = await self.tx_pool.get()
+            batch = [first_tx]
+            start_time = time.monotonic()
+            
+            while len(batch) < self.max_txs:
+                remaining = self.block_time - (time.monotonic() - start_time)
+                if remaining <= 0:
+                    break
+                try:
+                    tx = await asyncio.wait_for(self.tx_pool.get(), timeout=remaining)
+                    batch.append(tx)
+                except asyncio.TimeoutError:
+                    break
+            
+            await self.produce_block(batch)
+```
+
+### Phase 2: Improved Compatibility (~150 LOC)
+
+| # | Feature | Description | LOC |
+|---|---------|-------------|-----|
+| 6 | `eth_call` full implementation | Execute call without state change | ~30 |
+| 7 | `eth_getTransactionByHash` | Query transaction by hash | ~20 |
+| 8 | `eth_getLogs` | Event log filtering with bloom filters | ~50 |
+| 9 | SQLite Persistence | Replace dict storage for data durability | ~100 |
+
+### Phase 3: Future Compatibility (Prague/Osaka)
+
+#### Transaction Types (EIP-2718)
+
+| Type | EIP | Name | Current Support | Required |
+|------|-----|------|-----------------|----------|
+| `0x00` | Legacy | Legacy Transaction | ✅ Yes | - |
+| `0x01` | EIP-2930 | Access List | ❌ No | Recommended |
+| `0x02` | EIP-1559 | Dynamic Fee | ❌ No | **Required** |
+| `0x04` | EIP-7702 | Set Code (Prague) | ❌ No | **Required** |
+
+> **Note**: Blob transactions (EIP-4844, Type `0x03`) are not required for single sequencer use cases.
+
+#### Prague EIPs (Pectra - May 2025)
+
+| EIP | Description | Impact |
+|-----|-------------|--------|
+| EIP-7702 | EOA Code Delegation (Tx Type 0x04) | Allow EOAs to temporarily act as smart contracts |
+| EIP-7623 | Increased Calldata Cost | Gas calculation update |
+| EIP-2537 | BLS12-381 Precompiles | Efficient SNARK verification |
+| EIP-2935 | Block Hash History | Store recent block hashes in state |
+
+#### Osaka EIPs (Fusaka - 2026)
+
+> **Note**: These must be implemented manually since `py-evm` is archived.
+
+| EIP | Description | Impact |
+|-----|-------------|--------|
+| EIP-7951 | secp256r1 Precompile | Hardware wallet/passkey support |
+| EIP-7939 | CLZ Opcode | Count Leading Zeros opcode |
+| EIP-7825 | Transaction Gas Limit Cap | Gas limit validation |
+| EIP-7883 | ModExp Gas Cost Increase | Precompile gas update |
+
+### Execution Timeline
+
+```
+Core Infrastructure
+├── [ ] EIP-1559 base fee calculation (chain.py)
+├── [ ] EIP-1559 tx type 0x02 support (methods.py, chain.py)
+├── [ ] Real estimateGas implementation (rpc/methods.py)
+└── [ ] Mempool class (new: sequencer/mempool.py)
+
+Block Production
+├── [ ] asyncio-based sequencer loop
+├── [ ] block_time CLI option
+├── [ ] Empty block vs tx-wait policy
+└── [ ] Extended unit tests
+
+RPC & Storage
+├── [ ] eth_call actual execution
+├── [ ] eth_getTransactionByHash
+├── [ ] eth_getLogs (logsBloom)
+└── [ ] SQLite store (optional)
+
+Prague Preparation
+├── [ ] EIP-7702 (Tx Type 0x04) support
+└── [ ] Upgrade to PragueVM in py-evm
+```
+
+### Projected LOC
+
+| Phase | Components | LOC |
+|-------|------------|-----|
+| Current | All | ~1,154 |
+| Phase 1 | Essential public network | +~200 |
+| Phase 2 | Improved compatibility | +~150 |
+| **Total** | | **~1,504** |
 
 ## Architecture
 

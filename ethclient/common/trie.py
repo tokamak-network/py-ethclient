@@ -180,6 +180,106 @@ class Trie:
         self._root = self._delete(self._root, path)
 
     # ---------------------------------------------------------------------------
+    # Merkle proofs (for snap sync range verification)
+    # ---------------------------------------------------------------------------
+
+    def prove(self, key: bytes) -> list[bytes]:
+        """Generate a Merkle proof for the given raw key.
+
+        Returns a list of RLP-encoded trie nodes on the path from root to
+        the leaf (or the point where the key would be). Nodes are collected
+        regardless of whether the key exists — the proof can prove absence too.
+        """
+        path = nibbles_from_bytes(key)
+        proof: list[bytes] = []
+        self._collect_proof(self._root, path, proof)
+        return proof
+
+    def _collect_proof(
+        self, node_ref: object, path: list[int], proof: list[bytes],
+    ) -> None:
+        """Walk from node_ref along path, appending RLP-encoded nodes to proof."""
+        if node_ref == EMPTY_NODE:
+            return
+
+        # Resolve to get the node; also record its RLP encoding
+        if isinstance(node_ref, TrieNode):
+            encoded = self._encode_node(node_ref)
+            node = node_ref
+        elif isinstance(node_ref, bytes) and len(node_ref) == 32:
+            encoded = self._db.get(node_ref)
+            if encoded is None:
+                return
+            node = self._decode_node(encoded)
+        elif isinstance(node_ref, bytes) and len(node_ref) > 0:
+            encoded = node_ref
+            node = self._decode_node(encoded)
+        else:
+            return
+
+        proof.append(encoded)
+
+        if isinstance(node, LeafNode):
+            return  # leaf is the end of the path
+        elif isinstance(node, ExtensionNode):
+            prefix_len = len(node.path)
+            if path[:prefix_len] == node.path:
+                self._collect_proof(node.child, path[prefix_len:], proof)
+        elif isinstance(node, BranchNode):
+            if len(path) > 0:
+                self._collect_proof(node.children[path[0]], path[1:], proof)
+
+    def iterate_raw(
+        self,
+        start: Optional[bytes] = None,
+        end: Optional[bytes] = None,
+    ) -> list[tuple[bytes, bytes]]:
+        """Iterate all key-value pairs with raw keys in sorted order.
+
+        Returns pairs where start <= key < end (lexicographic byte comparison).
+        Keys are the original raw bytes (before nibble conversion).
+        """
+        results: list[tuple[list[int], bytes]] = []
+        self._iterate_node(self._root, [], results)
+
+        # Convert nibble paths back to bytes and filter by range
+        kvs: list[tuple[bytes, bytes]] = []
+        for nibble_path, value in sorted(results, key=lambda x: x[0]):
+            if len(nibble_path) % 2 != 0:
+                continue
+            key = bytes_from_nibbles(nibble_path)
+            if start is not None and key < start:
+                continue
+            if end is not None and key >= end:
+                continue
+            kvs.append((key, value))
+
+        return kvs
+
+    def _iterate_node(
+        self,
+        node_ref: object,
+        prefix: list[int],
+        results: list[tuple[list[int], bytes]],
+    ) -> None:
+        """Recursively collect all (nibble_path, value) pairs."""
+        node = self._resolve(node_ref)
+        if node == EMPTY_NODE:
+            return
+
+        if isinstance(node, LeafNode):
+            full_path = prefix + node.path
+            results.append((full_path, node.value))
+        elif isinstance(node, ExtensionNode):
+            self._iterate_node(node.child, prefix + node.path, results)
+        elif isinstance(node, BranchNode):
+            if node.value:
+                results.append((prefix, node.value))
+            for i in range(16):
+                if node.children[i] != EMPTY_NODE:
+                    self._iterate_node(node.children[i], prefix + [i], results)
+
+    # ---------------------------------------------------------------------------
     # Internal: node resolution
     # ---------------------------------------------------------------------------
 
@@ -483,3 +583,209 @@ def ordered_trie_root(values: list[bytes]) -> bytes:
         key = rlp.encode(i)
         trie.put_raw(key, value)
     return trie.root_hash
+
+
+# ---------------------------------------------------------------------------
+# Standalone proof verification (used by snap sync)
+# ---------------------------------------------------------------------------
+
+def _build_proof_db(proof_nodes: list[bytes]) -> dict[bytes, bytes]:
+    """Build a hash->encoded lookup from a list of proof nodes."""
+    db: dict[bytes, bytes] = {}
+    for node_rlp in proof_nodes:
+        h = keccak256(node_rlp)
+        db[h] = node_rlp
+    return db
+
+
+def _resolve_from_db(
+    db: dict[bytes, bytes], node_ref: object,
+) -> object:
+    """Resolve a node reference using a proof db."""
+    if node_ref == EMPTY_NODE:
+        return EMPTY_NODE
+    if isinstance(node_ref, TrieNode):
+        return node_ref
+    if isinstance(node_ref, bytes) and len(node_ref) == 32:
+        encoded = db.get(node_ref)
+        if encoded is None:
+            return EMPTY_NODE
+        return _decode_rlp_node(encoded)
+    if isinstance(node_ref, bytes) and len(node_ref) > 0:
+        return _decode_rlp_node(node_ref)
+    return EMPTY_NODE
+
+
+def _decode_rlp_node(data: bytes) -> object:
+    """Decode RLP-encoded node data."""
+    items = rlp.decode(data)
+    if isinstance(items, bytes):
+        return EMPTY_NODE
+    if len(items) == 17:
+        branch = BranchNode()
+        for i in range(16):
+            branch.children[i] = items[i]
+        branch.value = items[16]
+        return branch
+    if len(items) == 2:
+        path_data = items[0]
+        nibbles, is_leaf = hex_prefix_decode(path_data)
+        if is_leaf:
+            return LeafNode(nibbles, items[1])
+        else:
+            return ExtensionNode(nibbles, items[1])
+    return EMPTY_NODE
+
+
+def verify_proof(
+    root_hash: bytes,
+    key: bytes,
+    proof_nodes: list[bytes],
+) -> Optional[bytes]:
+    """Verify a Merkle proof for a single key.
+
+    Returns the value if the proof is valid and the key exists, None otherwise.
+    The key is a raw key (not hashed).
+    """
+    if not proof_nodes:
+        if root_hash == EMPTY_ROOT:
+            return None
+        return None
+
+    db = _build_proof_db(proof_nodes)
+    path = nibbles_from_bytes(key)
+    return _get_from_proof(db, root_hash, path)
+
+
+def _get_from_proof(
+    db: dict[bytes, bytes], node_ref: object, path: list[int],
+) -> Optional[bytes]:
+    """Walk a proof db to find a value at the given nibble path."""
+    node = _resolve_from_db(db, node_ref)
+    if node == EMPTY_NODE:
+        return None
+
+    if isinstance(node, LeafNode):
+        if node.path == path:
+            return node.value
+        return None
+
+    if isinstance(node, ExtensionNode):
+        prefix_len = len(node.path)
+        if path[:prefix_len] != node.path:
+            return None
+        return _get_from_proof(db, node.child, path[prefix_len:])
+
+    if isinstance(node, BranchNode):
+        if len(path) == 0:
+            return node.value if node.value else None
+        return _get_from_proof(db, node.children[path[0]], path[1:])
+
+    return None
+
+
+def verify_range_proof(
+    root_hash: bytes,
+    first_key: bytes,
+    last_key: bytes,
+    keys: list[bytes],
+    values: list[bytes],
+    proof_nodes: list[bytes],
+) -> bool:
+    """Verify a range proof for snap sync.
+
+    Algorithm (following go-ethereum VerifyRangeProof):
+    1. If no keys/values and we have a proof, verify it proves absence for
+       the entire range (i.e., the trie has no keys in [first_key, last_key]).
+    2. If keys/values are present, rebuild a trie with the proof boundary
+       and all key-value pairs, then compare the resulting root.
+
+    All keys are raw (pre-hashed keccak256 account/slot hashes).
+
+    Returns True if the range proof is valid.
+    """
+    if len(keys) != len(values):
+        return False
+
+    # Empty range: if no proof, the trie must be empty
+    if not keys:
+        if not proof_nodes:
+            return root_hash == EMPTY_ROOT
+        # Proof of absence: first_key proves no keys exist in range
+        # We verify that the proof is well-formed for the boundary keys
+        return _verify_empty_range(root_hash, first_key, proof_nodes)
+
+    # Trivial case: no proof means all data is present (full trie)
+    if not proof_nodes:
+        trie = Trie()
+        for k, v in zip(keys, values):
+            trie.put_raw(k, v)
+        return trie.root_hash == root_hash
+
+    # Build a partial trie from proof nodes, insert all keys, verify root
+    return _verify_range_with_proof(
+        root_hash, first_key, last_key, keys, values, proof_nodes,
+    )
+
+
+def _verify_empty_range(
+    root_hash: bytes, key: bytes, proof_nodes: list[bytes],
+) -> bool:
+    """Verify that a proof shows no value exists for the given key."""
+    result = verify_proof(root_hash, key, proof_nodes)
+    return result is None
+
+
+def _verify_range_with_proof(
+    root_hash: bytes,
+    first_key: bytes,
+    last_key: bytes,
+    keys: list[bytes],
+    values: list[bytes],
+    proof_nodes: list[bytes],
+) -> bool:
+    """Verify range proof by rebuilding a trie from proof + data.
+
+    Strategy:
+    1. Build a trie from proof nodes (partial trie structure).
+    2. Remove all keys outside [first_key, last_key] from the partial trie.
+    3. Insert all provided key-value pairs.
+    4. Compare the resulting root with the expected root.
+
+    Simplified approach: since we're validating snap sync data from peers,
+    we build a fresh trie with all keys and verify the boundary proofs
+    independently, then check the root.
+    """
+    # Verify that the first and last key proofs are valid
+    db = _build_proof_db(proof_nodes)
+
+    # Check first key proof: the value at first_key should match values[0]
+    first_val = _get_from_proof(db, root_hash, nibbles_from_bytes(first_key))
+    if keys[0] == first_key and first_val is not None and first_val != values[0]:
+        return False
+
+    # Check last key proof: the value at last_key should match values[-1]
+    if len(keys) > 1:
+        last_val = _get_from_proof(db, root_hash, nibbles_from_bytes(last_key))
+        if keys[-1] == last_key and last_val is not None and last_val != values[-1]:
+            return False
+
+    # Rebuild the trie: start with proof nodes as the base, add all data
+    trie = Trie()
+    trie._db = dict(db)
+
+    # Set the root reference
+    trie._root = root_hash
+
+    # Delete all data outside the range by collecting existing keys
+    # and removing those outside [first_key, last_key]
+    existing = trie.iterate_raw()
+    for k, _v in existing:
+        if k < first_key or k > last_key:
+            trie.delete_raw(k)
+
+    # Insert all provided key-value pairs
+    for k, v in zip(keys, values):
+        trie.put_raw(k, v)
+
+    return trie.root_hash == root_hash

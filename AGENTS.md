@@ -8,7 +8,7 @@ Python Ethereum L1 execution client. Fully independent port referencing ethrex (
 # Install
 pip install -e ".[dev]"
 
-# Unit tests (337 tests, ~1s)
+# Unit tests (418 tests, ~1s)
 pytest
 
 # Test a specific module
@@ -19,7 +19,13 @@ pytest tests/test_evm.py -v
 python3 test_full_sync.py
 
 # Run the node
-python -m ethclient.main --network mainnet --port 30303
+ethclient --network mainnet --port 30303
+
+# Snap sync (default)
+ethclient --network sepolia
+
+# Full sync mode
+ethclient --network sepolia --sync-mode full
 
 # Docker
 docker compose up -d                        # Mainnet
@@ -31,13 +37,13 @@ docker compose down                         # Stop
 ## Project Structure
 
 ```
-py-ethclient/                    # ~13,400 LOC
+py-ethclient/                    # ~15,400 LOC (source + tests)
 ├── ethclient/
 │   ├── main.py                  # CLI entry point (argparse, asyncio event loop)
 │   ├── common/                  # Foundation modules (no internal dependencies)
 │   │   ├── rlp.py               # RLP encoding/decoding
 │   │   ├── types.py             # BlockHeader, Transaction, Receipt, Account, TxType
-│   │   ├── trie.py              # Merkle Patricia Trie (state root computation)
+│   │   ├── trie.py              # Merkle Patricia Trie (state root, proofs, range proofs)
 │   │   ├── crypto.py            # keccak256, secp256k1, ECDSA, address derivation
 │   │   └── config.py            # Chain config, hardfork params, ForkID, genesis
 │   ├── vm/                      # EVM implementation
@@ -49,37 +55,46 @@ py-ethclient/                    # ~13,400 LOC
 │   │   ├── call_frame.py        # 256-bit stack + call frames
 │   │   └── hooks.py             # Execution hook interface (L2 extensibility)
 │   ├── storage/                 # State storage
-│   │   ├── store.py             # Store interface (account/code/storage CRUD)
+│   │   ├── store.py             # Store interface (account/code/storage CRUD + snap sync)
 │   │   └── memory_backend.py    # Dict-based in-memory backend
 │   ├── blockchain/              # Blockchain engine
 │   │   ├── chain.py             # Block validation/execution, PoW rewards, base fee
 │   │   ├── mempool.py           # Transaction pool (nonce ordering, replacement)
 │   │   └── fork_choice.py       # Canonical chain, reorg handling
 │   ├── networking/              # P2P networking
+│   │   ├── server.py            # P2P server — multi-protocol dispatch
+│   │   ├── protocol_registry.py # Dynamic capability negotiation & offset calculation
 │   │   ├── rlpx/                # RLPx encrypted transport layer
 │   │   │   ├── handshake.py     # ECIES handshake (EIP-8 support)
 │   │   │   ├── framing.py       # Message framing + Snappy compression
 │   │   │   └── connection.py    # TCP connection management
-│   │   ├── discv4/              # Discovery v4 (UDP peer discovery)
-│   │   │   ├── discovery.py     # Ping/Pong/FindNeighbours/Neighbours
-│   │   │   └── routing.py       # k-bucket routing table
 │   │   ├── eth/                 # eth/68 sub-protocol
 │   │   │   ├── protocol.py      # Message codes, constants
 │   │   │   └── messages.py      # Status, GetBlockHeaders, BlockBodies, etc.
-│   │   ├── sync/
-│   │   │   └── full_sync.py     # Full sync pipeline
-│   │   └── server.py            # P2P server main loop
+│   │   ├── snap/                # snap/1 sub-protocol
+│   │   │   ├── protocol.py      # SnapMsg enum (relative codes 0-7)
+│   │   │   └── messages.py      # 8 message types (encode/decode)
+│   │   ├── discv4/              # Discovery v4 (UDP peer discovery)
+│   │   │   ├── discovery.py     # Ping/Pong/FindNeighbours/Neighbours
+│   │   │   └── routing.py       # k-bucket routing table
+│   │   └── sync/                # Sync engines
+│   │       ├── full_sync.py     # Full sync pipeline
+│   │       └── snap_sync.py     # Snap sync 4-phase state machine
 │   └── rpc/                     # JSON-RPC server
 │       ├── server.py            # FastAPI-based dispatcher
 │       └── eth_api.py           # eth_ namespace handlers
-├── tests/                       # pytest unit tests (337 tests)
+├── tests/                       # pytest unit tests (418 tests)
 │   ├── test_rlp.py              # RLP encoding/decoding
 │   ├── test_trie.py             # MPT + Ethereum official test vectors
+│   ├── test_trie_proofs.py      # Trie Merkle proofs & range verification
 │   ├── test_crypto.py           # Cryptography, ECDSA, address derivation
 │   ├── test_evm.py              # Stack, memory, gas, opcodes, precompiles
 │   ├── test_storage.py          # Store CRUD, state root
 │   ├── test_blockchain.py       # Block validation/execution, mempool, fork choice
 │   ├── test_p2p.py              # RLPx, handshake, eth messages
+│   ├── test_protocol_registry.py # Multi-protocol capability negotiation
+│   ├── test_snap_messages.py    # snap/1 message encode/decode roundtrip
+│   ├── test_snap_sync.py        # Snap sync state machine, response handlers
 │   ├── test_rpc.py              # JSON-RPC endpoints
 │   └── test_integration.py      # Cross-module integration tests
 ├── test_full_sync.py            # Live mainnet verification test (standalone)
@@ -100,7 +115,7 @@ storage (store, memory_backend)
   ↓
 blockchain (chain, mempool, fork_choice)
   ↓
-networking (rlpx, discv4, eth, sync, server)  +  rpc (server, eth_api)
+networking (rlpx, discv4, eth, snap, sync, server)  +  rpc (server, eth_api)
   ↓
 main.py (unified entry point)
 ```
@@ -112,7 +127,7 @@ Lower modules never depend on higher modules. `common` can be safely imported fr
 ### Unit Tests (offline)
 
 ```bash
-pytest                           # All tests (337, ~1s)
+pytest                           # All tests (418, ~1s)
 pytest tests/test_rlp.py         # RLP only
 pytest tests/test_evm.py -k "test_add"  # Specific test
 pytest -v                        # Verbose output
@@ -123,15 +138,19 @@ Test coverage by file:
 
 | File | Tests | Covers |
 |------|------:|--------|
-| test_rlp.py | ~50 | RLP encoding/decoding, round-trip |
-| test_trie.py | ~30 | MPT, Ethereum official vectors |
-| test_crypto.py | ~15 | keccak256, ECDSA, addresses |
-| test_evm.py | ~150 | Stack, memory, all opcodes, precompiles |
-| test_storage.py | ~20 | Store CRUD, state root |
-| test_blockchain.py | ~30 | Header validation, base fee, block execution, mempool |
-| test_p2p.py | ~25 | RLPx, handshake, eth messages |
-| test_rpc.py | ~10 | JSON-RPC |
-| test_integration.py | ~10 | Cross-module integration |
+| test_rlp.py | 56 | RLP encoding/decoding, round-trip |
+| test_trie.py | 26 | MPT, Ethereum official vectors |
+| test_trie_proofs.py | 23 | Proof generation/verification, range proofs, iterate |
+| test_crypto.py | 14 | keccak256, ECDSA, addresses |
+| test_evm.py | 73 | Stack, memory, all opcodes, precompiles |
+| test_storage.py | 33 | Store CRUD, state root, snap storage |
+| test_blockchain.py | 31 | Header validation, base fee, block execution, mempool |
+| test_p2p.py | 51 | RLPx, handshake, eth messages |
+| test_protocol_registry.py | 16 | Capability negotiation, offset calculation |
+| test_snap_messages.py | 21 | snap/1 message encode/decode roundtrip |
+| test_snap_sync.py | 21 | Snap sync state machine, response handlers |
+| test_rpc.py | 41 | JSON-RPC |
+| test_integration.py | 12 | Cross-module integration |
 
 ### Live Network Test
 
@@ -164,7 +183,7 @@ Each type has a different set of fields for `signing_hash()`. Use `recover_sende
 
 ## Gotchas and Important Patterns
 
-### EthMsg Offset
+### EthMsg vs SnapMsg Offset
 
 `EthMsg` enum values already include the `0x10` offset:
 ```python
@@ -175,6 +194,24 @@ class EthMsg(IntEnum):
     # ...
 ```
 Never use `0x10 + EthMsg.XXX` — this causes a double-offset bug.
+
+`SnapMsg` enum uses **relative codes** (0-7). Absolute wire codes are computed at runtime by `NegotiatedCapabilities`:
+```python
+class SnapMsg(IntEnum):
+    GET_ACCOUNT_RANGE = 0
+    ACCOUNT_RANGE = 1
+    # ... (0-7)
+```
+The protocol registry assigns snap/1 offsets dynamically (typically 0x21-0x28 after eth/68's 0x10-0x20).
+
+### Protocol Registry
+
+Multi-protocol capability negotiation follows the RLPx spec:
+1. Sort capabilities alphabetically by name
+2. Assign contiguous message ID ranges starting from 0x10
+3. `negotiate_capabilities(local, remote)` → `NegotiatedCapabilities`
+4. `resolve_msg_code(abs_code)` → `(protocol_name, relative_code)`
+5. `absolute_code(protocol_name, relative_code)` → absolute wire code
 
 ### Post-Prague Headers
 
@@ -190,16 +227,41 @@ Post-Shanghai block bodies are 3-element tuples: `[txs, ommers, withdrawals]`. P
 
 ### Snappy Compression
 
-In RLPx, only eth protocol messages (`msg_code >= 0x10`) use Snappy compression/decompression. p2p messages (Hello=0x00, Disconnect=0x01, etc.) are not compressed.
+In RLPx, all sub-protocol messages (`msg_code >= 0x10`) use Snappy compression/decompression. This covers both eth (0x10+) and snap (0x21+) messages. p2p messages (Hello=0x00, Disconnect=0x01, etc.) are not compressed.
+
+## Snap Sync Architecture
+
+### 4-Phase State Machine
+
+```
+IDLE → ACCOUNT_DOWNLOAD → STORAGE_DOWNLOAD → BYTECODE_DOWNLOAD → TRIE_HEALING → COMPLETE
+```
+
+1. **Account Download** — GetAccountRange/AccountRange: iterate entire account trie by range, verify Merkle proofs
+2. **Storage Download** — GetStorageRanges/StorageRanges: download slots for accounts with non-empty storage
+3. **Bytecode Download** — GetByteCodes/ByteCodes: batch-request contract bytecodes by unique code hash
+4. **Trie Healing** — GetTrieNodes/TrieNodes: fill in missing trie nodes caused by chain progression
+
+### Key Classes
+
+- `SnapSyncState` — Progress state (cursors, queues, counters)
+- `SnapSync` — Sync engine with `start(peers, target_root, target_block)`
+- Response handlers: `handle_account_range`, `handle_storage_ranges`, `handle_byte_codes`, `handle_trie_nodes`
+
+### Peer Selection
+
+```python
+snap_peers = [p for p in peers if p.snap_supported]
+# Falls back to full sync if no snap-capable peers
+```
 
 ## Areas for Improvement
 
-1. **Genesis state initialization** — Parse go-ethereum's genesis alloc data to build initial state (not yet implemented)
-2. **Snap Sync** — Snap protocol for fast state synchronization instead of full sync
-3. **Disk backend** — Replace `memory_backend.py` with LevelDB/RocksDB-based storage
-4. **Engine API** — `engine_` namespace for Beacon Chain integration
-5. **EVM test suite** — Expand EVM correctness verification with ethereum/tests official vectors
-6. **Performance** — Trie caching, parallel transaction verification, asyncio optimization
+1. **Genesis state initialization** — Parse go-ethereum's genesis alloc data to build initial state
+2. **Disk backend** — Replace `memory_backend.py` with LevelDB/RocksDB-based storage
+3. **Engine API** — `engine_` namespace for Beacon Chain integration
+4. **EVM test suite** — Expand EVM correctness verification with ethereum/tests official vectors
+5. **Performance** — Trie caching, parallel transaction verification, asyncio optimization
 
 ## Dependencies
 
@@ -229,13 +291,15 @@ SEPOLIA_BOOTNODES = [
 ]
 ```
 
-CLI: `python -m ethclient.main --network sepolia --bootnodes enode://...`
+CLI: `ethclient --network sepolia --bootnodes enode://...`
 
 ## Post-Change Checklist
 
 1. `common/types.py` changed → run `test_rlp.py`, `test_blockchain.py`
-2. `vm/` changed → run `test_evm.py`
-3. `networking/` changed → run `test_p2p.py` + `test_full_sync.py`
-4. `blockchain/` changed → run `test_blockchain.py` + `test_integration.py`
-5. New hardfork support → add fork block/timestamp to `config.py`, add new fields to `types.py`
-6. Full regression: `pytest && python3 test_full_sync.py`
+2. `common/trie.py` changed → run `test_trie.py`, `test_trie_proofs.py`
+3. `vm/` changed → run `test_evm.py`
+4. `networking/` changed → run `test_p2p.py`, `test_protocol_registry.py`, `test_snap_messages.py`
+5. `networking/sync/` changed → run `test_snap_sync.py` + `test_full_sync.py`
+6. `blockchain/` changed → run `test_blockchain.py` + `test_integration.py`
+7. New hardfork support → add fork block/timestamp to `config.py`, add new fields to `types.py`
+8. Full regression: `pytest && python3 test_full_sync.py`

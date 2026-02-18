@@ -8,7 +8,7 @@ Python으로 구현한 이더리움 L1 실행 클라이언트. ethrex (Rust)를 
 # 설치
 pip install -e ".[dev]"
 
-# 단위 테스트 (337개, ~1초)
+# 단위 테스트 (418개, ~1초)
 pytest
 
 # 특정 모듈 테스트
@@ -19,7 +19,13 @@ pytest tests/test_evm.py -v
 python3 test_full_sync.py
 
 # 노드 실행
-python -m ethclient.main --network mainnet --port 30303
+ethclient --network mainnet --port 30303
+
+# Snap sync (기본값)
+ethclient --network sepolia
+
+# Full sync 모드
+ethclient --network sepolia --sync-mode full
 
 # Docker
 docker compose up -d                        # 메인넷
@@ -31,13 +37,13 @@ docker compose down                         # 종료
 ## 프로젝트 구조
 
 ```
-py-ethclient/                    # ~13,400 LOC
+py-ethclient/                    # ~15,400 LOC (소스 + 테스트)
 ├── ethclient/
 │   ├── main.py                  # CLI 진입점 (argparse, asyncio 이벤트 루프)
 │   ├── common/                  # 기초 모듈 (의존성 없음)
 │   │   ├── rlp.py               # RLP 인코딩/디코딩
 │   │   ├── types.py             # BlockHeader, Transaction, Receipt, Account, TxType
-│   │   ├── trie.py              # 머클 패트리시아 트라이 (상태 루트 계산)
+│   │   ├── trie.py              # 머클 패트리시아 트라이 (상태 루트, 증명, 범위 증명)
 │   │   ├── crypto.py            # keccak256, secp256k1, ECDSA, 주소 도출
 │   │   └── config.py            # 체인 설정, 하드포크, ForkID, genesis
 │   ├── vm/                      # EVM 구현
@@ -49,37 +55,46 @@ py-ethclient/                    # ~13,400 LOC
 │   │   ├── call_frame.py        # 256비트 스택 + 콜 프레임
 │   │   └── hooks.py             # 실행 훅 인터페이스 (L2 확장 대비)
 │   ├── storage/                 # 상태 저장소
-│   │   ├── store.py             # Store 인터페이스 (계정/코드/스토리지 CRUD)
+│   │   ├── store.py             # Store 인터페이스 (계정/코드/스토리지 CRUD + snap sync)
 │   │   └── memory_backend.py    # dict 기반 인메모리 백엔드
 │   ├── blockchain/              # 블록체인 엔진
 │   │   ├── chain.py             # 블록 검증/실행, PoW 보상, base fee 계산
 │   │   ├── mempool.py           # 트랜잭션 풀 (논스 정렬, replacement)
 │   │   └── fork_choice.py       # Canonical chain, 리오그 처리
 │   ├── networking/              # P2P 네트워킹
+│   │   ├── server.py            # P2P 서버 — 멀티 프로토콜 디스패치
+│   │   ├── protocol_registry.py # 동적 capability 협상 & 오프셋 계산
 │   │   ├── rlpx/                # RLPx 암호화 전송 계층
 │   │   │   ├── handshake.py     # ECIES 핸드셰이크 (EIP-8 지원)
 │   │   │   ├── framing.py       # 메시지 프레이밍 + Snappy 압축
 │   │   │   └── connection.py    # TCP 연결 관리
-│   │   ├── discv4/              # Discovery v4 (UDP 피어 탐색)
-│   │   │   ├── discovery.py     # Ping/Pong/FindNeighbours/Neighbours
-│   │   │   └── routing.py       # k-bucket 라우팅 테이블
 │   │   ├── eth/                 # eth/68 서브프로토콜
 │   │   │   ├── protocol.py      # 메시지 코드, 상수
 │   │   │   └── messages.py      # Status, GetBlockHeaders, BlockBodies 등
-│   │   ├── sync/
-│   │   │   └── full_sync.py     # Full sync 파이프라인
-│   │   └── server.py            # P2P 서버 메인 루프
+│   │   ├── snap/                # snap/1 서브프로토콜
+│   │   │   ├── protocol.py      # SnapMsg enum (상대 코드 0-7)
+│   │   │   └── messages.py      # 8종 메시지 타입 (encode/decode)
+│   │   ├── discv4/              # Discovery v4 (UDP 피어 탐색)
+│   │   │   ├── discovery.py     # Ping/Pong/FindNeighbours/Neighbours
+│   │   │   └── routing.py       # k-bucket 라우팅 테이블
+│   │   └── sync/                # 동기화 엔진
+│   │       ├── full_sync.py     # Full sync 파이프라인
+│   │       └── snap_sync.py     # Snap sync 4단계 상태 머신
 │   └── rpc/                     # JSON-RPC 서버
 │       ├── server.py            # FastAPI 기반 디스패처
 │       └── eth_api.py           # eth_ 네임스페이스 핸들러
-├── tests/                       # pytest 단위 테스트 (337개)
+├── tests/                       # pytest 단위 테스트 (418개)
 │   ├── test_rlp.py              # RLP 인코딩/디코딩
 │   ├── test_trie.py             # MPT + 이더리움 공식 테스트 벡터
+│   ├── test_trie_proofs.py      # 트라이 머클 증명 & 범위 검증
 │   ├── test_crypto.py           # 암호화, ECDSA, 주소 도출
 │   ├── test_evm.py              # 스택, 메모리, 가스, 옵코드, 프리컴파일
 │   ├── test_storage.py          # Store CRUD, 상태 루트
 │   ├── test_blockchain.py       # 블록 검증/실행, mempool, fork choice
 │   ├── test_p2p.py              # RLPx, 핸드셰이크, eth 메시지
+│   ├── test_protocol_registry.py # 멀티 프로토콜 capability 협상
+│   ├── test_snap_messages.py    # snap/1 메시지 encode/decode 라운드트립
+│   ├── test_snap_sync.py        # Snap sync 상태 머신, 응답 핸들러
 │   ├── test_rpc.py              # JSON-RPC 엔드포인트
 │   └── test_integration.py      # 모듈 간 통합 테스트
 ├── test_full_sync.py            # 라이브 메인넷 검증 테스트 (별도 실행)
@@ -100,7 +115,7 @@ storage (store, memory_backend)
   ↓
 blockchain (chain, mempool, fork_choice)
   ↓
-networking (rlpx, discv4, eth, sync, server)  +  rpc (server, eth_api)
+networking (rlpx, discv4, eth, snap, sync, server)  +  rpc (server, eth_api)
   ↓
 main.py (통합 진입점)
 ```
@@ -112,7 +127,7 @@ main.py (통합 진입점)
 ### 단위 테스트 (오프라인)
 
 ```bash
-pytest                           # 전체 (337개, ~1초)
+pytest                           # 전체 (418개, ~1초)
 pytest tests/test_rlp.py         # RLP만
 pytest tests/test_evm.py -k "test_add"  # 특정 테스트
 pytest -v                        # 상세 출력
@@ -123,15 +138,19 @@ pytest --tb=short                # 짧은 트레이스백
 
 | 파일 | 테스트 수 | 커버하는 모듈 |
 |------|--------:|-------------|
-| test_rlp.py | ~50 | RLP 인코딩/디코딩, 라운드트립 |
-| test_trie.py | ~30 | MPT, 이더리움 공식 벡터 |
-| test_crypto.py | ~15 | keccak256, ECDSA, 주소 |
-| test_evm.py | ~150 | 스택, 메모리, 모든 옵코드, 프리컴파일 |
-| test_storage.py | ~20 | Store CRUD, 상태 루트 |
-| test_blockchain.py | ~30 | 헤더 검증, base fee, 블록 실행, mempool |
-| test_p2p.py | ~25 | RLPx, 핸드셰이크, eth 메시지 |
-| test_rpc.py | ~10 | JSON-RPC |
-| test_integration.py | ~10 | 모듈 간 통합 |
+| test_rlp.py | 56 | RLP 인코딩/디코딩, 라운드트립 |
+| test_trie.py | 26 | MPT, 이더리움 공식 벡터 |
+| test_trie_proofs.py | 23 | 증명 생성/검증, 범위 증명, 순회 |
+| test_crypto.py | 14 | keccak256, ECDSA, 주소 |
+| test_evm.py | 73 | 스택, 메모리, 모든 옵코드, 프리컴파일 |
+| test_storage.py | 33 | Store CRUD, 상태 루트, snap 저장소 |
+| test_blockchain.py | 31 | 헤더 검증, base fee, 블록 실행, mempool |
+| test_p2p.py | 51 | RLPx, 핸드셰이크, eth 메시지 |
+| test_protocol_registry.py | 16 | Capability 협상, 오프셋 계산 |
+| test_snap_messages.py | 21 | snap/1 메시지 encode/decode 라운드트립 |
+| test_snap_sync.py | 21 | Snap sync 상태 머신, 응답 핸들러 |
+| test_rpc.py | 41 | JSON-RPC |
+| test_integration.py | 12 | 모듈 간 통합 |
 
 ### 라이브 네트워크 테스트
 
@@ -164,7 +183,7 @@ python3 test_full_sync.py        # 메인넷 피어 연결 + 블록 검증
 
 ## 주요 패턴 및 주의사항
 
-### EthMsg 오프셋
+### EthMsg vs SnapMsg 오프셋
 
 `EthMsg` enum 값에 이미 `0x10` 오프셋이 포함되어 있음:
 ```python
@@ -175,6 +194,24 @@ class EthMsg(IntEnum):
     # ...
 ```
 절대 `0x10 + EthMsg.XXX` 하지 말 것. 이중 오프셋 버그 발생.
+
+`SnapMsg` enum은 **상대 코드** (0-7) 사용. 절대 와이어 코드는 `NegotiatedCapabilities`가 런타임에 계산:
+```python
+class SnapMsg(IntEnum):
+    GET_ACCOUNT_RANGE = 0
+    ACCOUNT_RANGE = 1
+    # ... (0-7)
+```
+프로토콜 레지스트리가 snap/1 오프셋을 동적으로 할당 (일반적으로 eth/68의 0x10-0x20 다음인 0x21-0x28).
+
+### 프로토콜 레지스트리
+
+멀티 프로토콜 capability 협상은 RLPx 명세를 따름:
+1. Capability를 이름 알파벳순으로 정렬
+2. 0x10부터 연속 메시지 ID 범위 할당
+3. `negotiate_capabilities(local, remote)` → `NegotiatedCapabilities`
+4. `resolve_msg_code(abs_code)` → `(protocol_name, relative_code)`
+5. `absolute_code(protocol_name, relative_code)` → 절대 와이어 코드
 
 ### Post-Prague 헤더
 
@@ -191,16 +228,41 @@ Post-Shanghai 블록 바디는 `[txs, ommers, withdrawals]` 3원소 튜플. Shan
 
 ### Snappy 압축
 
-RLPx에서 `msg_code >= 0x10`인 eth 프로토콜 메시지만 Snappy 압축/해제. p2p 메시지(Hello=0x00, Disconnect=0x01 등)는 압축하지 않음.
+RLPx에서 `msg_code >= 0x10`인 모든 서브프로토콜 메시지는 Snappy 압축/해제 적용. eth (0x10+)와 snap (0x21+) 모두 해당. p2p 메시지(Hello=0x00, Disconnect=0x01 등)는 압축하지 않음.
+
+## Snap Sync 아키텍처
+
+### 4단계 상태 머신
+
+```
+IDLE → ACCOUNT_DOWNLOAD → STORAGE_DOWNLOAD → BYTECODE_DOWNLOAD → TRIE_HEALING → COMPLETE
+```
+
+1. **계정 다운로드** — GetAccountRange/AccountRange: 전체 계정 trie를 범위 단위로 순회, 머클 증명 검증
+2. **스토리지 다운로드** — GetStorageRanges/StorageRanges: 비어있지 않은 스토리지를 가진 계정의 슬롯 다운로드
+3. **바이트코드 다운로드** — GetByteCodes/ByteCodes: 유니크 코드 해시로 컨트랙트 바이트코드 일괄 요청
+4. **트라이 힐링** — GetTrieNodes/TrieNodes: 체인 진행으로 인한 누락 트라이 노드 보완
+
+### 핵심 클래스
+
+- `SnapSyncState` — 진행 상태 (커서, 큐, 카운터)
+- `SnapSync` — 동기화 엔진, `start(peers, target_root, target_block)`
+- 응답 핸들러: `handle_account_range`, `handle_storage_ranges`, `handle_byte_codes`, `handle_trie_nodes`
+
+### 피어 선택
+
+```python
+snap_peers = [p for p in peers if p.snap_supported]
+# snap 미지원 피어만 있으면 full sync 폴백
+```
 
 ## 개선 가능 영역
 
-1. **Genesis 상태 초기화** — go-ethereum의 genesis alloc 데이터를 파싱하여 초기 상태 구축 (현재 미구현)
-2. **Snap Sync** — full sync 대신 snap protocol로 빠른 상태 동기화
-3. **디스크 백엔드** — `memory_backend.py`를 LevelDB/RocksDB 기반으로 교체
-4. **Engine API** — Beacon Chain 연동을 위한 `engine_` 네임스페이스
-5. **EVM 테스트 스위트** — ethereum/tests 공식 벡터로 EVM 정합성 검증 확대
-6. **성능 최적화** — 트라이 캐싱, 병렬 트랜잭션 검증, asyncio 최적화
+1. **Genesis 상태 초기화** — go-ethereum의 genesis alloc 데이터를 파싱하여 초기 상태 구축
+2. **디스크 백엔드** — `memory_backend.py`를 LevelDB/RocksDB 기반으로 교체
+3. **Engine API** — Beacon Chain 연동을 위한 `engine_` 네임스페이스
+4. **EVM 테스트 스위트** — ethereum/tests 공식 벡터로 EVM 정합성 검증 확대
+5. **성능 최적화** — 트라이 캐싱, 병렬 트랜잭션 검증, asyncio 최적화
 
 ## 의존성
 
@@ -230,13 +292,15 @@ SEPOLIA_BOOTNODES = [
 ]
 ```
 
-CLI: `python -m ethclient.main --network sepolia --bootnodes enode://...`
+CLI: `ethclient --network sepolia --bootnodes enode://...`
 
 ## 코드 수정 시 체크리스트
 
 1. `common/types.py` 수정 시 → `test_rlp.py`, `test_blockchain.py` 실행
-2. `vm/` 수정 시 → `test_evm.py` 실행
-3. `networking/` 수정 시 → `test_p2p.py` + `test_full_sync.py` 실행
-4. `blockchain/` 수정 시 → `test_blockchain.py` + `test_integration.py` 실행
-5. 새 하드포크 지원 시 → `config.py`에 포크 블록/타임스탬프 추가, `types.py`에 새 필드 추가
-6. 전체 회귀 테스트: `pytest && python3 test_full_sync.py`
+2. `common/trie.py` 수정 시 → `test_trie.py`, `test_trie_proofs.py` 실행
+3. `vm/` 수정 시 → `test_evm.py` 실행
+4. `networking/` 수정 시 → `test_p2p.py`, `test_protocol_registry.py`, `test_snap_messages.py` 실행
+5. `networking/sync/` 수정 시 → `test_snap_sync.py` + `test_full_sync.py` 실행
+6. `blockchain/` 수정 시 → `test_blockchain.py` + `test_integration.py` 실행
+7. 새 하드포크 지원 시 → `config.py`에 포크 블록/타임스탬프 추가, `types.py`에 새 필드 추가
+8. 전체 회귀 테스트: `pytest && python3 test_full_sync.py`

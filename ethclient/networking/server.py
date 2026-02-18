@@ -1,7 +1,8 @@
 """
 P2P server — manages peer connections, message routing, and the main event loop.
 
-Coordinates RLPx connections, eth sub-protocol, discovery, and sync.
+Coordinates RLPx connections, eth sub-protocol, snap sub-protocol, discovery,
+and sync.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from coincurve import PrivateKey
@@ -35,6 +36,12 @@ from ethclient.networking.eth.messages import (
     encode_ping,
     encode_pong,
 )
+from ethclient.networking.snap.protocol import SnapMsg, SNAP_VERSION
+from ethclient.networking.protocol_registry import (
+    Capability,
+    NegotiatedCapabilities,
+    negotiate_capabilities,
+)
 from ethclient.networking.discv4.routing import Node
 from ethclient.networking.discv4.discovery import DiscoveryProtocol, start_discovery
 from ethclient.networking.sync.full_sync import FullSync
@@ -50,6 +57,14 @@ MAX_PEERS = 25
 PING_INTERVAL = 15.0   # seconds between pings
 DIAL_INTERVAL = 10.0   # seconds between dial attempts
 CLEANUP_INTERVAL = 30.0
+
+
+# ---------------------------------------------------------------------------
+# Local capabilities
+# ---------------------------------------------------------------------------
+
+LOCAL_CAPS_ETH_ONLY = [Capability("eth", ETH_VERSION)]
+LOCAL_CAPS_WITH_SNAP = [Capability("eth", ETH_VERSION), Capability("snap", SNAP_VERSION)]
 
 
 # ---------------------------------------------------------------------------
@@ -70,12 +85,21 @@ class PeerConnection:
     connected: bool = False
     last_ping: float = 0.0
     last_pong: float = 0.0
+    snap_supported: bool = False
+    capabilities: Optional[NegotiatedCapabilities] = field(default=None, repr=False)
 
     async def send_p2p_message(self, msg_code: int, payload: bytes) -> None:
         await self.conn.send_message(msg_code, payload)
 
     async def send_eth_message(self, msg_code: int, payload: bytes) -> None:
         await self.conn.send_message(msg_code, payload)
+
+    async def send_snap_message(self, relative_code: int, payload: bytes) -> None:
+        """Send a snap sub-protocol message using the negotiated offset."""
+        if self.capabilities is None or not self.capabilities.supports("snap"):
+            raise RuntimeError("Peer does not support snap protocol")
+        abs_code = self.capabilities.absolute_code("snap", relative_code)
+        await self.conn.send_message(abs_code, payload)
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +120,7 @@ class P2PServer:
         fork_id: tuple[bytes, int] = (b"\x00" * 4, 0),
         store=None,
         chain=None,
+        enable_snap: bool = True,
     ) -> None:
         self.private_key = private_key
         self.listen_port = listen_port
@@ -106,6 +131,7 @@ class P2PServer:
         self.fork_id = fork_id
         self.store = store
         self.chain = chain
+        self.enable_snap = enable_snap
 
         pk = PrivateKey(private_key)
         self.public_key = pk.public_key.format(compressed=False)[1:]  # 64 bytes
@@ -118,10 +144,14 @@ class P2PServer:
 
         self.peers: dict[bytes, PeerConnection] = {}  # pubkey -> PeerConnection
         self.syncer = FullSync(store=store, chain=chain)
+        self.snap_syncer = None  # set externally when snap sync is active
         self._discovery: Optional[DiscoveryProtocol] = None
         self._discovery_transport: Optional[asyncio.DatagramTransport] = None
         self._tcp_server: Optional[asyncio.Server] = None
         self._running = False
+
+        # Local capabilities for Hello message
+        self._local_caps = LOCAL_CAPS_WITH_SNAP if enable_snap else LOCAL_CAPS_ETH_ONLY
 
     # ------------------------------------------------------------------
     # Server lifecycle
@@ -162,7 +192,7 @@ class P2PServer:
         if self._discovery:
             asyncio.create_task(self._discovery.bootstrap())
 
-        logger.info("P2P server started")
+        logger.info("P2P server started (snap=%s)", self.enable_snap)
 
     async def stop(self) -> None:
         """Gracefully stop the server."""
@@ -209,7 +239,7 @@ class P2PServer:
 
         self.peers[peer.remote_id] = peer
         peer.connected = True
-        logger.info("Incoming peer connected: %s", peer.remote_client)
+        logger.info("Incoming peer connected: %s (snap=%s)", peer.remote_client, peer.snap_supported)
 
         await self._handle_peer(peer)
 
@@ -249,17 +279,23 @@ class P2PServer:
 
         self.peers[peer.remote_id] = peer
         peer.connected = True
-        logger.info("Peer connected: %s (%s:%d)", peer.remote_client, node.ip, node.tcp_port)
+        logger.info("Peer connected: %s (%s:%d, snap=%s)",
+                     peer.remote_client, node.ip, node.tcp_port, peer.snap_supported)
 
         asyncio.create_task(self._handle_peer(peer))
         return peer
 
     async def _do_protocol_handshake(self, peer: PeerConnection) -> bool:
         """Exchange Hello and Status messages."""
-        # Send Hello
-        hello = HelloMessage(node_id=self.public_key, listen_port=self.listen_port)
+        # Send Hello with our capabilities
+        hello_caps = [(c.name, c.version) for c in self._local_caps]
+        hello = HelloMessage(
+            node_id=self.public_key,
+            listen_port=self.listen_port,
+            capabilities=hello_caps,
+        )
         await peer.send_p2p_message(P2PMsg.HELLO, hello.encode())
-        logger.debug("Sent Hello message")
+        logger.debug("Sent Hello message with caps=%s", hello_caps)
 
         # Receive Hello
         result = await peer.conn.recv_message(timeout=15.0)
@@ -284,15 +320,25 @@ class P2PServer:
         logger.info("Remote Hello: %s, caps=%s", remote_hello.client_id,
                      remote_hello.capabilities)
 
+        # Negotiate capabilities
+        remote_caps = [Capability(name, ver) for name, ver in remote_hello.capabilities]
+        negotiated = negotiate_capabilities(self._local_caps, remote_caps)
+        peer.capabilities = negotiated
+
         # Check eth capability
-        eth_caps = [(cap, ver) for cap, ver in remote_hello.capabilities if cap == "eth"]
-        has_eth = any(ver >= 67 for _, ver in eth_caps)
-        if not has_eth:
-            logger.info("Peer lacks eth/67+, disconnecting")
+        if not negotiated.supports("eth"):
+            logger.info("Peer lacks eth protocol, disconnecting")
             await self._disconnect_peer(peer, DisconnectReason.INCOMPATIBLE_VERSION)
             return False
 
-        peer.eth_version = max(ver for _, ver in eth_caps)
+        # Find eth version from negotiated caps
+        eth_cap = next((c for c in negotiated.caps if c.name == "eth"), None)
+        peer.eth_version = eth_cap.version if eth_cap else 0
+
+        # Check snap support
+        peer.snap_supported = negotiated.supports("snap")
+        if peer.snap_supported:
+            logger.info("Peer supports snap/1")
 
         # Send Status (wrapped in try/except to catch connection failures)
         try:
@@ -403,18 +449,42 @@ class P2PServer:
         # p2p base messages
         if msg_code == P2PMsg.PING:
             await peer.send_p2p_message(P2PMsg.PONG, encode_pong())
-        elif msg_code == P2PMsg.PONG:
+            return
+        if msg_code == P2PMsg.PONG:
             peer.last_pong = time.time()
-        elif msg_code == P2PMsg.DISCONNECT:
+            return
+        if msg_code == P2PMsg.DISCONNECT:
             try:
                 disc = DisconnectMessage.decode(payload)
                 logger.info("Peer disconnecting: reason=%s", disc.reason.name)
             except Exception:
                 pass
             peer.connected = False
+            return
 
-        # eth messages
-        elif msg_code == EthMsg.BLOCK_HEADERS:
+        # Use protocol registry to resolve sub-protocol messages
+        if peer.capabilities:
+            try:
+                protocol, relative_code = peer.capabilities.resolve_msg_code(msg_code)
+            except ValueError:
+                logger.debug("Unhandled message code: 0x%02x", msg_code)
+                return
+
+            if protocol == "eth":
+                await self._dispatch_eth_message(peer, msg_code, payload)
+            elif protocol == "snap":
+                await self._dispatch_snap_message(peer, relative_code, payload)
+            else:
+                logger.debug("Unhandled protocol: %s, code: 0x%02x", protocol, msg_code)
+        else:
+            # Fallback: treat as eth message (legacy path)
+            await self._dispatch_eth_message(peer, msg_code, payload)
+
+    async def _dispatch_eth_message(
+        self, peer: PeerConnection, msg_code: int, payload: bytes,
+    ) -> None:
+        """Dispatch an eth sub-protocol message."""
+        if msg_code == EthMsg.BLOCK_HEADERS:
             self.syncer.handle_block_headers(payload)
         elif msg_code == EthMsg.BLOCK_BODIES:
             self.syncer.handle_block_bodies(payload)
@@ -429,7 +499,26 @@ class P2PServer:
         elif msg_code == EthMsg.NEW_BLOCK_HASHES:
             self._handle_new_block_hashes(payload)
         else:
-            logger.debug("Unhandled message code: 0x%02x", msg_code)
+            logger.debug("Unhandled eth message code: 0x%02x", msg_code)
+
+    async def _dispatch_snap_message(
+        self, peer: PeerConnection, relative_code: int, payload: bytes,
+    ) -> None:
+        """Dispatch a snap sub-protocol message."""
+        if self.snap_syncer is None:
+            logger.debug("Received snap message but no snap syncer active (code=%d)", relative_code)
+            return
+
+        if relative_code == SnapMsg.ACCOUNT_RANGE:
+            self.snap_syncer.handle_account_range(payload)
+        elif relative_code == SnapMsg.STORAGE_RANGES:
+            self.snap_syncer.handle_storage_ranges(payload)
+        elif relative_code == SnapMsg.BYTE_CODES:
+            self.snap_syncer.handle_byte_codes(payload)
+        elif relative_code == SnapMsg.TRIE_NODES:
+            self.snap_syncer.handle_trie_nodes(payload)
+        else:
+            logger.debug("Unhandled snap message code: %d", relative_code)
 
     async def _handle_get_block_headers(
         self, peer: PeerConnection, data: bytes,
@@ -476,7 +565,6 @@ class P2PServer:
         """Handle broadcast transactions."""
         msg = TransactionsMessage.decode(data)
         logger.debug("Received %d transactions", len(msg.transactions))
-        # TODO: forward to mempool
 
     def _handle_new_pooled_tx_hashes(self, data: bytes) -> None:
         """Handle new pooled transaction hash announcements."""
@@ -585,6 +673,18 @@ class P2PServer:
         peers = [p for p in self.peers.values() if p.connected]
         if peers:
             await self.syncer.start(peers)
+
+    async def start_snap_sync(self, target_root: bytes, target_block: int) -> None:
+        """Start snap synchronization if snap syncer is set and peers support it."""
+        if self.snap_syncer is None:
+            logger.warning("No snap syncer configured")
+            return
+        snap_peers = [p for p in self.peers.values() if p.connected and p.snap_supported]
+        if not snap_peers:
+            logger.warning("No snap-capable peers, falling back to full sync")
+            await self.start_sync()
+            return
+        await self.snap_syncer.start(snap_peers, target_root, target_block)
 
     @property
     def peer_count(self) -> int:

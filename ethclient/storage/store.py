@@ -226,3 +226,29 @@ class Store(ABC):
     ) -> Optional[tuple[Transaction, bytes, int]]:
         """Get transaction by hash. Returns (tx, block_hash, tx_index) or None."""
         ...
+
+    # -----------------------------------------------------------------
+    # Snap sync state
+    # -----------------------------------------------------------------
+
+    def put_snap_account(self, account_hash: bytes, account_rlp: bytes) -> None:
+        """Store a snap-synced account by its hash key."""
+        ...
+
+    def put_snap_storage(
+        self, account_hash: bytes, slot_hash: bytes, value: bytes,
+    ) -> None:
+        """Store a snap-synced storage slot."""
+        ...
+
+    def put_snap_code(self, code_hash: bytes, code: bytes) -> None:
+        """Store snap-synced contract bytecode."""
+        ...
+
+    def get_snap_progress(self) -> Optional[dict]:
+        """Get snap sync progress state, or None if not started."""
+        ...
+
+    def put_snap_progress(self, progress: dict) -> None:
+        """Persist snap sync progress for resumption."""
+        ...

@@ -53,6 +53,11 @@ class MemoryBackend(Store):
         # Snapshots
         self._snapshots: list[dict] = []
 
+        # Snap sync data
+        self._snap_accounts: dict[bytes, bytes] = {}   # account_hash -> rlp
+        self._snap_storage: dict[tuple[bytes, bytes], bytes] = {}  # (acct_hash, slot_hash) -> value
+        self._snap_progress: Optional[dict] = None
+
     # -----------------------------------------------------------------
     # Account state
     # -----------------------------------------------------------------
@@ -352,6 +357,27 @@ class MemoryBackend(Store):
         if body is None or tx_index >= len(body[0]):
             return None
         return body[0][tx_index], block_hash, tx_index
+
+    # -----------------------------------------------------------------
+    # Snap sync data
+    # -----------------------------------------------------------------
+
+    def put_snap_account(self, account_hash: bytes, account_rlp: bytes) -> None:
+        self._snap_accounts[account_hash] = account_rlp
+
+    def put_snap_storage(
+        self, account_hash: bytes, slot_hash: bytes, value: bytes,
+    ) -> None:
+        self._snap_storage[(account_hash, slot_hash)] = value
+
+    def put_snap_code(self, code_hash: bytes, code: bytes) -> None:
+        self._code[code_hash] = code
+
+    def get_snap_progress(self) -> Optional[dict]:
+        return self._snap_progress
+
+    def put_snap_progress(self, progress: dict) -> None:
+        self._snap_progress = progress
 
     # -----------------------------------------------------------------
     # Convenience: initialize from genesis

@@ -91,11 +91,13 @@ class EthNode:
         rpc_port: int = 8545,
         boot_nodes: Optional[list[Node]] = None,
         max_peers: int = 25,
+        sync_mode: str = "snap",
     ) -> None:
         self.private_key = private_key
         self.chain_config = chain_config
         self.listen_port = listen_port
         self.rpc_port = rpc_port
+        self.sync_mode = sync_mode
 
         # Initialize storage
         self.store = MemoryBackend()
@@ -115,6 +117,7 @@ class EthNode:
         self.fork_choice = ForkChoice(self.store)
 
         # P2P server
+        enable_snap = sync_mode == "snap"
         self.p2p = P2PServer(
             private_key=private_key,
             listen_port=listen_port,
@@ -124,7 +127,16 @@ class EthNode:
             genesis_hash=self.genesis_hash,
             fork_id=self.fork_id,
             store=self.store,
+            enable_snap=enable_snap,
         )
+
+        # Snap sync engine
+        if enable_snap:
+            from ethclient.networking.sync.snap_sync import SnapSync
+            self.snap_syncer = SnapSync(store=self.store)
+            self.p2p.snap_syncer = self.snap_syncer
+        else:
+            self.snap_syncer = None
 
         # RPC server
         self.rpc = RPCServer()
@@ -251,6 +263,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="INFO",
         help="Logging level (default: INFO)",
     )
+    parser.add_argument(
+        "--sync-mode",
+        choices=["full", "snap"],
+        default="snap",
+        help="Sync mode: full or snap (default: snap)",
+    )
     return parser
 
 
@@ -321,6 +339,7 @@ def main() -> None:
         rpc_port=args.rpc_port,
         boot_nodes=boot_nodes,
         max_peers=args.max_peers,
+        sync_mode=args.sync_mode,
     )
 
     try:

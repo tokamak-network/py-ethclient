@@ -67,11 +67,14 @@ docker run -p 30303:30303 -p 8545:8545 py-ethclient --network sepolia
 ## Quick Start
 
 ```bash
-# 기본 실행 (mainnet, 포트 30303/8545)
+# 기본 실행 (mainnet, snap sync, 포트 30303/8545)
 ethclient
 
 # Sepolia 테스트넷 연결
 ethclient --network sepolia
+
+# Full sync 모드 (snap sync 대신)
+ethclient --network sepolia --sync-mode full
 
 # 커스텀 설정
 ethclient --network sepolia --port 30304 --rpc-port 8546 --max-peers 10
@@ -92,6 +95,7 @@ ethclient --genesis ./genesis.json --port 30303
 | `--bootnodes` | 네트워크 기본값 | 부트노드 enode URL (콤마 구분) |
 | `--private-key` | 자동 생성 | 노드 ID용 secp256k1 private key (hex) |
 | `--log-level` | `INFO` | 로그 레벨 (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `--sync-mode` | `snap` | 동기화 모드: `snap` (빠른 상태 다운로드) 또는 `full` (순차 블록 실행) |
 
 ## JSON-RPC API
 
@@ -157,14 +161,18 @@ curl -X POST http://localhost:8545 \
 pytest
 
 # 특정 모듈 테스트
-pytest tests/test_rlp.py      # RLP 인코딩/디코딩
-pytest tests/test_trie.py     # 머클 패트리시아 트라이
-pytest tests/test_evm.py      # EVM 옵코드 실행
-pytest tests/test_storage.py  # 상태 저장소
-pytest tests/test_blockchain.py # 블록 검증/실행
-pytest tests/test_p2p.py      # P2P 네트워킹
-pytest tests/test_rpc.py      # JSON-RPC 서버
-pytest tests/test_integration.py # 통합 테스트
+pytest tests/test_rlp.py              # RLP 인코딩/디코딩
+pytest tests/test_trie.py             # 머클 패트리시아 트라이
+pytest tests/test_trie_proofs.py      # 트라이 머클 증명 & 범위 검증
+pytest tests/test_evm.py              # EVM 옵코드 실행
+pytest tests/test_storage.py          # 상태 저장소
+pytest tests/test_blockchain.py       # 블록 검증/실행
+pytest tests/test_p2p.py              # P2P 네트워킹
+pytest tests/test_protocol_registry.py # 멀티 프로토콜 capability 협상
+pytest tests/test_snap_messages.py    # snap/1 메시지 인코딩/디코딩
+pytest tests/test_snap_sync.py        # Snap sync 상태 머신
+pytest tests/test_rpc.py              # JSON-RPC 서버
+pytest tests/test_integration.py      # 통합 테스트
 
 # 상세 출력
 pytest -v
@@ -178,7 +186,7 @@ ethclient/
 ├── common/                          # 공통 기반 모듈
 │   ├── rlp.py                       # RLP 인코딩/디코딩
 │   ├── types.py                     # Block, BlockHeader, Transaction, Account 등
-│   ├── trie.py                      # 머클 패트리시아 트라이
+│   ├── trie.py                      # 머클 패트리시아 트라이 + 증명 생성/검증
 │   ├── crypto.py                    # keccak256, secp256k1 ECDSA, 주소 도출
 │   └── config.py                    # 체인 설정, 하드포크, Genesis
 ├── vm/                              # EVM (Ethereum Virtual Machine)
@@ -190,14 +198,15 @@ ethclient/
 │   ├── call_frame.py                # 콜 프레임, JUMPDEST 유효성
 │   └── hooks.py                     # 실행 훅 (L2 확장 대비)
 ├── storage/                         # 상태 저장소
-│   ├── store.py                     # 추상 Store 인터페이스
+│   ├── store.py                     # 추상 Store 인터페이스 (+ snap sync 메서드)
 │   └── memory_backend.py            # 인메모리 구현, 상태 루트 계산
 ├── blockchain/                      # 블록체인 엔진
 │   ├── chain.py                     # 블록 검증, 트랜잭션/블록 실행
 │   ├── mempool.py                   # 트랜잭션 풀 (논스 정렬, 교체 정책)
 │   └── fork_choice.py               # Canonical chain 관리, 리오그
 ├── networking/                      # P2P 네트워킹
-│   ├── server.py                    # P2P 서버 메인 루프
+│   ├── server.py                    # P2P 서버 — 멀티 프로토콜 디스패치
+│   ├── protocol_registry.py         # 동적 capability 협상 & 오프셋 계산
 │   ├── rlpx/
 │   │   ├── handshake.py             # ECIES 핸드셰이크 (auth/ack)
 │   │   ├── framing.py               # RLPx 프레임 암호화/복호화
@@ -205,11 +214,15 @@ ethclient/
 │   ├── eth/
 │   │   ├── protocol.py              # p2p/eth 메시지 코드, 프로토콜 상수
 │   │   └── messages.py              # eth/68 메시지 인코딩/디코딩
+│   ├── snap/
+│   │   ├── protocol.py              # snap/1 메시지 코드 (SnapMsg enum)
+│   │   └── messages.py              # snap/1 메시지 인코딩/디코딩 (8종)
 │   ├── discv4/
 │   │   ├── discovery.py             # Discovery v4 UDP 프로토콜
 │   │   └── routing.py               # Kademlia k-bucket 라우팅 테이블
 │   └── sync/
-│       └── full_sync.py             # Full sync 파이프라인
+│       ├── full_sync.py             # Full sync 파이프라인
+│       └── snap_sync.py             # Snap sync 4단계 상태 머신
 └── rpc/                             # JSON-RPC 서버
     ├── server.py                    # FastAPI 기반 JSON-RPC 2.0 디스패처
     └── eth_api.py                   # eth_/net_/web3_ API 핸들러
@@ -237,15 +250,18 @@ ethclient/
 
 ### 직접 구현한 컴포넌트
 
-- **RLP (Recursive Length Prefix)**: 이더리움 직렬화 포맷 — 인코딩/디코딩, 리스트/바이트 구분
-- **Merkle Patricia Trie**: Branch/Extension/Leaf 노드, hex-prefix 인코딩, 상태 루트 계산
-- **EVM**: 140+ 옵코드, 256비트 스택, 바이트 메모리, EIP-2929 cold/warm 추적, EIP-1559 base fee
-- **프리컴파일**: ecrecover, SHA-256, RIPEMD-160, identity, modexp (EIP-2565), BLAKE2f (EIP-152)
-- **RLPx 전송**: ECIES 암호화, AES-256-CTR 프레임 암호화, SHA3 MAC 인증
-- **eth/68 프로토콜**: Status, GetBlockHeaders, BlockHeaders, Transactions 등 전체 메시지 타입
-- **Discovery v4**: UDP Ping/Pong/FindNeighbours/Neighbours, Kademlia 라우팅 테이블
-- **Full Sync**: 헤더 다운로드 → 바디 다운로드 → 블록 실행 파이프라인
-- **JSON-RPC 2.0**: 요청 파싱, 배치 지원, 에러 핸들링, 메서드 디스패치
+- **RLP (Recursive Length Prefix)** — 이더리움 직렬화 포맷: 인코딩/디코딩, 리스트/바이트 구분
+- **Merkle Patricia Trie** — Branch/Extension/Leaf 노드, hex-prefix 인코딩, 상태 루트 계산, 머클 증명 생성/검증, 범위 증명
+- **EVM** — 140+ 옵코드, 256비트 스택, 바이트 메모리, EIP-2929 cold/warm 추적, EIP-1559 base fee
+- **프리컴파일** — ecrecover, SHA-256, RIPEMD-160, identity, modexp (EIP-2565), BLAKE2f (EIP-152)
+- **RLPx 전송** — ECIES 암호화, AES-256-CTR 프레임 암호화, SHA3 MAC 인증
+- **프로토콜 레지스트리** — 동적 멀티 프로토콜 capability 협상 및 메시지 ID 오프셋 계산
+- **eth/68 프로토콜** — Status, GetBlockHeaders, BlockHeaders, Transactions 등 전체 메시지 타입
+- **snap/1 프로토콜** — GetAccountRange, AccountRange, GetStorageRanges, StorageRanges, GetByteCodes, ByteCodes, GetTrieNodes, TrieNodes
+- **Discovery v4** — UDP Ping/Pong/FindNeighbours/Neighbours, Kademlia 라우팅 테이블
+- **Full Sync** — 헤더 다운로드 → 바디 다운로드 → 블록 실행 파이프라인
+- **Snap Sync** — 4단계 상태 머신: 계정 다운로드 → 스토리지 다운로드 → 바이트코드 다운로드 → 트라이 힐링
+- **JSON-RPC 2.0** — 요청 파싱, 배치 지원, 에러 핸들링, 메서드 디스패치
 
 ### 지원 EIP
 
@@ -260,6 +276,7 @@ ethclient/
 | EIP-2565 | ModExp 가스 비용 |
 | EIP-152 | BLAKE2f 프리컴파일 |
 | EIP-4844 | Blob 트랜잭션 타입 (타입 정의) |
+| EIP-7702 | Set EOA account code (Prague) |
 
 ### 실행 훅 시스템
 
@@ -276,23 +293,45 @@ class L2Hook(ExecutionHook):
 
 ## Project Stats
 
-| 항목 | 수치 |
-|---|---|
-| 소스 코드 | ~9,100 LOC |
-| 테스트 코드 | ~3,400 LOC |
-| 총 LOC | ~12,500 |
-| 테스트 수 | 337 |
-| 소스 파일 | 29 |
-| 테스트 파일 | 8 |
+### 소스 코드
+
+| 모듈 | 파일 | LOC | 설명 |
+|---|---:|---:|---|
+| `common/` | 6 | 2,256 | RLP, types, trie (+ 증명), crypto, config |
+| `vm/` | 8 | 2,502 | EVM, opcodes, precompiles, gas |
+| `storage/` | 3 | 672 | Store 인터페이스 (+ snap 메서드), 인메모리 백엔드 |
+| `blockchain/` | 4 | 966 | 블록 검증, mempool, fork choice |
+| `networking/` | 19 | 3,684 | RLPx, discovery, eth/68, snap/1, 프로토콜 레지스트리, sync, server |
+| `rpc/` | 3 | 550 | JSON-RPC 서버, eth API |
+| `main.py` | 1 | 352 | CLI 진입점 |
+| **합계** | **44** | **10,982** | |
+
+### 테스트 코드
+
+| 테스트 파일 | LOC | 테스트 수 | 커버 모듈 |
+|---|---:|---:|---|
+| `test_rlp.py` | 206 | 56 | RLP 인코딩/디코딩 |
+| `test_trie.py` | 213 | 26 | 머클 패트리시아 트라이 |
+| `test_trie_proofs.py` | 254 | 23 | 트라이 증명 생성/검증, 범위 증명 |
+| `test_crypto.py` | 113 | 14 | keccak256, ECDSA, 주소 |
+| `test_evm.py` | 647 | 73 | 스택, 메모리, 옵코드, 프리컴파일 |
+| `test_storage.py` | 407 | 33 | Store CRUD, 상태 루트 |
+| `test_blockchain.py` | 514 | 31 | 헤더 검증, 블록 실행, mempool |
+| `test_p2p.py` | 769 | 51 | RLPx, 핸드셰이크, eth 메시지 |
+| `test_protocol_registry.py` | 168 | 16 | 멀티 프로토콜 capability 협상 |
+| `test_snap_messages.py` | 267 | 21 | snap/1 메시지 encode/decode 라운드트립 |
+| `test_snap_sync.py` | 303 | 21 | Snap sync 상태 머신, 응답 핸들러 |
+| `test_rpc.py` | 306 | 41 | JSON-RPC 엔드포인트 |
+| `test_integration.py` | 250 | 12 | 모듈 간 통합 |
+| **합계** | **4,417** | **418** | |
 
 ## Current Limitations
 
-- **저장소**: 인메모리 전용 (디스크 백엔드 미구현, 재시작 시 상태 유실)
-- **eth_call / estimateGas**: 실제 EVM 실행 미연결 (스텁 응답)
-- **BN128 / KZG**: 프리컴파일 스텁 (pairing 연산 미구현)
-- **Engine API**: 미구현 (PoS 컨센서스 레이어 연동 없음)
-- **Snap sync**: 미구현 (Full sync만 지원)
-- **트랜잭션 인덱싱**: 해시 기반 트랜잭션/영수증 조회 미구현
+- **저장소** — 인메모리 전용 (디스크 백엔드 미구현, 재시작 시 상태 유실)
+- **eth_call / estimateGas** — 실제 EVM 실행 미연결 (스텁 응답)
+- **BN128 / KZG** — 프리컴파일 스텁 (pairing 연산 미구현)
+- **Engine API** — 미구현 (PoS 컨센서스 레이어 연동 없음)
+- **트랜잭션 인덱싱** — 해시 기반 트랜잭션/영수증 조회 미구현
 
 ## License
 

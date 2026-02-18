@@ -6,7 +6,13 @@ from typing import Any
 from eth_utils import to_wei
 from eth_keys import keys
 
-from sequencer.core.constants import DEFAULT_CHAIN_ID, DEFAULT_GAS_LIMIT
+from sequencer.core.constants import (
+    DEFAULT_CHAIN_ID,
+    DEFAULT_GAS_LIMIT,
+    ELASTICITY_MULTIPLIER,
+    BASE_FEE_MAX_CHANGE_DENOMINATOR,
+    INITIAL_BASE_FEE,
+)
 from sequencer.core.types import Block, BlockHeader, Receipt
 from sequencer.core.crypto import keccak256, private_key_to_address
 from sequencer.evm.adapter import EVMAdapter, ChainConfig, ExecutionResult
@@ -14,6 +20,20 @@ from sequencer.storage.store import InMemoryStore
 
 
 EMPTY_OMMERS_HASH = keccak256(b"\xc0")
+
+
+def calc_base_fee(parent_gas_used: int, parent_gas_limit: int, parent_base_fee: int) -> int:
+    gas_target = parent_gas_limit // ELASTICITY_MULTIPLIER
+    if parent_gas_used == gas_target:
+        return parent_base_fee
+    elif parent_gas_used > gas_target:
+        gas_delta = parent_gas_used - gas_target
+        fee_delta = max(parent_base_fee * gas_delta // gas_target // BASE_FEE_MAX_CHANGE_DENOMINATOR, 1)
+        return parent_base_fee + fee_delta
+    else:
+        gas_delta = gas_target - parent_gas_used
+        fee_delta = parent_base_fee * gas_delta // gas_target // BASE_FEE_MAX_CHANGE_DENOMINATOR
+        return max(parent_base_fee - fee_delta, 1)
 
 
 class Chain:
@@ -139,6 +159,47 @@ class Chain:
         pk = keys.PrivateKey(from_private_key)
         return unsigned_tx.as_signed_transaction(pk)
 
+    def create_eip1559_transaction(
+        self,
+        from_private_key: bytes,
+        to: bytes | None,
+        value: int = 0,
+        data: bytes = b"",
+        gas: int = 100_000,
+        max_priority_fee_per_gas: int | None = None,
+        max_fee_per_gas: int | None = None,
+        nonce: int | None = None,
+    ) -> Any:
+        sender = private_key_to_address(from_private_key)
+        
+        if nonce is None:
+            nonce = self.get_nonce(sender)
+        
+        latest_block = self.get_latest_block()
+        base_fee = latest_block.header.base_fee_per_gas if latest_block and latest_block.header.base_fee_per_gas else INITIAL_BASE_FEE
+        
+        if max_fee_per_gas is None:
+            max_fee_per_gas = base_fee * 2
+        
+        if max_priority_fee_per_gas is None:
+            max_priority_fee_per_gas = base_fee // 10
+        
+        to_address = b"" if to is None else to
+        
+        unsigned_tx = self.evm.create_unsigned_eip1559_transaction(
+            nonce=nonce,
+            max_priority_fee_per_gas=max_priority_fee_per_gas,
+            max_fee_per_gas=max_fee_per_gas,
+            gas=gas,
+            to=to_address,
+            value=value,
+            data=data,
+            chain_id=self.chain_id,
+        )
+        
+        pk = keys.PrivateKey(from_private_key)
+        return unsigned_tx.as_signed_transaction(pk)
+
     def send_transaction(self, signed_tx) -> bytes:
         tx_hash = keccak256(signed_tx.encode())
         self._pending_transactions.append(signed_tx)
@@ -191,6 +252,15 @@ class Chain:
         parent_hash = parent.hash if parent else b"\x00" * 32
         number = (parent.number + 1) if parent else 1
         
+        if parent and parent.header.base_fee_per_gas:
+            new_base_fee = calc_base_fee(
+                parent.header.gas_used,
+                parent.header.gas_limit,
+                parent.header.base_fee_per_gas,
+            )
+        else:
+            new_base_fee = INITIAL_BASE_FEE
+        
         tx_hashes = [keccak256(tx.encode()) for tx in pending]
         
         header = BlockHeader(
@@ -206,7 +276,7 @@ class Chain:
             gas_limit=self.gas_limit,
             gas_used=gas_used,
             timestamp=block_timestamp,
-            base_fee_per_gas=1_000_000_000,
+            base_fee_per_gas=new_base_fee,
         )
         
         block = Block(header=header, transactions=pending)

@@ -106,6 +106,35 @@ class EVMAdapter:
             data=data,
         )
 
+    def create_unsigned_eip1559_transaction(
+        self,
+        nonce: int,
+        max_priority_fee_per_gas: int,
+        max_fee_per_gas: int,
+        gas: int,
+        to: bytes | None,
+        value: int,
+        data: bytes,
+        chain_id: int | None = None,
+    ) -> Any:
+        from eth.vm.forks.london.transactions import LondonTransactionBuilder
+        
+        tx_chain_id = chain_id if chain_id is not None else self.config.chain_id
+        to_address = to if to else b""
+        access_list = ()
+        
+        return LondonTransactionBuilder.new_unsigned_dynamic_fee_transaction(
+            chain_id=tx_chain_id,
+            nonce=nonce,
+            max_priority_fee_per_gas=max_priority_fee_per_gas,
+            max_fee_per_gas=max_fee_per_gas,
+            gas=gas,
+            to=to_address,
+            value=value,
+            data=data,
+            access_list=access_list,
+        )
+
     def apply_transaction(self, signed_tx) -> tuple[Any, Any, Any]:
         block, receipt, computation = self.chain.apply_transaction(signed_tx)
         return block, receipt, computation

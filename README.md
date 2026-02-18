@@ -118,18 +118,20 @@ storage = chain.get_storage_at(address, 0)
 | Block by Hash | ✅ | O(1) lookup |
 | Transaction Receipt | ✅ | tx_hash → (block, index, receipt) |
 
-### Sequencer Chain (~233 LOC)
+### Sequencer Chain (~270 LOC)
 | Feature | Status | Description |
 |---------|--------|-------------|
 | Genesis Block Creation | ✅ | Initialize with custom state |
 | Transaction Creation | ✅ | Legacy transactions |
+| EIP-1559 Transaction Creation | ✅ | Dynamic fee transactions (Type 0x02) |
 | Transaction Signing | ✅ | ECDSA signing with private key |
 | Block Building | ✅ | Auto-mine on transaction |
+| Dynamic Base Fee | ✅ | EIP-1559 base fee calculation per block |
 | State Root Computation | ✅ | Via py-evm |
 | Transactions Root | ✅ | Via trie library |
 | Receipts Root | ✅ | Via trie library |
 
-### RPC Server (~378 LOC total)
+### RPC Server (~420 LOC total)
 | Method | Status | Notes |
 |--------|--------|-------|
 | `eth_chainId` | ✅ | Returns chain ID |
@@ -140,11 +142,12 @@ storage = chain.get_storage_at(address, 0)
 | `eth_getStorageAt` | ✅ | Storage slot value |
 | `eth_getBlockByNumber` | ✅ | Block by number |
 | `eth_getBlockByHash` | ✅ | Block by hash |
-| `eth_sendTransaction` | ✅ | Sign and send (requires `_private_key`) |
+| `eth_sendTransaction` | ✅ | Sign and send (supports EIP-1559 and Legacy) |
 | `eth_sendRawTransaction` | ✅ | Send pre-signed transaction |
-| `eth_getTransactionReceipt` | ✅ | Transaction receipt |
-| `eth_estimateGas` | ✅ | Simple estimation |
+| `eth_getTransactionReceipt` | ✅ | Transaction receipt with effectiveGasPrice |
+| `eth_estimateGas` | ⚠️ | Simple estimation (hardcoded) |
 | `eth_gasPrice` | ✅ | Returns 1 Gwei |
+| `eth_feeHistory` | ✅ | Historical gas fee data with base fee |
 | `eth_call` | ⚠️ | **Partial** - returns code only |
 | `net_version` | ✅ | Chain ID as string |
 | `eth_accounts` | ✅ | Returns empty list |
@@ -157,7 +160,7 @@ storage = chain.get_storage_at(address, 0)
 | Prefunded account setup | ✅ |
 | RPC server startup | ✅ |
 
-### Tests (~146 LOC)
+### Tests (~320 LOC)
 | Test | Status | Description |
 |------|--------|-------------|
 | `test_get_balance` | ✅ | Balance query |
@@ -166,38 +169,41 @@ storage = chain.get_storage_at(address, 0)
 | `test_send_transaction_deploy_contract` | ✅ | Contract deployment |
 | `test_eth_call_read_storage` | ✅ | eth_call (limited) |
 | `test_simple_transfer` | ✅ | ETH transfer |
+| **EIP-1559 Tests** | | |
+| `test_calc_base_fee_same_as_target` | ✅ | Base fee when gas = target |
+| `test_calc_base_fee_above_target` | ✅ | Base fee increases when gas > target |
+| `test_calc_base_fee_below_target` | ✅ | Base fee decreases when gas < target |
+| `test_create_eip1559_transaction` | ✅ | Create EIP-1559 transaction |
+| `test_send_eip1559_transaction` | ✅ | Send EIP-1559 transaction |
+| `test_base_fee_changes_after_block` | ✅ | Verify base fee updates per block |
+| `test_eth_sendTransaction_eip1559_via_rpc` | ✅ | RPC with EIP-1559 params |
+| **Fee History Tests** | | |
+| `test_fee_history_genesis_only` | ✅ | feeHistory with genesis block |
+| `test_fee_history_after_transactions` | ✅ | feeHistory with multiple blocks |
+| `test_fee_history_with_reward_percentiles` | ✅ | feeHistory with percentiles |
+| `test_fee_history_base_fee_increases_with_high_gas` | ✅ | Verify base fee increase |
 
 ## Development Roadmap
 
 > **Note**: `py-evm` was archived on September 8, 2025. It supports up to Prague but will not receive Osaka updates.
 
-### Phase 1: Essential for Public Network (~200 LOC)
+### ✅ Phase 1: Essential for Public Network (COMPLETED)
 
 Required for operating a public network with standard wallet compatibility (MetaMask, etc.).
 
-| # | Feature | Current State | Required Work | LOC |
-|---|---------|---------------|---------------|-----|
-| 1 | EIP-1559 Base Fee | Fixed at 1 Gwei | Dynamic calculation per EIP-1559 formula | ~30 |
-| 2 | EIP-1559 Tx Type 0x02 | Not supported | `maxFeePerGas` / `maxPriorityFeePerGas` support | ~50 |
-| 3 | Real `estimateGas` | Hardcoded (21k/100k) | Transaction simulation with actual gas measurement | ~40 |
-| 4 | Transaction Pool (Mempool) | Simple list (FIFO) | Priority-based with nonce tracking | ~120 |
-| 5 | Periodic Block Production | Mine on every tx | Timer-based block building with batch collection | ~60 |
+| # | Feature | Status | Description |
+|---|---------|--------|-------------|
+| 1 | EIP-1559 Base Fee | ✅ Done | Dynamic calculation per EIP-1559 formula |
+| 2 | EIP-1559 Tx Type 0x02 | ✅ Done | `maxFeePerGas` / `maxPriorityFeePerGas` support |
+| 3 | `eth_feeHistory` | ✅ Done | Historical gas fee data endpoint |
 
-**EIP-1559 Base Fee Formula:**
-```python
-def calc_base_fee(parent_gas_used, parent_gas_limit, parent_base_fee):
-    gas_target = parent_gas_limit // 2
-    if parent_gas_used == gas_target:
-        return parent_base_fee
-    elif parent_gas_used > gas_target:
-        gas_delta = parent_gas_used - gas_target
-        fee_delta = max(parent_base_fee * gas_delta // gas_target // 8, 1)
-        return parent_base_fee + fee_delta
-    else:
-        gas_delta = gas_target - parent_gas_used
-        fee_delta = parent_base_fee * gas_delta // gas_target // 8
-        return max(parent_base_fee - fee_delta, 1)
-```
+**Implemented EIP-1559 Features:**
+- `calc_base_fee()` function in `chain.py`
+- `create_eip1559_transaction()` method
+- Dynamic base fee per block
+- `eth_sendTransaction` handles both Legacy and EIP-1559
+- Transaction serialization with `type: "0x2"`
+- Receipt includes `effectiveGasPrice`
 
 **Periodic Block Building Pattern:**
 ```python
@@ -228,16 +234,53 @@ class Sequencer:
             await self.produce_block(batch)
 ```
 
-### Phase 2: Improved Compatibility (~150 LOC)
+### Phase 2: Improved Operations (~230 LOC)
+
+| # | Feature | Current State | Required Work | LOC |
+|---|---------|---------------|---------------|-----|
+| 1 | `estimateGas` | Hardcoded (21k/100k) | Transaction simulation with actual gas measurement | ~50 |
+| 2 | Transaction Pool (Mempool) | Simple list (FIFO) | Priority-based with nonce tracking | ~120 |
+| 3 | Periodic Block Production | Mine on every tx | Timer-based block building | ~60 |
+
+**Periodic Block Building Pattern:**
+```python
+import asyncio
+
+class Sequencer:
+    def __init__(self, block_time=2.0, max_txs=100):
+        self.tx_pool = asyncio.Queue()
+        self.block_time = block_time
+        self.max_txs = max_txs
+
+    async def run(self):
+        while True:
+            first_tx = await self.tx_pool.get()
+            batch = [first_tx]
+            start_time = time.monotonic()
+            
+            while len(batch) < self.max_txs:
+                remaining = self.block_time - (time.monotonic() - start_time)
+                if remaining <= 0:
+                    break
+                try:
+                    tx = await asyncio.wait_for(self.tx_pool.get(), timeout=remaining)
+                    batch.append(tx)
+                except asyncio.TimeoutError:
+                    break
+            
+            await self.produce_block(batch)
+```
+
+### Phase 3: Improved Compatibility (~150 LOC)
 
 | # | Feature | Description | LOC |
 |---|---------|-------------|-----|
-| 6 | `eth_call` full implementation | Execute call without state change | ~30 |
-| 7 | `eth_getTransactionByHash` | Query transaction by hash | ~20 |
-| 8 | `eth_getLogs` | Event log filtering with bloom filters | ~50 |
-| 9 | SQLite Persistence | Replace dict storage for data durability | ~100 |
+| 4 | `eth_call` full implementation | Execute call without state change | ~30 |
+| 5 | `eth_getTransactionByHash` | Query transaction by hash | ~20 |
+| 6 | `eth_getLogs` | Event log filtering with bloom filters | ~50 |
+| 7 | SQLite Persistence | Replace dict storage for data durability | ~100 |
 
-### Phase 3: Future Compatibility (Prague/Osaka)
+### Phase 4: Future Compatibility (Prague/Osaka)
 
 #### Transaction Types (EIP-2718)
 
@@ -245,7 +288,7 @@ class Sequencer:
 |------|-----|------|-----------------|----------|
 | `0x00` | Legacy | Legacy Transaction | ✅ Yes | - |
 | `0x01` | EIP-2930 | Access List | ❌ No | Recommended |
-| `0x02` | EIP-1559 | Dynamic Fee | ❌ No | **Required** |
+| `0x02` | EIP-1559 | Dynamic Fee | ✅ Yes | - |
 | `0x04` | EIP-7702 | Set Code (Prague) | ❌ No | **Required** |
 
 > **Note**: Blob transactions (EIP-4844, Type `0x03`) are not required for single sequencer use cases.
@@ -273,25 +316,24 @@ class Sequencer:
 ### Execution Timeline
 
 ```
-Core Infrastructure
-├── [ ] EIP-1559 base fee calculation (chain.py)
-├── [ ] EIP-1559 tx type 0x02 support (methods.py, chain.py)
+✅ COMPLETED:
+├── [x] EIP-1559 base fee calculation (chain.py)
+├── [x] EIP-1559 tx type 0x02 support (methods.py, chain.py, adapter.py)
+├── [x] eth_feeHistory RPC endpoint (rpc/methods.py)
+└── [x] Unit tests for EIP-1559 (tests/test_sequencer.py)
+
+Phase 2 - Operations:
 ├── [ ] Real estimateGas implementation (rpc/methods.py)
-└── [ ] Mempool class (new: sequencer/mempool.py)
+├── [ ] Mempool class with priority queue (new: sequencer/mempool.py)
+└── [ ] asyncio-based sequencer loop with block_time
 
-Block Production
-├── [ ] asyncio-based sequencer loop
-├── [ ] block_time CLI option
-├── [ ] Empty block vs tx-wait policy
-└── [ ] Extended unit tests
-
-RPC & Storage
+Phase 3 - Compatibility:
 ├── [ ] eth_call actual execution
 ├── [ ] eth_getTransactionByHash
 ├── [ ] eth_getLogs (logsBloom)
 └── [ ] SQLite store (optional)
 
-Prague Preparation
+Phase 4 - Prague Preparation:
 ├── [ ] EIP-7702 (Tx Type 0x04) support
 └── [ ] Upgrade to PragueVM in py-evm
 ```
@@ -300,10 +342,10 @@ Prague Preparation
 
 | Phase | Components | LOC |
 |-------|------------|-----|
-| Current | All | ~1,154 |
-| Phase 1 | Essential public network | +~200 |
-| Phase 2 | Improved compatibility | +~150 |
-| **Total** | | **~1,504** |
+| Current | All (with EIP-1559) | ~1,250 |
+| Phase 2 | Improved operations | +~230 |
+| Phase 3 | Improved compatibility | +~150 |
+| **Total** | | **~1,630** |
 
 ## Architecture
 
@@ -313,28 +355,28 @@ py-ethclient/
 │   ├── core/                    # Minimal types & crypto
 │   │   ├── types.py             # Account, Block, Receipt (~100 LOC)
 │   │   ├── crypto.py            # keccak256, sign, recover (~28 LOC)
-│   │   └── constants.py         # Chain constants (~13 LOC)
+│   │   └── constants.py         # Chain constants (~16 LOC)
 │   │
 │   ├── evm/                     # py-evm bridge
-│   │   └── adapter.py           # MiningChain wrapper (~148 LOC)
+│   │   └── adapter.py           # MiningChain wrapper (~165 LOC)
 │   │
 │   ├── storage/                 # In-memory storage
 │   │   └── store.py             # dict-based store (~53 LOC)
 │   │
 │   ├── sequencer/               # Sequencer logic
-│   │   └── chain.py             # Block building (~233 LOC)
+│   │   └── chain.py             # Block building (~270 LOC)
 │   │
 │   ├── rpc/                     # JSON-RPC
 │   │   ├── server.py            # http.server (~85 LOC)
-│   │   └── methods.py           # eth_* methods (~293 LOC)
+│   │   └── methods.py           # eth_* methods (~340 LOC)
 │   │
 │   └── cli.py                   # Entry point (~55 LOC)
 │
 └── tests/
-    └── test_sequencer.py        # Integration tests (~146 LOC)
+    └── test_sequencer.py        # Integration tests (~320 LOC)
 ```
 
-**Total: ~1,154 LOC** (Target: ~1,450 LOC)
+**Total: ~1,250 LOC** (Target: ~1,630 LOC)
 
 ## Dependencies
 

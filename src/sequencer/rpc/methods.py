@@ -7,6 +7,21 @@ from eth_utils.address import to_checksum_address
 from rlp import decode as rlp_decode
 
 from sequencer.core.crypto import keccak256
+from sequencer.core.constants import ELASTICITY_MULTIPLIER, BASE_FEE_MAX_CHANGE_DENOMINATOR
+
+
+def _calc_next_base_fee(gas_used: int, gas_limit: int, base_fee: int) -> int:
+    gas_target = gas_limit // ELASTICITY_MULTIPLIER
+    if gas_used == gas_target:
+        return base_fee
+    elif gas_used > gas_target:
+        gas_delta = gas_used - gas_target
+        fee_delta = max(base_fee * gas_delta // gas_target // BASE_FEE_MAX_CHANGE_DENOMINATOR, 1)
+        return base_fee + fee_delta
+    else:
+        gas_delta = gas_target - gas_used
+        fee_delta = base_fee * gas_delta // gas_target // BASE_FEE_MAX_CHANGE_DENOMINATOR
+        return max(base_fee - fee_delta, 1)
 
 
 def create_methods(chain) -> dict[str, Callable]:
@@ -88,18 +103,36 @@ def create_methods(chain) -> dict[str, Callable]:
         value = _parse_int(tx_params.get("value", "0x0"))
         data = _parse_bytes(tx_params.get("data", "0x"))
         gas = _parse_int(tx_params.get("gas", "0x5208"))
-        gas_price = _parse_int(tx_params.get("gasPrice", "0x3b9aca00"))
         nonce = _parse_int(tx_params["nonce"]) if "nonce" in tx_params else None
         
-        signed_tx = chain.create_transaction(
-            from_private_key=private_key,
-            to=to,
-            value=value,
-            data=data,
-            gas=gas,
-            gas_price=gas_price,
-            nonce=nonce,
-        )
+        max_fee_per_gas = tx_params.get("maxFeePerGas")
+        max_priority_fee_per_gas = tx_params.get("maxPriorityFeePerGas")
+        
+        if max_fee_per_gas is not None or max_priority_fee_per_gas is not None:
+            max_fee = _parse_int(max_fee_per_gas) if max_fee_per_gas else None
+            max_priority = _parse_int(max_priority_fee_per_gas) if max_priority_fee_per_gas else None
+            
+            signed_tx = chain.create_eip1559_transaction(
+                from_private_key=private_key,
+                to=to,
+                value=value,
+                data=data,
+                gas=gas,
+                max_priority_fee_per_gas=max_priority,
+                max_fee_per_gas=max_fee,
+                nonce=nonce,
+            )
+        else:
+            gas_price = _parse_int(tx_params.get("gasPrice", "0x3b9aca00"))
+            signed_tx = chain.create_transaction(
+                from_private_key=private_key,
+                to=to,
+                value=value,
+                data=data,
+                gas=gas,
+                gas_price=gas_price,
+                nonce=nonce,
+            )
         
         tx_hash = chain.send_transaction(signed_tx)
         return "0x" + tx_hash.hex()
@@ -122,6 +155,62 @@ def create_methods(chain) -> dict[str, Callable]:
 
     def eth_gasPrice(params: list) -> str:
         return hex(1_000_000_000)
+
+    def eth_feeHistory(params: list) -> dict:
+        block_count = _parse_int(params[0]) if params else 1
+        newest_block = params[1] if len(params) > 1 else "latest"
+        reward_percentiles = params[2] if len(params) > 2 else []
+        
+        newest_number = _parse_block_number(newest_block)
+        if newest_number == -1:
+            newest_number = chain.get_latest_block_number()
+        
+        oldest_number = max(0, newest_number - block_count + 1)
+        
+        base_fee_per_gas = []
+        gas_used_ratio = []
+        reward = []
+        
+        for block_number in range(oldest_number, newest_number + 1):
+            block = chain.get_block_by_number(block_number)
+            if block:
+                base_fee = block.header.base_fee_per_gas or 1_000_000_000
+                base_fee_per_gas.append(hex(base_fee))
+                
+                gas_used = block.header.gas_used
+                gas_limit = block.header.gas_limit
+                ratio = gas_used / gas_limit if gas_limit > 0 else 0.0
+                gas_used_ratio.append(ratio)
+            else:
+                base_fee_per_gas.append(hex(1_000_000_000))
+                gas_used_ratio.append(0.0)
+        
+        latest_block = chain.get_block_by_number(newest_number)
+        if latest_block and latest_block.header.base_fee_per_gas:
+            next_base_fee = _calc_next_base_fee(
+                latest_block.header.gas_used,
+                latest_block.header.gas_limit,
+                latest_block.header.base_fee_per_gas,
+            )
+            base_fee_per_gas.append(hex(next_base_fee))
+        else:
+            base_fee_per_gas.append(hex(1_000_000_000))
+        
+        if reward_percentiles:
+            for block_number in range(oldest_number, newest_number + 1):
+                rewards = [hex(0) for _ in reward_percentiles]
+                reward.append(rewards)
+        
+        result = {
+            "oldestBlock": hex(oldest_number),
+            "baseFeePerGas": base_fee_per_gas,
+            "gasUsedRatio": gas_used_ratio,
+        }
+        
+        if reward_percentiles:
+            result["reward"] = reward
+        
+        return result
 
     def net_version(params: list) -> str:
         return str(chain.chain_id)
@@ -154,6 +243,7 @@ def create_methods(chain) -> dict[str, Callable]:
         "eth_getTransactionReceipt": eth_getTransactionReceipt,
         "eth_estimateGas": eth_estimateGas,
         "eth_gasPrice": eth_gasPrice,
+        "eth_feeHistory": eth_feeHistory,
         "net_version": net_version,
         "eth_accounts": eth_accounts,
         "eth_coinbase": eth_coinbase,
@@ -226,13 +316,14 @@ def _serialize_block(block, include_txs: bool) -> dict:
 def _serialize_tx(tx, block) -> dict:
     tx_hash = _tx_hash(tx)
     
-    return {
+    is_eip1559 = hasattr(tx, "max_fee_per_gas")
+    
+    result = {
         "hash": "0x" + tx_hash.hex(),
         "blockNumber": hex(block.number),
         "blockHash": "0x" + block.hash.hex(),
         "from": to_checksum_address(tx.sender),
         "gas": hex(tx.gas),
-        "gasPrice": hex(tx.gas_price),
         "input": "0x" + (tx.data.hex() if tx.data else ""),
         "nonce": hex(tx.nonce),
         "to": to_checksum_address(tx.to) if tx.to else None,
@@ -241,6 +332,18 @@ def _serialize_tx(tx, block) -> dict:
         "r": hex(tx.r),
         "s": hex(tx.s),
     }
+    
+    if is_eip1559:
+        result["type"] = "0x2"
+        result["maxFeePerGas"] = hex(tx.max_fee_per_gas)
+        result["maxPriorityFeePerGas"] = hex(tx.max_priority_fee_per_gas)
+        result["gasPrice"] = hex(tx.max_fee_per_gas)
+        result["chainId"] = hex(tx.chain_id) if hasattr(tx, "chain_id") else "0x0"
+    else:
+        result["type"] = "0x0"
+        result["gasPrice"] = hex(tx.gas_price)
+    
+    return result
 
 
 def _tx_hash(tx) -> bytes:
@@ -260,6 +363,10 @@ def _serialize_receipt(receipt_data, chain) -> dict:
     
     tx = block.transactions[tx_index]
     tx_hash = _tx_hash(tx)
+    
+    is_eip1559 = hasattr(tx, "max_fee_per_gas")
+    tx_type = "0x2" if is_eip1559 else "0x0"
+    effective_gas_price = tx.max_fee_per_gas if is_eip1559 else tx.gas_price
     
     logs = []
     for i, log in enumerate(receipt.logs):
@@ -289,5 +396,6 @@ def _serialize_receipt(receipt_data, chain) -> dict:
         "to": to_checksum_address(tx.to) if tx.to else None,
         "contractAddress": to_checksum_address(receipt.contract_address) if receipt.contract_address else None,
         "gasUsed": hex(receipt.cumulative_gas_used),
-        "type": "0x0",
+        "type": tx_type,
+        "effectiveGasPrice": hex(effective_gas_price),
     }

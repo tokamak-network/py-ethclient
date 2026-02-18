@@ -1,7 +1,8 @@
-"""Tests for storage layer."""
+"""Tests for storage layer — parametrized across backends."""
 
 import pytest
 from ethclient.storage.memory_backend import MemoryBackend
+from ethclient.storage.disk_backend import DiskBackend
 from ethclient.common.types import (
     Account,
     Block,
@@ -19,17 +20,25 @@ from ethclient.common.crypto import keccak256
 from ethclient.common.config import Genesis, GenesisAlloc, ChainConfig
 
 
+@pytest.fixture(params=["memory", "disk"])
+def store(request, tmp_path):
+    if request.param == "memory":
+        yield MemoryBackend()
+    else:
+        backend = DiskBackend(tmp_path)
+        yield backend
+        backend.close()
+
+
 # ---------------------------------------------------------------------------
 # Account CRUD
 # ---------------------------------------------------------------------------
 
 class TestAccountCRUD:
-    def test_get_nonexistent(self):
-        store = MemoryBackend()
+    def test_get_nonexistent(self, store):
         assert store.get_account(b"\x01" * 20) is None
 
-    def test_put_get(self):
-        store = MemoryBackend()
+    def test_put_get(self, store):
         addr = b"\x01" * 20
         acc = Account(nonce=1, balance=1000)
         store.put_account(addr, acc)
@@ -38,35 +47,30 @@ class TestAccountCRUD:
         assert got.nonce == 1
         assert got.balance == 1000
 
-    def test_delete(self):
-        store = MemoryBackend()
+    def test_delete(self, store):
         addr = b"\x01" * 20
         store.put_account(addr, Account(balance=100))
         store.delete_account(addr)
         assert store.get_account(addr) is None
 
-    def test_account_exists(self):
-        store = MemoryBackend()
+    def test_account_exists(self, store):
         addr = b"\x01" * 20
         assert not store.account_exists(addr)
         store.put_account(addr, Account(balance=1))
         assert store.account_exists(addr)
 
-    def test_empty_account_not_exists(self):
-        store = MemoryBackend()
+    def test_empty_account_not_exists(self, store):
         addr = b"\x01" * 20
         store.put_account(addr, Account())  # all zeros
         assert not store.account_exists(addr)
 
-    def test_balance_operations(self):
-        store = MemoryBackend()
+    def test_balance_operations(self, store):
         addr = b"\x01" * 20
         assert store.get_balance(addr) == 0
         store.set_balance(addr, 500)
         assert store.get_balance(addr) == 500
 
-    def test_nonce_operations(self):
-        store = MemoryBackend()
+    def test_nonce_operations(self, store):
         addr = b"\x01" * 20
         assert store.get_nonce(addr) == 0
         store.set_nonce(addr, 5)
@@ -80,15 +84,13 @@ class TestAccountCRUD:
 # ---------------------------------------------------------------------------
 
 class TestCodeStorage:
-    def test_put_get_code(self):
-        store = MemoryBackend()
+    def test_put_get_code(self, store):
         code = b"\x60\x00\x60\x00\xf3"  # PUSH 0 PUSH 0 RETURN
         code_hash = keccak256(code)
         store.put_code(code_hash, code)
         assert store.get_code(code_hash) == code
 
-    def test_account_code(self):
-        store = MemoryBackend()
+    def test_account_code(self, store):
         addr = b"\x01" * 20
         store.put_account(addr, Account())
         code = b"\x60\x42"
@@ -98,8 +100,7 @@ class TestCodeStorage:
         acc = store.get_account(addr)
         assert acc.code_hash == keccak256(code)
 
-    def test_empty_code(self):
-        store = MemoryBackend()
+    def test_empty_code(self, store):
         addr = b"\x01" * 20
         assert store.get_account_code(addr) == b""
 
@@ -109,25 +110,21 @@ class TestCodeStorage:
 # ---------------------------------------------------------------------------
 
 class TestStorageSlots:
-    def test_get_default(self):
-        store = MemoryBackend()
+    def test_get_default(self, store):
         assert store.get_storage(b"\x01" * 20, 0) == 0
 
-    def test_put_get(self):
-        store = MemoryBackend()
+    def test_put_get(self, store):
         addr = b"\x01" * 20
         store.put_storage(addr, 42, 0xDEAD)
         assert store.get_storage(addr, 42) == 0xDEAD
 
-    def test_put_zero_deletes(self):
-        store = MemoryBackend()
+    def test_put_zero_deletes(self, store):
         addr = b"\x01" * 20
         store.put_storage(addr, 1, 100)
         store.put_storage(addr, 1, 0)
         assert store.get_storage(addr, 1) == 0
 
-    def test_original_storage(self):
-        store = MemoryBackend()
+    def test_original_storage(self, store):
         addr = b"\x01" * 20
         store.put_storage(addr, 1, 100)
         store.commit_original_storage()
@@ -135,8 +132,7 @@ class TestStorageSlots:
         assert store.get_original_storage(addr, 1) == 100
         assert store.get_storage(addr, 1) == 200
 
-    def test_delete_account_clears_storage(self):
-        store = MemoryBackend()
+    def test_delete_account_clears_storage(self, store):
         addr = b"\x01" * 20
         store.put_account(addr, Account(balance=100))
         store.put_storage(addr, 1, 42)
@@ -158,8 +154,7 @@ class TestBlockStorage:
             gas_limit=30_000_000,
         )
 
-    def test_put_get_header(self):
-        store = MemoryBackend()
+    def test_put_get_header(self, store):
         header = self._make_header(1)
         store.put_block_header(header)
         block_hash = header.block_hash()
@@ -167,8 +162,7 @@ class TestBlockStorage:
         assert got is not None
         assert got.number == 1
 
-    def test_canonical_chain(self):
-        store = MemoryBackend()
+    def test_canonical_chain(self, store):
         header = self._make_header(1)
         store.put_block_header(header)
         block_hash = header.block_hash()
@@ -179,8 +173,7 @@ class TestBlockStorage:
         assert got is not None
         assert got.number == 1
 
-    def test_latest_block_number(self):
-        store = MemoryBackend()
+    def test_latest_block_number(self, store):
         assert store.get_latest_block_number() == 0
 
         for i in range(5):
@@ -190,8 +183,7 @@ class TestBlockStorage:
 
         assert store.get_latest_block_number() == 4
 
-    def test_put_get_block(self):
-        store = MemoryBackend()
+    def test_put_get_block(self, store):
         header = self._make_header(1)
         block = Block(header=header)
         store.put_block(block)
@@ -200,8 +192,7 @@ class TestBlockStorage:
         assert got is not None
         assert got.header.number == 1
 
-    def test_block_by_number(self):
-        store = MemoryBackend()
+    def test_block_by_number(self, store):
         header = self._make_header(5)
         block = Block(header=header)
         store.put_block(block)
@@ -217,8 +208,7 @@ class TestBlockStorage:
 # ---------------------------------------------------------------------------
 
 class TestReceipts:
-    def test_put_get_receipts(self):
-        store = MemoryBackend()
+    def test_put_get_receipts(self, store):
         block_hash = b"\xAB" * 32
         receipts = [
             Receipt(succeeded=True, cumulative_gas_used=21000),
@@ -230,8 +220,7 @@ class TestReceipts:
         assert len(got) == 2
         assert got[0].cumulative_gas_used == 21000
 
-    def test_nonexistent(self):
-        store = MemoryBackend()
+    def test_nonexistent(self, store):
         assert store.get_receipts(b"\x00" * 32) is None
 
 
@@ -240,8 +229,7 @@ class TestReceipts:
 # ---------------------------------------------------------------------------
 
 class TestSnapshots:
-    def test_snapshot_rollback(self):
-        store = MemoryBackend()
+    def test_snapshot_rollback(self, store):
         addr = b"\x01" * 20
         store.set_balance(addr, 1000)
 
@@ -252,8 +240,7 @@ class TestSnapshots:
         store.rollback(snap)
         assert store.get_balance(addr) == 1000
 
-    def test_snapshot_commit(self):
-        store = MemoryBackend()
+    def test_snapshot_commit(self, store):
         addr = b"\x01" * 20
         store.set_balance(addr, 1000)
 
@@ -262,8 +249,7 @@ class TestSnapshots:
         store.commit(snap)
         assert store.get_balance(addr) == 2000
 
-    def test_nested_snapshots(self):
-        store = MemoryBackend()
+    def test_nested_snapshots(self, store):
         addr = b"\x01" * 20
         store.set_balance(addr, 100)
 
@@ -279,8 +265,7 @@ class TestSnapshots:
         store.rollback(snap1)
         assert store.get_balance(addr) == 100
 
-    def test_storage_rollback(self):
-        store = MemoryBackend()
+    def test_storage_rollback(self, store):
         addr = b"\x01" * 20
         store.put_storage(addr, 1, 100)
 
@@ -297,28 +282,26 @@ class TestSnapshots:
 # ---------------------------------------------------------------------------
 
 class TestStateRoot:
-    def test_empty_state(self):
-        store = MemoryBackend()
+    def test_empty_state(self, store):
         root = store.compute_state_root()
         assert root == EMPTY_ROOT
 
-    def test_single_account(self):
-        store = MemoryBackend()
+    def test_single_account(self, store):
         addr = b"\x01" * 20
         store.put_account(addr, Account(balance=1000))
         root = store.compute_state_root()
         assert root != EMPTY_ROOT
         assert len(root) == 32
 
-    def test_deterministic(self):
+    def test_deterministic(self, tmp_path):
         """Same state should always produce the same root."""
         store1 = MemoryBackend()
-        store2 = MemoryBackend()
+        store2 = DiskBackend(tmp_path / "s2")
 
         addr1 = b"\x01" * 20
         addr2 = b"\x02" * 20
 
-        # Insert in different order
+        # Insert in different order, different backends
         store1.put_account(addr1, Account(balance=100))
         store1.put_account(addr2, Account(balance=200))
 
@@ -326,9 +309,9 @@ class TestStateRoot:
         store2.put_account(addr1, Account(balance=100))
 
         assert store1.compute_state_root() == store2.compute_state_root()
+        store2.close()
 
-    def test_with_storage(self):
-        store = MemoryBackend()
+    def test_with_storage(self, store):
         addr = b"\x01" * 20
         store.put_account(addr, Account(balance=1000))
         store.put_storage(addr, 0, 42)
@@ -340,8 +323,7 @@ class TestStateRoot:
 
         assert root1 != root2
 
-    def test_with_code(self):
-        store = MemoryBackend()
+    def test_with_code(self, store):
         addr = b"\x01" * 20
         store.put_account(addr, Account())
         store.set_account_code(addr, b"\x60\x00")
@@ -355,8 +337,7 @@ class TestStateRoot:
 # ---------------------------------------------------------------------------
 
 class TestGenesisInit:
-    def test_simple_genesis(self):
-        store = MemoryBackend()
+    def test_simple_genesis(self, store):
         genesis = Genesis(
             config=ChainConfig(chain_id=1337),
             gas_limit=30_000_000,
@@ -389,8 +370,7 @@ class TestGenesisInit:
         assert store.get_canonical_hash(0) == block_hash
         assert store.get_latest_block_number() == 0
 
-    def test_genesis_with_code(self):
-        store = MemoryBackend()
+    def test_genesis_with_code(self, store):
         code = b"\x60\x00\x60\x00\xf3"
         genesis = Genesis(
             config=ChainConfig(chain_id=1),

@@ -92,6 +92,7 @@ class EthNode:
         boot_nodes: Optional[list[Node]] = None,
         max_peers: int = 25,
         sync_mode: str = "snap",
+        data_dir: Optional[str] = None,
     ) -> None:
         self.private_key = private_key
         self.chain_config = chain_config
@@ -100,7 +101,12 @@ class EthNode:
         self.sync_mode = sync_mode
 
         # Initialize storage
-        self.store = MemoryBackend()
+        if data_dir:
+            from ethclient.storage.disk_backend import DiskBackend
+            self.store = DiskBackend(Path(data_dir))
+            logger.info("Using disk storage at %s", data_dir)
+        else:
+            self.store = MemoryBackend()
         if genesis:
             self.store.init_from_genesis(genesis)
             header0 = self.store.get_block_header_by_number(0)
@@ -189,6 +195,13 @@ class EthNode:
         if hasattr(self, "_rpc_server"):
             self._rpc_server.should_exit = True
 
+        # Flush and close disk backend
+        if hasattr(self.store, "flush"):
+            self.store.flush()
+            logger.info("Flushed state to disk")
+        if hasattr(self.store, "close"):
+            self.store.close()
+
         logger.info("Node stopped")
 
     async def run_until_stopped(self) -> None:
@@ -270,6 +283,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="snap",
         help="Sync mode: full or snap (default: snap)",
     )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Data directory for persistent storage (default: in-memory)",
+    )
     return parser
 
 
@@ -341,6 +360,7 @@ def main() -> None:
         boot_nodes=boot_nodes,
         max_peers=args.max_peers,
         sync_mode=args.sync_mode,
+        data_dir=args.data_dir,
     )
 
     try:

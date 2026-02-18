@@ -56,7 +56,8 @@ py-ethclient/                    # ~15,900 LOC (소스 + 테스트)
 │   │   └── hooks.py             # 실행 훅 인터페이스 (L2 확장 대비)
 │   ├── storage/                 # 상태 저장소
 │   │   ├── store.py             # Store 인터페이스 (계정/코드/스토리지 CRUD + snap sync)
-│   │   └── memory_backend.py    # dict 기반 인메모리 백엔드
+│   │   ├── memory_backend.py    # dict 기반 인메모리 백엔드
+│   │   └── disk_backend.py     # LMDB 기반 영속 스토리지 (오버레이 패턴)
 │   ├── blockchain/              # 블록체인 엔진
 │   │   ├── chain.py             # 블록 검증/실행, PoW 보상, base fee, simulate_call
 │   │   ├── mempool.py           # 트랜잭션 풀 (논스 정렬, replacement)
@@ -111,7 +112,7 @@ common (rlp, types, trie, crypto, config)
   ↓
 vm (evm, opcodes, precompiles, gas)
   ↓
-storage (store, memory_backend)
+storage (store, memory_backend, disk_backend)
   ↓
 blockchain (chain, mempool, fork_choice)
   ↓
@@ -259,8 +260,7 @@ snap_peers = [p for p in peers if p.snap_supported]
 ## 개선 가능 영역
 
 1. **Genesis 상태 초기화** — go-ethereum의 genesis alloc 데이터를 파싱하여 초기 상태 구축
-2. **디스크 백엔드** — `memory_backend.py`를 LevelDB/RocksDB 기반으로 교체
-3. **Engine API** — Beacon Chain 연동을 위한 `engine_` 네임스페이스
+2. **Engine API** — Beacon Chain 연동을 위한 `engine_` 네임스페이스
 4. **EVM 테스트 스위트** — ethereum/tests 공식 벡터로 EVM 정합성 검증 확대
 5. **성능 최적화** — 트라이 캐싱, 병렬 트랜잭션 검증, asyncio 최적화
 

@@ -8,7 +8,7 @@ Includes state trie computation and block-level snapshots.
 from __future__ import annotations
 
 import copy
-from typing import Optional
+from typing import Iterator, Optional
 
 from ethclient.common.types import (
     Account,
@@ -21,7 +21,6 @@ from ethclient.common.types import (
     EMPTY_TRIE_ROOT,
 )
 from ethclient.common.trie import Trie, EMPTY_ROOT
-from ethclient.common.crypto import keccak256
 from ethclient.common import rlp
 from ethclient.storage.store import Store
 
@@ -81,31 +80,6 @@ class MemoryBackend(Store):
             return False
         return not acc.is_empty()
 
-    def get_balance(self, address: bytes) -> int:
-        acc = self._accounts.get(address)
-        return acc.balance if acc else 0
-
-    def set_balance(self, address: bytes, balance: int) -> None:
-        acc = self._accounts.get(address)
-        if acc is None:
-            acc = Account()
-            self._accounts[address] = acc
-        acc.balance = balance
-
-    def get_nonce(self, address: bytes) -> int:
-        acc = self._accounts.get(address)
-        return acc.nonce if acc else 0
-
-    def set_nonce(self, address: bytes, nonce: int) -> None:
-        acc = self._accounts.get(address)
-        if acc is None:
-            acc = Account()
-            self._accounts[address] = acc
-        acc.nonce = nonce
-
-    def increment_nonce(self, address: bytes) -> None:
-        self.set_nonce(address, self.get_nonce(address) + 1)
-
     # -----------------------------------------------------------------
     # Code
     # -----------------------------------------------------------------
@@ -121,19 +95,6 @@ class MemoryBackend(Store):
         if acc is None or acc.code_hash == EMPTY_CODE_HASH:
             return b""
         return self._code.get(acc.code_hash, b"")
-
-    def set_account_code(self, address: bytes, code: bytes) -> None:
-        """Store code for an account, updating account's code_hash."""
-        acc = self._accounts.get(address)
-        if acc is None:
-            acc = Account()
-            self._accounts[address] = acc
-        if code:
-            code_hash = keccak256(code)
-            acc.code_hash = code_hash
-            self._code[code_hash] = code
-        else:
-            acc.code_hash = EMPTY_CODE_HASH
 
     # -----------------------------------------------------------------
     # Storage
@@ -152,8 +113,20 @@ class MemoryBackend(Store):
         return self._original_storage.get((address, key), 0)
 
     def commit_original_storage(self) -> None:
-        """Snapshot current storage as 'original' for next block's SSTORE gas calc."""
         self._original_storage = dict(self._storage)
+
+    # -----------------------------------------------------------------
+    # Iterators
+    # -----------------------------------------------------------------
+
+    def iter_accounts(self) -> Iterator[tuple[bytes, Account]]:
+        return iter(self._accounts.items())
+
+    def iter_storage(self) -> Iterator[tuple[tuple[bytes, int], int]]:
+        return iter(self._storage.items())
+
+    def iter_original_storage(self) -> Iterator[tuple[tuple[bytes, int], int]]:
+        return iter(self._original_storage.items())
 
     # -----------------------------------------------------------------
     # Block headers
@@ -378,41 +351,3 @@ class MemoryBackend(Store):
 
     def put_snap_progress(self, progress: dict) -> None:
         self._snap_progress = progress
-
-    # -----------------------------------------------------------------
-    # Convenience: initialize from genesis
-    # -----------------------------------------------------------------
-
-    def init_from_genesis(self, genesis) -> bytes:
-        """Initialize state from a Genesis object. Returns genesis block hash."""
-        from ethclient.common.config import Genesis
-
-        for alloc in genesis.alloc:
-            acc = Account(
-                nonce=alloc.nonce,
-                balance=alloc.balance,
-            )
-            self._accounts[alloc.address] = acc
-
-            if alloc.code:
-                self.set_account_code(alloc.address, alloc.code)
-
-            for key_bytes, val_bytes in alloc.storage.items():
-                key = int.from_bytes(key_bytes, "big")
-                val = int.from_bytes(val_bytes, "big")
-                if val != 0:
-                    self._storage[(alloc.address, key)] = val
-
-        # Compute state root and create genesis block
-        state_root = self.compute_state_root()
-        block = genesis.to_block()
-        block.header.state_root = state_root
-
-        block_hash = block.header.block_hash()
-        self.put_block(block)
-        self.put_canonical_hash(0, block_hash)
-
-        # Snapshot original storage
-        self.commit_original_storage()
-
-        return block_hash

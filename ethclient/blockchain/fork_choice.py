@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ethclient.common.types import Block, BlockHeader
-from ethclient.storage.memory_backend import MemoryBackend
+from ethclient.storage.store import Store
 
 
 class ForkChoice:
@@ -20,7 +20,7 @@ class ForkChoice:
     Pre-merge: uses total difficulty (not implemented — focus on post-merge).
     """
 
-    def __init__(self, store: MemoryBackend) -> None:
+    def __init__(self, store: Store) -> None:
         self.store = store
         self._head_hash: Optional[bytes] = None
         self._finalized_hash: Optional[bytes] = None

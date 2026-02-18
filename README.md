@@ -199,7 +199,8 @@ ethclient/
 │   └── hooks.py                     # Execution hooks (L2 extensibility)
 ├── storage/                         # State storage
 │   ├── store.py                     # Abstract Store interface (+ snap sync methods)
-│   └── memory_backend.py            # In-memory implementation, state root computation
+│   ├── memory_backend.py            # In-memory implementation, state root computation
+│   └── disk_backend.py              # LMDB-backed persistent storage with overlay
 ├── blockchain/                      # Blockchain engine
 │   ├── chain.py                     # Block validation, tx/block execution, simulate_call
 │   ├── mempool.py                   # Transaction pool (nonce ordering, replacement)
@@ -240,6 +241,7 @@ ethclient/
 | [python-snappy](https://pypi.org/project/python-snappy/) | RLPx message Snappy compression |
 | [py-ecc](https://pypi.org/project/py-ecc/) | BN128 elliptic curve operations (ecAdd, ecMul, ecPairing) |
 | [ckzg](https://pypi.org/project/ckzg/) | KZG point evaluation (EIP-4844) |
+| [lmdb](https://pypi.org/project/lmdb/) | LMDB key-value store for persistent storage |
 
 **Dev dependencies:**
 
@@ -302,7 +304,7 @@ class L2Hook(ExecutionHook):
 |---|---:|---:|---|
 | `common/` | 6 | 2,256 | RLP, types, trie (+ proofs), crypto, config |
 | `vm/` | 8 | 2,545 | EVM, opcodes, precompiles, gas |
-| `storage/` | 3 | 672 | Store interface (+ snap methods), in-memory backend |
+| `storage/` | 4 | 1,272 | Store interface, in-memory & LMDB backends |
 | `blockchain/` | 4 | 1,114 | Block validation, mempool, fork choice, simulate_call |
 | `networking/` | 19 | 3,684 | RLPx, discovery, eth/68, snap/1, protocol registry, sync, server |
 | `rpc/` | 3 | 590 | JSON-RPC server, eth API |
@@ -326,11 +328,11 @@ class L2Hook(ExecutionHook):
 | `test_snap_sync.py` | 303 | 21 | Snap sync state machine, response handlers |
 | `test_rpc.py` | 590 | 57 | JSON-RPC endpoints, eth_call/estimateGas EVM execution |
 | `test_integration.py` | 250 | 12 | Cross-module integration |
-| **Total** | **4,852** | **445** | |
+| `test_disk_backend.py` | 370 | 28 | LMDB persistence, flush, overlay, state root consistency |
+| **Total** | **5,222** | **505** | |
 
 ## Current Limitations
 
-- **Storage** — In-memory only (no disk backend; state is lost on restart)
 - **Engine API** — Not implemented (no PoS consensus layer integration)
 - **Transaction indexing** — Hash-based transaction/receipt lookups not implemented
 

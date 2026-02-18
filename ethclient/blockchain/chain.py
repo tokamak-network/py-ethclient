@@ -26,7 +26,6 @@ from ethclient.common.crypto import keccak256
 from ethclient.common import rlp
 from ethclient.common.config import ChainConfig
 from ethclient.storage.store import Store
-from ethclient.storage.memory_backend import MemoryBackend
 from ethclient.vm.evm import ExecutionEnvironment, run_bytecode, CallFrame
 from ethclient.vm.gas import (
     intrinsic_gas,
@@ -70,7 +69,7 @@ def simulate_call(
     value: int,
     gas_limit: int,
     header: BlockHeader,
-    store: MemoryBackend,
+    store: Store,
     config: ChainConfig,
 ) -> CallResult:
     """Execute a call against current state without modifying it.
@@ -299,7 +298,7 @@ class TxExecutionResult:
 def execute_transaction(
     tx: Transaction,
     header: BlockHeader,
-    store: MemoryBackend,
+    store: Store,
     config: ChainConfig,
     cumulative_gas: int,
     tx_index: int,
@@ -510,8 +509,8 @@ def execute_transaction(
     )
 
 
-def _bind_env_to_store(env: ExecutionEnvironment, store: MemoryBackend) -> None:
-    """Connect ExecutionEnvironment state accessors to MemoryBackend."""
+def _bind_env_to_store(env: ExecutionEnvironment, store: Store) -> None:
+    """Connect ExecutionEnvironment state accessors to Store."""
     env._balances = {}
     env._nonces = {}
     env._code = {}
@@ -519,25 +518,20 @@ def _bind_env_to_store(env: ExecutionEnvironment, store: MemoryBackend) -> None:
     env._original_storage = {}
 
     # Copy current state into env
-    for addr, acc in store._accounts.items():
+    for addr, acc in store.iter_accounts():
         env._balances[addr] = acc.balance
         env._nonces[addr] = acc.nonce
-    for code_hash, code in store._code.items():
-        # We need address->code mapping for env
-        pass
-    # Map address -> code for env
-    for addr, acc in store._accounts.items():
         code = store.get_account_code(addr)
         if code:
             env._code[addr] = code
-    for (addr, key), val in store._storage.items():
+    for (addr, key), val in store.iter_storage():
         env._storage[(addr, key)] = val
-    for (addr, key), val in store._original_storage.items():
+    for (addr, key), val in store.iter_original_storage():
         env._original_storage[(addr, key)] = val
 
 
-def _sync_env_to_store(env: ExecutionEnvironment, store: MemoryBackend) -> None:
-    """Sync state changes from ExecutionEnvironment back to MemoryBackend."""
+def _sync_env_to_store(env: ExecutionEnvironment, store: Store) -> None:
+    """Sync state changes from ExecutionEnvironment back to Store."""
     from ethclient.common.types import Account, EMPTY_CODE_HASH
 
     # Update balances and nonces
@@ -576,7 +570,7 @@ class BlockExecutionResult:
 
 def execute_block(
     block: Block,
-    store: MemoryBackend,
+    store: Store,
     config: ChainConfig,
     hook: ExecutionHook = DefaultHook(),
 ) -> BlockExecutionResult:
@@ -636,7 +630,7 @@ def execute_block(
 
 def _apply_block_reward(
     block: Block,
-    store: MemoryBackend,
+    store: Store,
     config: ChainConfig,
 ) -> None:
     """Apply PoW block reward to miner and uncle miners.
@@ -677,7 +671,7 @@ def _apply_block_reward(
 def validate_and_execute_block(
     block: Block,
     parent: BlockHeader,
-    store: MemoryBackend,
+    store: Store,
     config: ChainConfig,
     hook: ExecutionHook = DefaultHook(),
 ) -> BlockExecutionResult:

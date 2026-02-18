@@ -8,7 +8,7 @@ Defines the contract for state (accounts, code, storage) and chain data
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Iterator, Optional
 
 from ethclient.common.types import (
     Account,
@@ -17,13 +17,15 @@ from ethclient.common.types import (
     Transaction,
     Receipt,
     Withdrawal,
+    EMPTY_CODE_HASH,
 )
+from ethclient.common.crypto import keccak256
 
 
 class Store(ABC):
     """Abstract storage interface.
 
-    Implementations can be in-memory (testing), LevelDB, or other backends.
+    Implementations can be in-memory (testing), LMDB, or other backends.
     """
 
     # -----------------------------------------------------------------
@@ -49,6 +51,48 @@ class Store(ABC):
     def account_exists(self, address: bytes) -> bool:
         """Check if account exists (non-empty)."""
         ...
+
+    # -----------------------------------------------------------------
+    # Convenience account methods (concrete — delegate to get/put_account)
+    # -----------------------------------------------------------------
+
+    def get_balance(self, address: bytes) -> int:
+        acc = self.get_account(address)
+        return acc.balance if acc else 0
+
+    def set_balance(self, address: bytes, balance: int) -> None:
+        acc = self.get_account(address)
+        if acc is None:
+            acc = Account()
+        acc.balance = balance
+        self.put_account(address, acc)
+
+    def get_nonce(self, address: bytes) -> int:
+        acc = self.get_account(address)
+        return acc.nonce if acc else 0
+
+    def set_nonce(self, address: bytes, nonce: int) -> None:
+        acc = self.get_account(address)
+        if acc is None:
+            acc = Account()
+        acc.nonce = nonce
+        self.put_account(address, acc)
+
+    def increment_nonce(self, address: bytes) -> None:
+        self.set_nonce(address, self.get_nonce(address) + 1)
+
+    def set_account_code(self, address: bytes, code: bytes) -> None:
+        """Store code for an account, updating account's code_hash."""
+        acc = self.get_account(address)
+        if acc is None:
+            acc = Account()
+        if code:
+            code_hash = keccak256(code)
+            acc.code_hash = code_hash
+            self.put_code(code_hash, code)
+        else:
+            acc.code_hash = EMPTY_CODE_HASH
+        self.put_account(address, acc)
 
     # -----------------------------------------------------------------
     # Code
@@ -86,6 +130,30 @@ class Store(ABC):
     @abstractmethod
     def get_original_storage(self, address: bytes, key: int) -> int:
         """Get storage value at the start of the transaction (for SSTORE gas calc)."""
+        ...
+
+    @abstractmethod
+    def commit_original_storage(self) -> None:
+        """Snapshot current storage as 'original' for next block's SSTORE gas calc."""
+        ...
+
+    # -----------------------------------------------------------------
+    # Iterators (for _bind_env_to_store and compute_state_root)
+    # -----------------------------------------------------------------
+
+    @abstractmethod
+    def iter_accounts(self) -> Iterator[tuple[bytes, Account]]:
+        """Iterate over all (address, Account) pairs."""
+        ...
+
+    @abstractmethod
+    def iter_storage(self) -> Iterator[tuple[tuple[bytes, int], int]]:
+        """Iterate over all ((address, key), value) storage pairs."""
+        ...
+
+    @abstractmethod
+    def iter_original_storage(self) -> Iterator[tuple[tuple[bytes, int], int]]:
+        """Iterate over all ((address, key), value) original storage pairs."""
         ...
 
     # -----------------------------------------------------------------
@@ -252,3 +320,39 @@ class Store(ABC):
     def put_snap_progress(self, progress: dict) -> None:
         """Persist snap sync progress for resumption."""
         ...
+
+    # -----------------------------------------------------------------
+    # Genesis initialization (concrete — uses abstract methods)
+    # -----------------------------------------------------------------
+
+    def init_from_genesis(self, genesis) -> bytes:
+        """Initialize state from a Genesis object. Returns genesis block hash."""
+        for alloc in genesis.alloc:
+            acc = Account(
+                nonce=alloc.nonce,
+                balance=alloc.balance,
+            )
+            self.put_account(alloc.address, acc)
+
+            if alloc.code:
+                self.set_account_code(alloc.address, alloc.code)
+
+            for key_bytes, val_bytes in alloc.storage.items():
+                key = int.from_bytes(key_bytes, "big")
+                val = int.from_bytes(val_bytes, "big")
+                if val != 0:
+                    self.put_storage(alloc.address, key, val)
+
+        # Compute state root and create genesis block
+        state_root = self.compute_state_root()
+        block = genesis.to_block()
+        block.header.state_root = state_root
+
+        block_hash = block.header.block_hash()
+        self.put_block(block)
+        self.put_canonical_hash(0, block_hash)
+
+        # Snapshot original storage
+        self.commit_original_storage()
+
+        return block_hash

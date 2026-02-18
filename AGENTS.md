@@ -56,7 +56,8 @@ py-ethclient/                    # ~15,900 LOC (source + tests)
 │   │   └── hooks.py             # Execution hook interface (L2 extensibility)
 │   ├── storage/                 # State storage
 │   │   ├── store.py             # Store interface (account/code/storage CRUD + snap sync)
-│   │   └── memory_backend.py    # Dict-based in-memory backend
+│   │   ├── memory_backend.py    # Dict-based in-memory backend
+│   │   └── disk_backend.py     # LMDB-backed persistent storage with overlay
 │   ├── blockchain/              # Blockchain engine
 │   │   ├── chain.py             # Block validation/execution, PoW rewards, base fee, simulate_call
 │   │   ├── mempool.py           # Transaction pool (nonce ordering, replacement)
@@ -111,7 +112,7 @@ common (rlp, types, trie, crypto, config)
   ↓
 vm (evm, opcodes, precompiles, gas)
   ↓
-storage (store, memory_backend)
+storage (store, memory_backend, disk_backend)
   ↓
 blockchain (chain, mempool, fork_choice)
   ↓
@@ -258,8 +259,7 @@ snap_peers = [p for p in peers if p.snap_supported]
 ## Areas for Improvement
 
 1. **Genesis state initialization** — Parse go-ethereum's genesis alloc data to build initial state
-2. **Disk backend** — Replace `memory_backend.py` with LevelDB/RocksDB-based storage
-3. **Engine API** — `engine_` namespace for Beacon Chain integration
+2. **Engine API** — `engine_` namespace for Beacon Chain integration
 4. **EVM test suite** — Expand EVM correctness verification with ethereum/tests official vectors
 5. **Performance** — Trie caching, parallel transaction verification, asyncio optimization
 

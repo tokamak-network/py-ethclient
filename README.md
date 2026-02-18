@@ -250,14 +250,34 @@ class L2Hook(ExecutionHook):
 
 ## Project Stats
 
-| Metric | Value |
-|---|---|
-| Source code | ~9,100 LOC |
-| Test code | ~3,400 LOC |
-| Total LOC | ~12,500 |
-| Tests | 337 |
-| Source files | 29 |
-| Test files | 8 |
+### Source Code
+
+| Module | Files | LOC | Description |
+|---|---:|---:|---|
+| `common/` | 5 | 1,950 | RLP, types, trie, crypto, config |
+| `vm/` | 7 | 2,502 | EVM, opcodes, precompiles, gas |
+| `storage/` | 2 | 620 | Store interface, in-memory backend |
+| `blockchain/` | 3 | 966 | Block validation, mempool, fork choice |
+| `networking/` | 8 | 2,559 | RLPx, discovery, eth/68, sync, server |
+| `rpc/` | 2 | 550 | JSON-RPC server, eth API |
+| `main.py` | 1 | 333 | CLI entry point |
+| **Total** | **28** | **9,480** | |
+
+### Test Code
+
+| Test File | LOC | Tests | Covers |
+|---|---:|---:|---|
+| `test_rlp.py` | 206 | ~50 | RLP encoding/decoding |
+| `test_trie.py` | 213 | ~30 | Merkle Patricia Trie |
+| `test_crypto.py` | 113 | ~15 | keccak256, ECDSA, addresses |
+| `test_evm.py` | 647 | ~150 | Stack, memory, opcodes, precompiles |
+| `test_storage.py` | 407 | ~20 | Store CRUD, state root |
+| `test_blockchain.py` | 514 | ~30 | Header validation, block execution, mempool |
+| `test_p2p.py` | 769 | ~25 | RLPx, handshake, eth messages |
+| `test_rpc.py` | 306 | ~10 | JSON-RPC endpoints |
+| `test_integration.py` | 250 | ~10 | Cross-module integration |
+| `test_full_sync.py` | 499 | — | Live mainnet verification (standalone) |
+| **Total** | **3,924** | **337** | |
 
 ## Current Limitations
 

@@ -8,7 +8,7 @@ Python Ethereum L1 execution client. Fully independent port referencing ethrex (
 # Install
 pip install -e ".[dev]"
 
-# Unit tests (434 tests, ~1s)
+# Unit tests (445 tests, ~7s)
 pytest
 
 # Test a specific module
@@ -83,7 +83,7 @@ py-ethclient/                    # ~15,900 LOC (source + tests)
 │   └── rpc/                     # JSON-RPC server
 │       ├── server.py            # FastAPI-based dispatcher
 │       └── eth_api.py           # eth_ namespace handlers
-├── tests/                       # pytest unit tests (434 tests)
+├── tests/                       # pytest unit tests (445 tests)
 │   ├── test_rlp.py              # RLP encoding/decoding
 │   ├── test_trie.py             # MPT + Ethereum official test vectors
 │   ├── test_trie_proofs.py      # Trie Merkle proofs & range verification
@@ -127,7 +127,7 @@ Lower modules never depend on higher modules. `common` can be safely imported fr
 ### Unit Tests (offline)
 
 ```bash
-pytest                           # All tests (434, ~1s)
+pytest                           # All tests (445, ~7s)
 pytest tests/test_rlp.py         # RLP only
 pytest tests/test_evm.py -k "test_add"  # Specific test
 pytest -v                        # Verbose output
@@ -142,7 +142,7 @@ Test coverage by file:
 | test_trie.py | 26 | MPT, Ethereum official vectors |
 | test_trie_proofs.py | 23 | Proof generation/verification, range proofs, iterate |
 | test_crypto.py | 14 | keccak256, ECDSA, addresses |
-| test_evm.py | 73 | Stack, memory, all opcodes, precompiles |
+| test_evm.py | 84 | Stack, memory, all opcodes, precompiles (BN128, KZG) |
 | test_storage.py | 33 | Store CRUD, state root, snap storage |
 | test_blockchain.py | 31 | Header validation, base fee, block execution, mempool |
 | test_p2p.py | 51 | RLPx, handshake, eth messages |
@@ -272,6 +272,8 @@ snap_peers = [p for p in peers if p.snap_supported]
 | eth-hash[pycryptodome] | keccak256 |
 | fastapi + uvicorn | JSON-RPC server |
 | python-snappy | RLPx message compression |
+| py-ecc | BN128 ecAdd/ecMul/ecPairing |
+| ckzg | KZG point evaluation (EIP-4844) |
 | pytest + pytest-asyncio | Testing (dev) |
 
 ## Network Connection

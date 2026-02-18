@@ -645,3 +645,154 @@ class TestPrecompiles:
         assert result is not None
         _, output = result
         assert int.from_bytes(output, "big") == 3
+
+    # --- BN128 ecAdd (0x06) ---
+
+    def test_ecadd_basic(self):
+        """G1 + G1 should equal 2*G1."""
+        from ethclient.vm.precompiles import run_precompile
+        g1_x = (1).to_bytes(32, "big")
+        g1_y = (2).to_bytes(32, "big")
+        # G1 + G1
+        data = g1_x + g1_y + g1_x + g1_y
+        result = run_precompile(b"\x00" * 19 + b"\x06", data)
+        assert result is not None
+        gas, output = result
+        assert gas == 150
+        # Compare with ecMul(G1, 2)
+        scalar = (2).to_bytes(32, "big")
+        mul_result = run_precompile(b"\x00" * 19 + b"\x07", g1_x + g1_y + scalar)
+        assert output == mul_result[1]
+
+    def test_ecadd_zero(self):
+        """P + 0 = P (identity element)."""
+        from ethclient.vm.precompiles import run_precompile
+        g1_x = (1).to_bytes(32, "big")
+        g1_y = (2).to_bytes(32, "big")
+        data = g1_x + g1_y + b"\x00" * 64
+        result = run_precompile(b"\x00" * 19 + b"\x06", data)
+        assert result is not None
+        assert result[1] == g1_x + g1_y
+
+    def test_ecadd_invalid(self):
+        """Point not on curve should fail."""
+        from ethclient.vm.precompiles import run_precompile
+        # (1, 3) is not on BN128 curve
+        bad_x = (1).to_bytes(32, "big")
+        bad_y = (3).to_bytes(32, "big")
+        data = bad_x + bad_y + b"\x00" * 64
+        result = run_precompile(b"\x00" * 19 + b"\x06", data)
+        assert result is None
+
+    # --- BN128 ecMul (0x07) ---
+
+    def test_ecmul_basic(self):
+        """3 * G1 should be a valid point."""
+        from ethclient.vm.precompiles import run_precompile
+        g1_x = (1).to_bytes(32, "big")
+        g1_y = (2).to_bytes(32, "big")
+        scalar = (3).to_bytes(32, "big")
+        result = run_precompile(b"\x00" * 19 + b"\x07", g1_x + g1_y + scalar)
+        assert result is not None
+        assert result[0] == 6000
+        assert len(result[1]) == 64
+        # Result should not be zero point
+        assert result[1] != b"\x00" * 64
+
+    def test_ecmul_zero_scalar(self):
+        """0 * G1 = point at infinity."""
+        from ethclient.vm.precompiles import run_precompile
+        g1_x = (1).to_bytes(32, "big")
+        g1_y = (2).to_bytes(32, "big")
+        result = run_precompile(b"\x00" * 19 + b"\x07", g1_x + g1_y + b"\x00" * 32)
+        assert result is not None
+        assert result[1] == b"\x00" * 64
+
+    def test_ecmul_curve_order(self):
+        """curve_order * G1 = point at infinity."""
+        from ethclient.vm.precompiles import run_precompile
+        from py_ecc.bn128 import curve_order
+        g1_x = (1).to_bytes(32, "big")
+        g1_y = (2).to_bytes(32, "big")
+        scalar = curve_order.to_bytes(32, "big")
+        result = run_precompile(b"\x00" * 19 + b"\x07", g1_x + g1_y + scalar)
+        assert result is not None
+        assert result[1] == b"\x00" * 64
+
+    # --- BN128 ecPairing (0x08) ---
+
+    def test_ecpairing_empty(self):
+        """Empty input → pairing check passes (true)."""
+        from ethclient.vm.precompiles import run_precompile
+        result = run_precompile(b"\x00" * 19 + b"\x08", b"")
+        assert result is not None
+        assert result[0] == 45000  # base gas, k=0
+        assert result[1] == b"\x00" * 31 + b"\x01"
+
+    def test_ecpairing_invalid_length(self):
+        """Input not divisible by 192 → fail."""
+        from ethclient.vm.precompiles import run_precompile
+        result = run_precompile(b"\x00" * 19 + b"\x08", b"\x00" * 100)
+        assert result is None
+
+    def test_ecpairing_simple(self):
+        """e(P, Q) * e(-P, Q) == 1 → true."""
+        from ethclient.vm.precompiles import run_precompile
+        from py_ecc.bn128 import G1, G2, neg
+
+        # Encode G1
+        g1_enc = int(G1[0]).to_bytes(32, "big") + int(G1[1]).to_bytes(32, "big")
+        # Encode -G1
+        neg_g1 = neg(G1)
+        neg_g1_enc = int(neg_g1[0]).to_bytes(32, "big") + int(neg_g1[1]).to_bytes(32, "big")
+        # Encode G2
+        g2_enc = (
+            int(G2[0].coeffs[1]).to_bytes(32, "big") +
+            int(G2[0].coeffs[0]).to_bytes(32, "big") +
+            int(G2[1].coeffs[1]).to_bytes(32, "big") +
+            int(G2[1].coeffs[0]).to_bytes(32, "big")
+        )
+        # Pair: (G1, G2) + (-G1, G2) should equal 1
+        data = g1_enc + g2_enc + neg_g1_enc + g2_enc
+        result = run_precompile(b"\x00" * 19 + b"\x08", data)
+        assert result is not None
+        assert result[1] == b"\x00" * 31 + b"\x01"
+
+    # --- KZG point evaluation (0x0a) ---
+
+    def test_kzg_basic(self):
+        """Valid KZG proof verification."""
+        import hashlib
+        import ckzg
+        from ethclient.vm.precompiles import run_precompile, _get_kzg_trusted_setup
+
+        ts = _get_kzg_trusted_setup()
+        blob = b"\x00" * 131072
+        commitment = ckzg.blob_to_kzg_commitment(blob, ts)
+        z = b"\x00" * 32
+        proof, y = ckzg.compute_kzg_proof(blob, z, ts)
+
+        versioned_hash = b"\x01" + hashlib.sha256(commitment).digest()[1:]
+        data = versioned_hash + z + y + commitment + proof
+        result = run_precompile(b"\x00" * 19 + b"\x0a", data)
+        assert result is not None
+        assert result[0] == 50000
+        assert int.from_bytes(result[1][0:32], "big") == 4096
+
+    def test_kzg_invalid_hash(self):
+        """Wrong versioned_hash → fail."""
+        import hashlib
+        import ckzg
+        from ethclient.vm.precompiles import run_precompile, _get_kzg_trusted_setup
+
+        ts = _get_kzg_trusted_setup()
+        blob = b"\x00" * 131072
+        commitment = ckzg.blob_to_kzg_commitment(blob, ts)
+        z = b"\x00" * 32
+        proof, y = ckzg.compute_kzg_proof(blob, z, ts)
+
+        # Wrong hash
+        versioned_hash = b"\x01" + b"\xff" * 31
+        data = versioned_hash + z + y + commitment + proof
+        result = run_precompile(b"\x00" * 19 + b"\x0a", data)
+        assert result is None

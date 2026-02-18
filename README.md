@@ -238,6 +238,8 @@ ethclient/
 | [FastAPI](https://pypi.org/project/fastapi/) | JSON-RPC HTTP server |
 | [uvicorn](https://pypi.org/project/uvicorn/) | ASGI server |
 | [python-snappy](https://pypi.org/project/python-snappy/) | RLPx message Snappy compression |
+| [py-ecc](https://pypi.org/project/py-ecc/) | BN128 elliptic curve operations (ecAdd, ecMul, ecPairing) |
+| [ckzg](https://pypi.org/project/ckzg/) | KZG point evaluation (EIP-4844) |
 
 **Dev dependencies:**
 
@@ -253,7 +255,7 @@ ethclient/
 - **RLP (Recursive Length Prefix)** — Ethereum serialization format: encoding/decoding, list/bytes discrimination
 - **Merkle Patricia Trie** — Branch/Extension/Leaf nodes, hex-prefix encoding, state root computation, Merkle proof generation/verification, range proofs
 - **EVM** — 140+ opcodes, 256-bit stack, byte-addressable memory, EIP-2929 cold/warm tracking, EIP-1559 base fee
-- **Precompiles** — ecrecover, SHA-256, RIPEMD-160, identity, modexp (EIP-2565), BLAKE2f (EIP-152)
+- **Precompiles** — ecrecover, SHA-256, RIPEMD-160, identity, modexp (EIP-2565), BN128 ecAdd/ecMul/ecPairing (EIP-196/197), BLAKE2f (EIP-152), KZG point evaluation (EIP-4844)
 - **RLPx Transport** — ECIES encryption, AES-256-CTR frame encryption, SHA3 MAC authentication
 - **Protocol Registry** — Dynamic multi-protocol capability negotiation and message ID offset calculation
 - **eth/68 Protocol** — Status, GetBlockHeaders, BlockHeaders, Transactions, and all other message types
@@ -275,7 +277,8 @@ ethclient/
 | EIP-2200/3529 | SSTORE gas refund |
 | EIP-2565 | ModExp gas cost |
 | EIP-152 | BLAKE2f precompile |
-| EIP-4844 | Blob transaction type (type definition) |
+| EIP-196/197 | BN128 elliptic curve add, mul, pairing |
+| EIP-4844 | Blob transactions, KZG point evaluation precompile |
 | EIP-7702 | Set EOA account code (Prague) |
 
 ### Execution Hook System
@@ -298,13 +301,13 @@ class L2Hook(ExecutionHook):
 | Module | Files | LOC | Description |
 |---|---:|---:|---|
 | `common/` | 6 | 2,256 | RLP, types, trie (+ proofs), crypto, config |
-| `vm/` | 8 | 2,502 | EVM, opcodes, precompiles, gas |
+| `vm/` | 8 | 2,545 | EVM, opcodes, precompiles, gas |
 | `storage/` | 3 | 672 | Store interface (+ snap methods), in-memory backend |
 | `blockchain/` | 4 | 1,114 | Block validation, mempool, fork choice, simulate_call |
 | `networking/` | 19 | 3,684 | RLPx, discovery, eth/68, snap/1, protocol registry, sync, server |
 | `rpc/` | 3 | 590 | JSON-RPC server, eth API |
 | `main.py` | 1 | 352 | CLI entry point |
-| **Total** | **44** | **11,171** | |
+| **Total** | **44** | **11,214** | |
 
 ### Test Code
 
@@ -314,7 +317,7 @@ class L2Hook(ExecutionHook):
 | `test_trie.py` | 213 | 26 | Merkle Patricia Trie |
 | `test_trie_proofs.py` | 254 | 23 | Trie proof generation/verification, range proofs |
 | `test_crypto.py` | 113 | 14 | keccak256, ECDSA, addresses |
-| `test_evm.py` | 647 | 73 | Stack, memory, opcodes, precompiles |
+| `test_evm.py` | 798 | 84 | Stack, memory, opcodes, precompiles |
 | `test_storage.py` | 407 | 33 | Store CRUD, state root |
 | `test_blockchain.py` | 514 | 31 | Header validation, block execution, mempool |
 | `test_p2p.py` | 769 | 51 | RLPx, handshake, eth messages |
@@ -323,12 +326,11 @@ class L2Hook(ExecutionHook):
 | `test_snap_sync.py` | 303 | 21 | Snap sync state machine, response handlers |
 | `test_rpc.py` | 590 | 57 | JSON-RPC endpoints, eth_call/estimateGas EVM execution |
 | `test_integration.py` | 250 | 12 | Cross-module integration |
-| **Total** | **4,701** | **434** | |
+| **Total** | **4,852** | **445** | |
 
 ## Current Limitations
 
 - **Storage** — In-memory only (no disk backend; state is lost on restart)
-- **BN128 / KZG** — Precompile stubs (pairing operations not implemented)
 - **Engine API** — Not implemented (no PoS consensus layer integration)
 - **Transaction indexing** — Hash-based transaction/receipt lookups not implemented
 

@@ -7,9 +7,80 @@ Returns None on failure.
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
-from ethclient.common.crypto import keccak256, sha256, ripemd160
+from py_ecc.bn128 import (
+    FQ, FQ2, add, multiply, is_on_curve,
+    curve_order, field_modulus, Z1, Z2, b, b2,
+)
+
+from ethclient.common.crypto import sha256, ripemd160
+
+
+# ---------------------------------------------------------------------------
+# BN128 helpers
+# ---------------------------------------------------------------------------
+
+# Sentinel for decode errors (since Z1/Z2 are None in py_ecc)
+_INVALID = object()
+
+
+def _decode_g1_point(data: bytes):
+    """Decode 64 bytes into a py_ecc G1 point. Returns _INVALID on error."""
+    x = int.from_bytes(data[0:32], "big")
+    y = int.from_bytes(data[32:64], "big")
+    if x == 0 and y == 0:
+        return None  # point at infinity (Z1)
+    if x >= field_modulus or y >= field_modulus:
+        return _INVALID
+    p = (FQ(x), FQ(y))
+    if not is_on_curve(p, b):
+        return _INVALID
+    return p
+
+
+def _encode_g1_point(p) -> bytes:
+    """Encode a py_ecc G1 point to 64 bytes."""
+    if p is None:  # Z1 = None
+        return b"\x00" * 64
+    return int(p[0]).to_bytes(32, "big") + int(p[1]).to_bytes(32, "big")
+
+
+def _decode_g2_point(data: bytes):
+    """Decode 128 bytes into a py_ecc G2 point. Returns _INVALID on error."""
+    # Ethereum encoding: x_imag(32) + x_real(32) + y_imag(32) + y_real(32)
+    x_imag = int.from_bytes(data[0:32], "big")
+    x_real = int.from_bytes(data[32:64], "big")
+    y_imag = int.from_bytes(data[64:96], "big")
+    y_real = int.from_bytes(data[96:128], "big")
+    if x_imag == 0 and x_real == 0 and y_imag == 0 and y_real == 0:
+        return None  # point at infinity (Z2)
+    if x_imag >= field_modulus or x_real >= field_modulus:
+        return _INVALID
+    if y_imag >= field_modulus or y_real >= field_modulus:
+        return _INVALID
+    p = (FQ2([x_real, x_imag]), FQ2([y_real, y_imag]))
+    if not is_on_curve(p, b2):
+        return _INVALID
+    return p
+
+
+# ---------------------------------------------------------------------------
+# KZG trusted setup (lazy-loaded)
+# ---------------------------------------------------------------------------
+
+_kzg_trusted_setup = None
+
+
+def _get_kzg_trusted_setup():
+    """Load KZG trusted setup on first use."""
+    global _kzg_trusted_setup
+    if _kzg_trusted_setup is None:
+        import ckzg
+        setup_path = os.path.join(os.path.dirname(__file__), "trusted_setup.txt")
+        _kzg_trusted_setup = ckzg.load_trusted_setup(setup_path, 0)
+    return _kzg_trusted_setup
 
 
 # ---------------------------------------------------------------------------
@@ -125,11 +196,15 @@ def precompile_modexp(data: bytes) -> Optional[tuple[int, bytes]]:
 
 def precompile_ecadd(data: bytes) -> Optional[tuple[int, bytes]]:
     GAS = 150  # EIP-1108
-    # Stub: BN128 point addition requires a bn128 library
-    # For now return identity (this should use py_ecc in production)
     data = data.ljust(128, b"\x00")
-    # Return zero point as placeholder
-    return GAS, b"\x00" * 64
+    p1 = _decode_g1_point(data[0:64])
+    if p1 is _INVALID:
+        return None
+    p2 = _decode_g1_point(data[64:128])
+    if p2 is _INVALID:
+        return None
+    result = add(p1, p2)
+    return GAS, _encode_g1_point(result)
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +214,12 @@ def precompile_ecadd(data: bytes) -> Optional[tuple[int, bytes]]:
 def precompile_ecmul(data: bytes) -> Optional[tuple[int, bytes]]:
     GAS = 6000  # EIP-1108
     data = data.ljust(96, b"\x00")
-    return GAS, b"\x00" * 64
+    p = _decode_g1_point(data[0:64])
+    if p is _INVALID:
+        return None
+    scalar = int.from_bytes(data[64:96], "big")
+    result = multiply(p, scalar % curve_order)
+    return GAS, _encode_g1_point(result)
 
 
 # ---------------------------------------------------------------------------
@@ -148,11 +228,35 @@ def precompile_ecmul(data: bytes) -> Optional[tuple[int, bytes]]:
 
 def precompile_ecpairing(data: bytes) -> Optional[tuple[int, bytes]]:
     if len(data) % 192 != 0:
-        return None  # Invalid input
+        return None
     k = len(data) // 192
     gas = 45000 + 34000 * k  # EIP-1108
-    # Stub: return "true" (pairing check passes)
-    return gas, b"\x00" * 31 + b"\x01"
+
+    pairs = []
+    for i in range(k):
+        chunk = data[i * 192:(i + 1) * 192]
+        g1 = _decode_g1_point(chunk[0:64])
+        if g1 is _INVALID:
+            return None
+        g2 = _decode_g2_point(chunk[64:192])
+        if g2 is _INVALID:
+            return None
+        pairs.append((g1, g2))
+
+    # Empty input → pairing check trivially passes
+    if k == 0:
+        return gas, b"\x00" * 31 + b"\x01"
+
+    # Compute product of pairings: ∏ e(G1_i, G2_i) == 1
+    from py_ecc.bn128 import FQ12, pairing as bn128_pairing
+    result = FQ12.one()
+    for g1, g2 in pairs:
+        if g1 == Z1 or g2 == Z2:
+            continue  # e(O, Q) = e(P, O) = 1
+        result = result * bn128_pairing(g2, g1)
+
+    success = result == FQ12.one()
+    return gas, b"\x00" * 31 + (b"\x01" if success else b"\x00")
 
 
 # ---------------------------------------------------------------------------
@@ -237,13 +341,43 @@ def precompile_blake2f(data: bytes) -> Optional[tuple[int, bytes]]:
 
 
 # ---------------------------------------------------------------------------
-# 0x0a: KZG point evaluation (EIP-4844) — stub
+# 0x0a: KZG point evaluation (EIP-4844)
 # ---------------------------------------------------------------------------
+
+# BLS modulus (used in return value)
+_BLS_MODULUS = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
 
 def precompile_kzg_point_eval(data: bytes) -> Optional[tuple[int, bytes]]:
     GAS = 50000
-    # Stub: KZG verification requires trusted setup
-    return GAS, b"\x00" * 64
+    if len(data) != 192:
+        return None
+
+    versioned_hash = data[0:32]
+    z = data[32:64]
+    y = data[64:96]
+    commitment = data[96:144]   # 48 bytes
+    proof = data[144:192]       # 48 bytes
+
+    # Verify versioned_hash == 0x01 || SHA256(commitment)[1:]
+    import hashlib
+    commitment_hash = hashlib.sha256(commitment).digest()
+    expected_hash = b"\x01" + commitment_hash[1:]
+    if versioned_hash != expected_hash:
+        return None
+
+    # Verify KZG proof
+    import ckzg
+    try:
+        ts = _get_kzg_trusted_setup()
+        ok = ckzg.verify_kzg_proof(commitment, z, y, proof, ts)
+    except Exception:
+        return None
+
+    if not ok:
+        return None
+
+    # Return FIELD_ELEMENTS_PER_BLOB (4096) and BLS_MODULUS as two 32-byte values
+    return GAS, (4096).to_bytes(32, "big") + _BLS_MODULUS.to_bytes(32, "big")
 
 
 # ---------------------------------------------------------------------------

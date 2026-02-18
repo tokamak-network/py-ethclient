@@ -238,6 +238,8 @@ ethclient/
 | [FastAPI](https://pypi.org/project/fastapi/) | JSON-RPC HTTP 서버 |
 | [uvicorn](https://pypi.org/project/uvicorn/) | ASGI 서버 |
 | [python-snappy](https://pypi.org/project/python-snappy/) | RLPx 메시지 Snappy 압축 |
+| [py-ecc](https://pypi.org/project/py-ecc/) | BN128 타원곡선 연산 (ecAdd, ecMul, ecPairing) |
+| [ckzg](https://pypi.org/project/ckzg/) | KZG point evaluation (EIP-4844) |
 
 **개발용:**
 
@@ -253,7 +255,7 @@ ethclient/
 - **RLP (Recursive Length Prefix)** — 이더리움 직렬화 포맷: 인코딩/디코딩, 리스트/바이트 구분
 - **Merkle Patricia Trie** — Branch/Extension/Leaf 노드, hex-prefix 인코딩, 상태 루트 계산, 머클 증명 생성/검증, 범위 증명
 - **EVM** — 140+ 옵코드, 256비트 스택, 바이트 메모리, EIP-2929 cold/warm 추적, EIP-1559 base fee
-- **프리컴파일** — ecrecover, SHA-256, RIPEMD-160, identity, modexp (EIP-2565), BLAKE2f (EIP-152)
+- **프리컴파일** — ecrecover, SHA-256, RIPEMD-160, identity, modexp (EIP-2565), BN128 ecAdd/ecMul/ecPairing (EIP-196/197), BLAKE2f (EIP-152), KZG point evaluation (EIP-4844)
 - **RLPx 전송** — ECIES 암호화, AES-256-CTR 프레임 암호화, SHA3 MAC 인증
 - **프로토콜 레지스트리** — 동적 멀티 프로토콜 capability 협상 및 메시지 ID 오프셋 계산
 - **eth/68 프로토콜** — Status, GetBlockHeaders, BlockHeaders, Transactions 등 전체 메시지 타입
@@ -275,7 +277,8 @@ ethclient/
 | EIP-2200/3529 | SSTORE 가스 리펀드 |
 | EIP-2565 | ModExp 가스 비용 |
 | EIP-152 | BLAKE2f 프리컴파일 |
-| EIP-4844 | Blob 트랜잭션 타입 (타입 정의) |
+| EIP-196/197 | BN128 타원곡선 add, mul, pairing |
+| EIP-4844 | Blob 트랜잭션, KZG point evaluation 프리컴파일 |
 | EIP-7702 | Set EOA account code (Prague) |
 
 ### 실행 훅 시스템
@@ -298,13 +301,13 @@ class L2Hook(ExecutionHook):
 | 모듈 | 파일 | LOC | 설명 |
 |---|---:|---:|---|
 | `common/` | 6 | 2,256 | RLP, types, trie (+ 증명), crypto, config |
-| `vm/` | 8 | 2,502 | EVM, opcodes, precompiles, gas |
+| `vm/` | 8 | 2,545 | EVM, opcodes, precompiles, gas |
 | `storage/` | 3 | 672 | Store 인터페이스 (+ snap 메서드), 인메모리 백엔드 |
 | `blockchain/` | 4 | 1,114 | 블록 검증, mempool, fork choice, simulate_call |
 | `networking/` | 19 | 3,684 | RLPx, discovery, eth/68, snap/1, 프로토콜 레지스트리, sync, server |
 | `rpc/` | 3 | 590 | JSON-RPC 서버, eth API |
 | `main.py` | 1 | 352 | CLI 진입점 |
-| **합계** | **44** | **11,171** | |
+| **합계** | **44** | **11,214** | |
 
 ### 테스트 코드
 
@@ -314,7 +317,7 @@ class L2Hook(ExecutionHook):
 | `test_trie.py` | 213 | 26 | 머클 패트리시아 트라이 |
 | `test_trie_proofs.py` | 254 | 23 | 트라이 증명 생성/검증, 범위 증명 |
 | `test_crypto.py` | 113 | 14 | keccak256, ECDSA, 주소 |
-| `test_evm.py` | 647 | 73 | 스택, 메모리, 옵코드, 프리컴파일 |
+| `test_evm.py` | 798 | 84 | 스택, 메모리, 옵코드, 프리컴파일 |
 | `test_storage.py` | 407 | 33 | Store CRUD, 상태 루트 |
 | `test_blockchain.py` | 514 | 31 | 헤더 검증, 블록 실행, mempool |
 | `test_p2p.py` | 769 | 51 | RLPx, 핸드셰이크, eth 메시지 |
@@ -323,12 +326,11 @@ class L2Hook(ExecutionHook):
 | `test_snap_sync.py` | 303 | 21 | Snap sync 상태 머신, 응답 핸들러 |
 | `test_rpc.py` | 590 | 57 | JSON-RPC 엔드포인트, eth_call/estimateGas EVM 실행 |
 | `test_integration.py` | 250 | 12 | 모듈 간 통합 |
-| **합계** | **4,701** | **434** | |
+| **합계** | **4,852** | **445** | |
 
 ## Current Limitations
 
 - **저장소** — 인메모리 전용 (디스크 백엔드 미구현, 재시작 시 상태 유실)
-- **BN128 / KZG** — 프리컴파일 스텁 (pairing 연산 미구현)
 - **Engine API** — 미구현 (PoS 컨센서스 레이어 연동 없음)
 - **트랜잭션 인덱싱** — 해시 기반 트랜잭션/영수증 조회 미구현
 

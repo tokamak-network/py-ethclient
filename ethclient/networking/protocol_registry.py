@@ -23,6 +23,7 @@ from dataclasses import dataclass
 PROTOCOL_LENGTHS: dict[tuple[str, int], int] = {
     ("eth", 67): 17,
     ("eth", 68): 17,
+    ("eth", 69): 18,
     ("snap", 1): 8,
 }
 

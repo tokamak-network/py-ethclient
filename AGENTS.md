@@ -34,6 +34,40 @@ docker compose logs -f                      # View logs
 docker compose down                         # Stop
 ```
 
+### Sepolia Node Runbook
+
+```bash
+# Recommended (snap-first with bootnode pinning)
+ethclient --network sepolia --sync-mode snap --port 30303 --rpc-port 8545 --engine-port 8551 --max-peers 25 --data-dir data/sepolia --log-level INFO
+
+# If you want pure full sync mode
+ethclient --network sepolia --sync-mode full --port 30303 --rpc-port 8545 --engine-port 8551 --max-peers 25 --data-dir data/sepolia --log-level INFO
+```
+
+Monitoring:
+
+```bash
+# Live sync state
+watch -n 5 '
+  echo "peerCount:";
+  curl -s -H "content-type: application/json" \
+    --data "{\"jsonrpc\":\"2.0\",\"method\":\"net_peerCount\",\"params\":[],\"id\":1}" \
+    http://127.0.0.1:8545;
+  echo;
+  echo "blockNumber:";
+  curl -s -H "content-type: application/json" \
+    --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":2}" \
+    http://127.0.0.1:8545;
+  echo
+'
+```
+
+Useful log signals:
+- `Starting snap sync` — snap phase started.
+- `Account download: ...` — snap account phase is progressing.
+- `Snap bootstrap stalled at block 0, running full sync bootstrap` — automatic full-sync bootstrap fallback.
+- `Synced to block ...` — full sync block progress.
+
 ## Project Structure
 
 ```

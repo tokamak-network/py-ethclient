@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ethclient.common import rlp
-from ethclient.common.types import BlockHeader
+from ethclient.common.types import BlockHeader, Receipt, Log, TxType, logs_bloom
 from ethclient.networking.eth.protocol import (
     P2P_VERSION,
     ETH_VERSION,
@@ -85,12 +85,28 @@ class StatusMessage:
     """eth Status message — exchanged after Hello."""
     protocol_version: int = ETH_VERSION
     network_id: int = 1
+    # eth/68 fields
     total_difficulty: int = 0
     best_hash: bytes = field(default_factory=lambda: b"\x00" * 32)
+    # common field
     genesis_hash: bytes = field(default_factory=lambda: b"\x00" * 32)
     fork_id: tuple[bytes, int] = field(default_factory=lambda: (b"\x00" * 4, 0))
+    # eth/69 fields
+    earliest_block: int = 0
+    latest_block: int = 0
+    latest_block_hash: bytes = field(default_factory=lambda: b"\x00" * 32)
 
     def encode(self) -> bytes:
+        if self.protocol_version >= 69:
+            return rlp.encode([
+                self.protocol_version,
+                self.network_id,
+                self.genesis_hash,
+                [self.fork_id[0], self.fork_id[1]],
+                self.earliest_block,
+                self.latest_block,
+                self.latest_block_hash,
+            ])
         return rlp.encode([
             self.protocol_version,
             self.network_id,
@@ -103,10 +119,29 @@ class StatusMessage:
     @classmethod
     def decode(cls, data: bytes) -> StatusMessage:
         items = rlp.decode_list(data)
+        protocol_version = rlp.decode_uint(items[0])
+        network_id = rlp.decode_uint(items[1])
+
+        # eth/69 Status format:
+        # [version, networkid, genesis, forkid, earliest, latest, latest_hash]
+        if protocol_version >= 69:
+            fork_id = (items[3][0], rlp.decode_uint(items[3][1])) if len(items) > 3 else (b"\x00" * 4, 0)
+            return cls(
+                protocol_version=protocol_version,
+                network_id=network_id,
+                genesis_hash=items[2],
+                fork_id=fork_id,
+                earliest_block=rlp.decode_uint(items[4]) if len(items) > 4 else 0,
+                latest_block=rlp.decode_uint(items[5]) if len(items) > 5 else 0,
+                latest_block_hash=items[6] if len(items) > 6 else b"\x00" * 32,
+            )
+
+        # eth/68 (and older) Status format:
+        # [version, networkid, td, besthash, genesis, forkid]
         fork_id = (items[5][0], rlp.decode_uint(items[5][1])) if len(items) > 5 else (b"\x00" * 4, 0)
         return cls(
-            protocol_version=rlp.decode_uint(items[0]),
-            network_id=rlp.decode_uint(items[1]),
+            protocol_version=protocol_version,
+            network_id=network_id,
             total_difficulty=rlp.decode_uint(items[2]),
             best_hash=items[3],
             genesis_hash=items[4],
@@ -214,6 +249,81 @@ class BlockBodiesMessage:
             else:
                 bodies.append((body[0], body[1], []))
         return cls(request_id=req_id, bodies=bodies)
+
+
+@dataclass
+class GetReceiptsMessage:
+    """Request receipts by block hash list."""
+    request_id: int = 0
+    hashes: list[bytes] = field(default_factory=list)
+
+    def encode(self) -> bytes:
+        return rlp.encode([self.request_id, self.hashes])
+
+    @classmethod
+    def decode(cls, data: bytes) -> GetReceiptsMessage:
+        items = rlp.decode_list(data)
+        return cls(
+            request_id=rlp.decode_uint(items[0]),
+            hashes=items[1],
+        )
+
+
+def _encode_receipt_v2(receipt: Receipt) -> list:
+    """eth/69 receipt object without logs bloom."""
+    return [
+        int(receipt.tx_type),
+        b"\x01" if receipt.succeeded else b"",
+        receipt.cumulative_gas_used,
+        [log.to_rlp_list() for log in receipt.logs],
+    ]
+
+
+def _decode_receipt_v2(item: list) -> Receipt:
+    tx_type = TxType(rlp.decode_uint(item[0]))
+    status_raw = item[1]
+    logs = [Log.from_rlp_list(l) for l in item[3]]
+    return Receipt(
+        succeeded=status_raw == b"\x01",
+        cumulative_gas_used=rlp.decode_uint(item[2]),
+        logs_bloom=logs_bloom(logs),
+        logs=logs,
+        tx_type=tx_type,
+    )
+
+
+@dataclass
+class ReceiptsMessage:
+    """Receipts response, version-aware for eth/68 and eth/69."""
+    request_id: int = 0
+    receipts: list[list[Receipt]] = field(default_factory=list)
+    protocol_version: int = ETH_VERSION
+
+    def encode(self) -> bytes:
+        encoded_receipts: list[list] = []
+        for block_receipts in self.receipts:
+            if self.protocol_version >= 69:
+                encoded_receipts.append([_encode_receipt_v2(r) for r in block_receipts])
+            else:
+                encoded_receipts.append([r.encode_rlp() for r in block_receipts])
+        return rlp.encode([self.request_id, encoded_receipts])
+
+    @classmethod
+    def decode(cls, data: bytes, protocol_version: int = ETH_VERSION) -> ReceiptsMessage:
+        items = rlp.decode_list(data)
+        req_id = rlp.decode_uint(items[0])
+        all_receipts: list[list[Receipt]] = []
+        for block_items in items[1]:
+            decoded_block: list[Receipt] = []
+            for raw in block_items:
+                if protocol_version >= 69 and isinstance(raw, list):
+                    decoded_block.append(_decode_receipt_v2(raw))
+                elif isinstance(raw, bytes):
+                    decoded_block.append(Receipt.decode_rlp(raw))
+                elif isinstance(raw, list):
+                    decoded_block.append(Receipt.from_rlp_list(raw, TxType.LEGACY))
+            all_receipts.append(decoded_block)
+        return cls(request_id=req_id, receipts=all_receipts, protocol_version=protocol_version)
 
 
 @dataclass

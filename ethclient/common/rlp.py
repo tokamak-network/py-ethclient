@@ -198,11 +198,13 @@ def encode_uint(value: int) -> bytes:
 
 
 def decode_uint(data: bytes) -> int:
-    """Decode RLP bytes to unsigned integer."""
+    """Decode RLP bytes to unsigned integer.
+
+    Tolerates non-canonical leading zeros for compatibility with data
+    produced by other Ethereum clients (e.g., op-geth).
+    """
     if len(data) == 0:
         return 0
-    if len(data) > 1 and data[0] == 0:
-        raise RLPDecodingError("Integer has leading zeros")
     return int.from_bytes(data, "big")
 
 

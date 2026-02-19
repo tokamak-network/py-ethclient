@@ -21,6 +21,9 @@ from ethclient.networking.sync.snap_sync import (
     MAX_HASH,
     EMPTY_CODE_HASH,
     EMPTY_TRIE_ROOT,
+    SNAP_TIMEOUT,
+    PEER_FAIL_BAN_SECONDS,
+    MAX_STALE_SNAP_PEER_LAG_BLOCKS,
 )
 from ethclient.storage.memory_backend import MemoryBackend
 
@@ -301,3 +304,110 @@ class TestAccountParsing:
 
         assert len(state.storage_queue) == 0
         assert len(state.code_queue) == 0
+
+
+class TestPeerRefresh:
+    @pytest.mark.asyncio
+    async def test_wait_for_connected_peers_uses_provider(self, monkeypatch):
+        syncer = SnapSync()
+        disconnected_peer = _make_mock_peer(connected=False, snap_supported=True)
+        connected_peer = _make_mock_peer(connected=True, snap_supported=True)
+
+        calls = {"count": 0}
+
+        def provider():
+            calls["count"] += 1
+            if calls["count"] < 3:
+                return [disconnected_peer]
+            return [connected_peer]
+
+        syncer._peer_provider = provider
+        monkeypatch.setattr(
+            "ethclient.networking.sync.snap_sync.PEER_WAIT_TIMEOUT",
+            0.2,
+        )
+        monkeypatch.setattr(
+            "ethclient.networking.sync.snap_sync.PEER_WAIT_POLL_INTERVAL",
+            0.01,
+        )
+
+        assert await syncer._wait_for_connected_peers([disconnected_peer], "account")
+
+    @pytest.mark.asyncio
+    async def test_wait_for_connected_peers_timeout(self, monkeypatch):
+        syncer = SnapSync()
+        disconnected_peer = _make_mock_peer(connected=False, snap_supported=True)
+        syncer._peer_provider = lambda: [disconnected_peer]
+
+        monkeypatch.setattr(
+            "ethclient.networking.sync.snap_sync.PEER_WAIT_TIMEOUT",
+            0.05,
+        )
+        monkeypatch.setattr(
+            "ethclient.networking.sync.snap_sync.PEER_WAIT_POLL_INTERVAL",
+            0.01,
+        )
+
+        assert not await syncer._wait_for_connected_peers([disconnected_peer], "account")
+
+
+class TestPeerHealth:
+    def test_adaptive_timeout_uses_rtt(self):
+        syncer = SnapSync()
+        peer = _make_mock_peer()
+        health = syncer._get_peer_health(peer)
+        assert syncer._adaptive_timeout(peer) == SNAP_TIMEOUT
+        health.avg_rtt = 5.0
+        assert syncer._adaptive_timeout(peer) >= SNAP_TIMEOUT
+
+    def test_peer_ban_on_repeated_timeout(self):
+        syncer = SnapSync()
+        peer = _make_mock_peer()
+        syncer._record_timeout(peer)
+        syncer._record_timeout(peer)
+        syncer._record_timeout(peer)
+        health = syncer._get_peer_health(peer)
+        assert health.banned_until > 0
+        assert health.banned_until - health.cooldown_until <= PEER_FAIL_BAN_SECONDS
+
+    def test_connected_peers_filters_stale_head(self):
+        syncer = SnapSync()
+        syncer.state.target_block = 1_000
+
+        stale_peer = _make_mock_peer(connected=True, snap_supported=True)
+        stale_peer.best_block_number = 800
+
+        fresh_peer = _make_mock_peer(connected=True, snap_supported=True)
+        fresh_peer.best_block_number = 1_000 - MAX_STALE_SNAP_PEER_LAG_BLOCKS + 1
+
+        zero_peer = _make_mock_peer(connected=True, snap_supported=True)
+        zero_peer.best_block_number = 0
+
+        peers = syncer._connected_peers([stale_peer, fresh_peer, zero_peer])
+
+        assert stale_peer not in peers
+        assert fresh_peer in peers
+        assert zero_peer in peers
+
+
+class TestProgressRestore:
+    def test_restore_progress_when_target_matches(self):
+        store = MemoryBackend()
+        store.put_snap_progress({
+            "target_block": 1234,
+            "account_cursor": ("00" * 31) + "ff",
+            "accounts_downloaded": 99,
+            "storage_downloaded": 7,
+            "codes_downloaded": 5,
+            "nodes_healed": 3,
+        })
+        syncer = SnapSync(store=store)
+        syncer.state.target_block = 1234
+
+        syncer._restore_progress()
+
+        assert syncer.state.accounts_downloaded == 99
+        assert syncer.state.storage_downloaded == 7
+        assert syncer.state.codes_downloaded == 5
+        assert syncer.state.nodes_healed == 3
+        assert syncer.state.account_cursor.hex().endswith("ff")

@@ -1,5 +1,5 @@
 """
-devp2p base protocol and eth/68 sub-protocol.
+devp2p base protocol and eth/69 sub-protocol.
 
 p2p base messages: Hello (0x00), Disconnect (0x01), Ping (0x02), Pong (0x03)
 eth messages: Status (0x10), GetBlockHeaders (0x13), BlockHeaders (0x14), etc.
@@ -42,6 +42,7 @@ class EthMsg(IntEnum):
     POOLED_TXS = ETH_OFFSET + 10       # 0x1a
     GET_RECEIPTS = ETH_OFFSET + 15      # 0x1f
     RECEIPTS = ETH_OFFSET + 16          # 0x20
+    BLOCK_RANGE_UPDATE = ETH_OFFSET + 17  # 0x21 (eth/69)
 
 
 # ---------------------------------------------------------------------------
@@ -69,5 +70,6 @@ class DisconnectReason(IntEnum):
 # ---------------------------------------------------------------------------
 
 P2P_VERSION = 5
-ETH_VERSION = 68
+ETH_VERSION = 69
+ETH_VERSION_FALLBACK = 68
 CLIENT_NAME = "py-ethclient/0.1.0"

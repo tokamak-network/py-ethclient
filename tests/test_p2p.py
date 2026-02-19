@@ -354,6 +354,33 @@ class TestEthMessages:
         assert decoded.genesis_hash == genesis
         assert decoded.fork_id == fork_id
 
+    def test_status_roundtrip_eth69(self):
+        from ethclient.networking.eth.messages import StatusMessage
+
+        genesis = os.urandom(32)
+        latest_hash = os.urandom(32)
+        fork_id = (os.urandom(4), 777777)
+
+        msg = StatusMessage(
+            protocol_version=69,
+            network_id=11155111,
+            genesis_hash=genesis,
+            fork_id=fork_id,
+            earliest_block=0,
+            latest_block=12_345_678,
+            latest_block_hash=latest_hash,
+        )
+        encoded = msg.encode()
+        decoded = StatusMessage.decode(encoded)
+
+        assert decoded.protocol_version == 69
+        assert decoded.network_id == 11155111
+        assert decoded.genesis_hash == genesis
+        assert decoded.fork_id == fork_id
+        assert decoded.earliest_block == 0
+        assert decoded.latest_block == 12_345_678
+        assert decoded.latest_block_hash == latest_hash
+
     def test_get_block_headers_by_number(self):
         from ethclient.networking.eth.messages import GetBlockHeadersMessage
 
@@ -410,6 +437,49 @@ class TestEthMessages:
 
         assert decoded.request_id == 99
         assert decoded.hashes == hashes
+
+    def test_get_receipts_roundtrip(self):
+        from ethclient.networking.eth.messages import GetReceiptsMessage
+
+        hashes = [os.urandom(32) for _ in range(2)]
+        msg = GetReceiptsMessage(request_id=7, hashes=hashes)
+        encoded = msg.encode()
+        decoded = GetReceiptsMessage.decode(encoded)
+        assert decoded.request_id == 7
+        assert decoded.hashes == hashes
+
+    def test_receipts_roundtrip_eth68(self):
+        from ethclient.networking.eth.messages import ReceiptsMessage
+        from ethclient.common.types import Receipt, Log, TxType
+
+        r = Receipt(
+            succeeded=True,
+            cumulative_gas_used=21000,
+            logs_bloom=b"\x00" * 256,
+            logs=[Log(address=b"\x11" * 20, topics=[b"\x22" * 32], data=b"")],
+            tx_type=TxType.LEGACY,
+        )
+        msg = ReceiptsMessage(request_id=1, receipts=[[r]], protocol_version=68)
+        decoded = ReceiptsMessage.decode(msg.encode(), protocol_version=68)
+        assert decoded.request_id == 1
+        assert decoded.receipts[0][0].cumulative_gas_used == 21000
+
+    def test_receipts_roundtrip_eth69(self):
+        from ethclient.networking.eth.messages import ReceiptsMessage
+        from ethclient.common.types import Receipt, Log, TxType
+
+        r = Receipt(
+            succeeded=True,
+            cumulative_gas_used=22000,
+            logs_bloom=b"\x00" * 256,
+            logs=[Log(address=b"\x33" * 20, topics=[], data=b"\x01\x02")],
+            tx_type=TxType.FEE_MARKET,
+        )
+        msg = ReceiptsMessage(request_id=2, receipts=[[r]], protocol_version=69)
+        decoded = ReceiptsMessage.decode(msg.encode(), protocol_version=69)
+        assert decoded.request_id == 2
+        assert decoded.receipts[0][0].tx_type == TxType.FEE_MARKET
+        assert decoded.receipts[0][0].cumulative_gas_used == 22000
 
     def test_transactions_roundtrip(self):
         from ethclient.networking.eth.messages import TransactionsMessage
@@ -852,6 +922,89 @@ class TestFullSync:
         assert sync.state.target_block == 5_000_000
         assert peer.best_block_number == 5_000_000
 
+    @pytest.mark.asyncio
+    async def test_start_prefers_peer_with_highest_best_block_number(self):
+        """start() should prioritize eth/69 latest block over total difficulty."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from ethclient.networking.sync.full_sync import FullSync
+
+        sync = FullSync()
+
+        low_head_peer = MagicMock()
+        low_head_peer.best_hash = b"\xaa" * 32
+        low_head_peer.best_block_number = 100
+        low_head_peer.total_difficulty = 999999
+        low_head_peer.connected = True
+        low_head_peer.remote_id = b"\x02" * 64
+        low_head_peer.send_eth_message = AsyncMock()
+
+        high_head_peer = MagicMock()
+        high_head_peer.best_hash = b"\xbb" * 32
+        high_head_peer.best_block_number = 500
+        high_head_peer.total_difficulty = 0
+        high_head_peer.connected = True
+        high_head_peer.remote_id = b"\x03" * 64
+        high_head_peer.send_eth_message = AsyncMock()
+
+        with patch.object(sync, "_discover_head", new_callable=AsyncMock, return_value=0) as discover_mock:
+            with patch.object(sync, "_sync_loop", new_callable=AsyncMock):
+                await sync.start([low_head_peer, high_head_peer])
+
+        assert sync.state.best_peer is high_head_peer
+        assert sync.state.target_block == 500
+        discover_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fetch_headers_timeout_returns_none(self):
+        """Header timeout should be treated as failure (None), not completion ([])."""
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+        import ethclient.networking.sync.full_sync as fs_mod
+
+        sync = FullSync()
+        peer = MagicMock()
+        peer.send_eth_message = AsyncMock()
+
+        original_timeout = fs_mod.SYNC_TIMEOUT
+        fs_mod.SYNC_TIMEOUT = 0.05
+        try:
+            headers = await sync._fetch_headers(peer, start=1, count=2)
+        finally:
+            fs_mod.SYNC_TIMEOUT = original_timeout
+
+        assert headers is None
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_triggers_failover_after_header_failures(self):
+        """Repeated header failures should trigger failover instead of completing sync."""
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+        import ethclient.networking.sync.full_sync as fs_mod
+
+        sync = FullSync()
+        peer = MagicMock()
+        peer.connected = True
+        peer.remote_id = b"\x01" * 64
+
+        sync._candidate_peers = [peer]
+        sync.state.best_peer = peer
+        sync.state.current_block = 100
+        sync.state.target_block = 200
+        sync.state.syncing = True
+
+        sync._fetch_headers = AsyncMock(return_value=None)
+        sync._failover_peer = AsyncMock(return_value=False)
+
+        original_backoff = fs_mod.HEADER_RETRY_BACKOFF
+        fs_mod.HEADER_RETRY_BACKOFF = 0.01
+        try:
+            await sync._sync_loop()
+        finally:
+            fs_mod.HEADER_RETRY_BACKOFF = original_backoff
+
+        assert sync._fetch_headers.call_count == fs_mod.MAX_HEADER_FAILURES
+        sync._failover_peer.assert_called_once()
+
 
 # ===================================================================
 # P2P Server component tests
@@ -888,3 +1041,60 @@ class TestServerComponents:
         key = PrivateKey()
         server = P2PServer(private_key=key.secret, max_peers=10)
         assert server.max_peers == 10
+
+    @pytest.mark.asyncio
+    async def test_start_sync_prefers_snap_when_target_available(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.server import P2PServer
+        from ethclient.common.types import BlockHeader
+
+        key = PrivateKey()
+        server = P2PServer(private_key=key.secret, enable_snap=True)
+
+        peer = MagicMock()
+        peer.connected = True
+        peer.snap_supported = True
+        peer.best_block_number = 10
+        peer.remote_id = b"\x11" * 64
+
+        server.peers = {peer.remote_id: peer}
+        server.snap_syncer = MagicMock()
+        server.snap_syncer.is_syncing = False
+        server.syncer.state.syncing = False
+        server.syncer.discover_head_header = AsyncMock(
+            return_value=BlockHeader(number=10, state_root=b"\x22" * 32)
+        )
+        server.start_snap_sync = AsyncMock()
+        server.syncer.start = AsyncMock()
+
+        await server.start_sync()
+
+        server.start_snap_sync.assert_awaited_once_with(b"\x22" * 32, 10)
+        server.syncer.start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_start_sync_falls_back_to_full_when_snap_target_missing(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.server import P2PServer
+
+        key = PrivateKey()
+        server = P2PServer(private_key=key.secret, enable_snap=True)
+
+        peer = MagicMock()
+        peer.connected = True
+        peer.snap_supported = True
+        peer.best_block_number = 10
+        peer.remote_id = b"\x12" * 64
+
+        server.peers = {peer.remote_id: peer}
+        server.snap_syncer = MagicMock()
+        server.snap_syncer.is_syncing = False
+        server.syncer.state.syncing = False
+        server.syncer.discover_head_header = AsyncMock(return_value=None)
+        server.start_snap_sync = AsyncMock()
+        server.syncer.start = AsyncMock()
+
+        await server.start_sync()
+
+        server.start_snap_sync.assert_not_awaited()
+        server.syncer.start.assert_awaited_once()

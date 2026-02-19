@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-venv \
     libsnappy-dev \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -19,7 +20,7 @@ RUN pip3 install --break-system-packages -e ".[dev]" 2>/dev/null || true
 COPY . .
 RUN pip3 install --break-system-packages -e ".[dev]"
 
-EXPOSE 30303/tcp 30303/udp 8545/tcp
+EXPOSE 30303/tcp 30303/udp 8545/tcp 8551/tcp 6060/tcp
 
 ENTRYPOINT ["python3", "-m", "ethclient.main"]
 CMD ["--network", "mainnet"]

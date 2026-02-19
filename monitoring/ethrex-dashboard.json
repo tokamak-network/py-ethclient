@@ -1,0 +1,12 @@
+{
+  "dashboard": {
+    "title": "Ethrex Migration Health",
+    "panels": [
+      {"title": "RK-001 Engine API", "expr": "rate(engine_api_calls_total[1m])"},
+      {"title": "RK-002 Block Progress", "expr": "rate(eth_block_number[5m])"},
+      {"title": "RK-003 Metrics Up", "expr": "ethclient_up"},
+      {"title": "RK-004 Archive Errors", "expr": "rate(archive_query_errors_total[5m])"},
+      {"title": "RK-005 Fusaka Signals", "expr": "p2p_peers{protocol=\"eth/69\"}"}
+    ]
+  }
+}

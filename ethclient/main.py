@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -26,7 +27,7 @@ from coincurve import PrivateKey
 
 from ethclient.common.config import (
     ChainConfig, Genesis, MAINNET_CONFIG, SEPOLIA_CONFIG, HOLESKY_CONFIG,
-    GENESIS_HASHES, get_network_fork_id,
+    GENESIS_HASHES, compute_fork_id,
 )
 from ethclient.storage.memory_backend import MemoryBackend
 from ethclient.blockchain.mempool import Mempool
@@ -35,6 +36,7 @@ from ethclient.networking.discv4.routing import Node
 from ethclient.networking.server import P2PServer
 from ethclient.rpc.server import RPCServer
 from ethclient.rpc.eth_api import register_eth_api
+from ethclient.rpc.engine_api import register_engine_api
 
 
 logger = logging.getLogger("ethclient")
@@ -89,16 +91,24 @@ class EthNode:
         genesis: Optional[Genesis] = None,
         listen_port: int = 30303,
         rpc_port: int = 8545,
+        engine_port: int = 8551,
+        metrics_port: int = 6060,
         boot_nodes: Optional[list[Node]] = None,
+        bootnode_only: bool = False,
         max_peers: int = 25,
         sync_mode: str = "snap",
         data_dir: Optional[str] = None,
+        archive_mode: bool = False,
+        jwt_secret: Optional[bytes] = None,
     ) -> None:
         self.private_key = private_key
         self.chain_config = chain_config
         self.listen_port = listen_port
         self.rpc_port = rpc_port
+        self.engine_port = engine_port
+        self.metrics_port = metrics_port
         self.sync_mode = sync_mode
+        self.archive_mode = archive_mode
 
         # Initialize storage
         if data_dir:
@@ -115,8 +125,21 @@ class EthNode:
             # Use well-known genesis hash for known networks
             self.genesis_hash = GENESIS_HASHES.get(chain_config.chain_id, b"\x00" * 32)
 
-        # Compute ForkID for Status handshake
-        self.fork_id = get_network_fork_id(chain_config.chain_id)
+        # Compute ForkID using current local head state (EIP-2124)
+        head_block = 0
+        head_time = 0
+        latest_block = self.store.get_latest_block_number()
+        if latest_block is not None:
+            head_block = latest_block
+            latest_header = self.store.get_block_header_by_number(latest_block)
+            if latest_header is not None:
+                head_time = latest_header.timestamp
+        self.fork_id = compute_fork_id(
+            self.genesis_hash,
+            chain_config,
+            head_block=head_block,
+            head_time=head_time,
+        )
 
         # Blockchain engine
         self.mempool = Mempool()
@@ -129,6 +152,7 @@ class EthNode:
             listen_port=listen_port,
             max_peers=max_peers,
             boot_nodes=boot_nodes or [],
+            bootnode_only=bootnode_only,
             network_id=chain_config.chain_id,
             genesis_hash=self.genesis_hash,
             fork_id=self.fork_id,
@@ -147,7 +171,31 @@ class EthNode:
         # RPC server
         self.rpc = RPCServer()
         register_eth_api(self.rpc, store=self.store, mempool=self.mempool,
-                         network_chain_id=chain_config.chain_id, config=chain_config)
+                         network_chain_id=chain_config.chain_id, config=chain_config,
+                         archive_enabled=archive_mode,
+                         peer_count_provider=lambda: self.p2p.peer_count,
+                         syncing_provider=lambda: self.p2p.is_syncing)
+
+        # Engine API server (also serves standard eth methods for op-node compatibility)
+        self.engine_rpc = RPCServer()
+        register_eth_api(self.engine_rpc, store=self.store, mempool=self.mempool,
+                         network_chain_id=chain_config.chain_id, config=chain_config,
+                         archive_enabled=archive_mode,
+                         peer_count_provider=lambda: self.p2p.peer_count,
+                         syncing_provider=lambda: self.p2p.is_syncing)
+        register_engine_api(
+            self.engine_rpc,
+            store=self.store,
+            fork_choice=self.fork_choice,
+            chain_config=chain_config,
+        )
+        if jwt_secret is not None:
+            self.engine_rpc.set_engine_jwt_secret(jwt_secret)
+
+        # Metrics server
+        self.metrics_rpc = RPCServer()
+        self.metrics_rpc.set_metrics_provider(self._collect_metrics)
+        self._sync_task: Optional[asyncio.Task] = None
 
         self._running = False
 
@@ -162,6 +210,8 @@ class EthNode:
         logger.info("  Chain ID: %d", self.chain_config.chain_id)
         logger.info("  P2P port: %d", self.listen_port)
         logger.info("  RPC port: %d", self.rpc_port)
+        logger.info("  Engine port: %d", self.engine_port)
+        logger.info("  Metrics port: %d", self.metrics_port)
 
         # Start P2P
         await self.p2p.start()
@@ -179,11 +229,34 @@ class EthNode:
         self._rpc_server.config.setup_event_loop = lambda: None
         self._rpc_task = asyncio.create_task(self._rpc_server.serve())
 
+        # Engine RPC server in background
+        engine_config = uvicorn.Config(
+            self.engine_rpc.app,
+            host="0.0.0.0",
+            port=self.engine_port,
+            log_level="warning",
+            loop="asyncio",
+        )
+        self._engine_rpc_server = uvicorn.Server(engine_config)
+        self._engine_rpc_server.config.setup_event_loop = lambda: None
+        self._engine_rpc_task = asyncio.create_task(self._engine_rpc_server.serve())
+
+        # Metrics server in background
+        metrics_config = uvicorn.Config(
+            self.metrics_rpc.app,
+            host="0.0.0.0",
+            port=self.metrics_port,
+            log_level="warning",
+            loop="asyncio",
+        )
+        self._metrics_server = uvicorn.Server(metrics_config)
+        self._metrics_server.config.setup_event_loop = lambda: None
+        self._metrics_task = asyncio.create_task(self._metrics_server.serve())
+
         logger.info("Node started successfully")
 
-        # Start sync after a brief delay
-        await asyncio.sleep(2.0)
-        asyncio.create_task(self.p2p.start_sync())
+        # Keep retrying sync start because peers may connect after startup.
+        self._sync_task = asyncio.create_task(self._sync_supervisor())
 
     async def stop(self) -> None:
         """Gracefully stop all subsystems."""
@@ -194,6 +267,16 @@ class EthNode:
 
         if hasattr(self, "_rpc_server"):
             self._rpc_server.should_exit = True
+        if hasattr(self, "_engine_rpc_server"):
+            self._engine_rpc_server.should_exit = True
+        if hasattr(self, "_metrics_server"):
+            self._metrics_server.should_exit = True
+        if self._sync_task is not None:
+            self._sync_task.cancel()
+            try:
+                await self._sync_task
+            except asyncio.CancelledError:
+                pass
 
         # Flush and close disk backend
         if hasattr(self.store, "flush"):
@@ -203,6 +286,26 @@ class EthNode:
             self.store.close()
 
         logger.info("Node stopped")
+
+    async def _sync_supervisor(self) -> None:
+        """Periodically attempt synchronization while the node is running."""
+        await asyncio.sleep(2.0)
+        while self._running:
+            try:
+                await self.p2p.start_sync()
+            except Exception as exc:
+                logger.debug("sync supervisor error: %s", exc)
+            await asyncio.sleep(5.0)
+
+    def _collect_metrics(self) -> dict[str, int]:
+        """Return a minimal Prometheus-compatible metrics snapshot."""
+        latest_block = self.store.get_latest_block_number()
+        return {
+            "ethclient_up": 1,
+            "eth_block_number": latest_block if latest_block is not None else 0,
+            "eth_peer_count": self.p2p.peer_count,
+            "eth_syncing": 1 if self.p2p.is_syncing else 0,
+        }
 
     async def run_until_stopped(self) -> None:
         """Run until shutdown signal is received."""
@@ -254,6 +357,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON-RPC listen port (default: 8545)",
     )
     parser.add_argument(
+        "--engine-port",
+        type=int,
+        default=8551,
+        help="Engine API JSON-RPC listen port (default: 8551)",
+    )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=6060,
+        help="Prometheus metrics listen port (default: 6060)",
+    )
+    parser.add_argument(
         "--max-peers",
         type=int,
         default=25,
@@ -264,6 +379,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Comma-separated enode URLs for bootstrap",
+    )
+    parser.add_argument(
+        "--bootnode-only",
+        action="store_true",
+        help="Only dial configured bootnodes (default: disabled)",
     )
     parser.add_argument(
         "--private-key",
@@ -289,6 +409,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Data directory for persistent storage (default: in-memory)",
     )
+    parser.add_argument(
+        "--datadir",
+        type=str,
+        default=None,
+        help="Alias for --data-dir (geth-compatible)",
+    )
+    parser.add_argument(
+        "--archive",
+        action="store_true",
+        help="Enable archive mode RPC semantics for historical state queries",
+    )
+    parser.add_argument(
+        "--jwt-secret",
+        type=str,
+        default=None,
+        help="JWT secret or path to jwtsecret file for Engine API auth",
+    )
     return parser
 
 
@@ -303,15 +440,7 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    # Chain config
-    if args.network == "mainnet":
-        chain_config = MAINNET_CONFIG
-    elif args.network == "sepolia":
-        chain_config = SEPOLIA_CONFIG
-    else:
-        chain_config = HOLESKY_CONFIG
-
-    # Genesis
+    # Genesis (must be parsed before chain config to allow override)
     genesis = None
     if args.genesis:
         genesis_path = Path(args.genesis)
@@ -324,11 +453,20 @@ def main() -> None:
             logger.error("Genesis file not found: %s", args.genesis)
             sys.exit(1)
 
+    # Chain config: use genesis config if available, otherwise fall back to network preset
+    if genesis is not None:
+        chain_config = genesis.config
+    elif args.network == "mainnet":
+        chain_config = MAINNET_CONFIG
+    elif args.network == "sepolia":
+        chain_config = SEPOLIA_CONFIG
+    else:
+        chain_config = HOLESKY_CONFIG
+
     # Private key
     if args.private_key:
         private_key = bytes.fromhex(args.private_key.removeprefix("0x"))
     else:
-        import os
         private_key = os.urandom(32)
         logger.info("Generated new node identity")
 
@@ -350,6 +488,17 @@ def main() -> None:
             if node:
                 boot_nodes.append(node)
 
+    data_dir = args.data_dir or args.datadir or os.getenv("DATADIR") or os.getenv("DATA_DIR")
+
+    jwt_secret = None
+    if args.jwt_secret:
+        jwt_path = Path(args.jwt_secret)
+        if jwt_path.exists():
+            hex_str = jwt_path.read_text().strip().removeprefix("0x")
+        else:
+            hex_str = args.jwt_secret.strip().removeprefix("0x")
+        jwt_secret = bytes.fromhex(hex_str)
+
     # Create and run node
     node = EthNode(
         private_key=private_key,
@@ -357,10 +506,15 @@ def main() -> None:
         genesis=genesis,
         listen_port=args.port,
         rpc_port=args.rpc_port,
+        engine_port=args.engine_port,
+        metrics_port=args.metrics_port,
         boot_nodes=boot_nodes,
+        bootnode_only=args.bootnode_only,
         max_peers=args.max_peers,
         sync_mode=args.sync_mode,
-        data_dir=args.data_dir,
+        data_dir=data_dir,
+        archive_mode=args.archive,
+        jwt_secret=jwt_secret,
     )
 
     try:

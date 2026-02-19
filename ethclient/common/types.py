@@ -82,6 +82,7 @@ class TxType(IntEnum):
     FEE_MARKET = 2    # EIP-1559
     BLOB = 3          # EIP-4844
     SET_CODE = 4      # EIP-7702
+    DEPOSIT = 0x7E    # OP Stack Deposit
 
 
 @dataclass
@@ -129,6 +130,12 @@ class Transaction:
 
     # EIP-7702 (Set EOA Code)
     authorization_list: list[list] = field(default_factory=list)  # [[chain_id, addr, nonce, y, r, s], ...]
+
+    # OP Stack Deposit (type 0x7E)
+    source_hash: bytes = field(default_factory=lambda: b"\x00" * 32)
+    from_address: bytes = field(default_factory=lambda: b"\x00" * 20)  # sender (no sig recovery)
+    mint: int = 0  # ETH minted on L2
+    is_system_tx: bool = False
 
     # Signature
     v: int = 0
@@ -212,6 +219,17 @@ class Transaction:
                 self.v,
                 self.r,
                 self.s,
+            ]
+        elif self.tx_type == TxType.DEPOSIT:
+            return [
+                self.source_hash,
+                self.from_address,
+                to_bytes,
+                self.mint,
+                self.value,
+                self.gas_limit,
+                1 if self.is_system_tx else 0,
+                self.data,
             ]
         raise ValueError(f"Unknown tx type: {self.tx_type}")
 
@@ -302,6 +320,19 @@ class Transaction:
                 r=rlp.decode_uint(items[11]),
                 s=rlp.decode_uint(items[12]),
             )
+        elif tx_type == TxType.DEPOSIT:
+            # 0x7E || rlp([sourceHash, from, to, mint, value, gas, isSystemTx, data])
+            return cls(
+                tx_type=TxType.DEPOSIT,
+                source_hash=items[0],
+                from_address=items[1],
+                to=parse_to(items[2]),
+                mint=rlp.decode_uint(items[3]),
+                value=rlp.decode_uint(items[4]),
+                gas_limit=rlp.decode_uint(items[5]),
+                is_system_tx=rlp.decode_uint(items[6]) != 0 if items[6] else False,
+                data=items[7],
+            )
         raise ValueError(f"Unknown tx type: {tx_type}")
 
     def encode_rlp(self) -> bytes:
@@ -382,6 +413,8 @@ class Transaction:
         return keccak256(self.encode_rlp())
 
     def effective_gas_price(self, base_fee: int = 0) -> int:
+        if self.tx_type == TxType.DEPOSIT:
+            return 0  # Deposit txs have no gas price
         if self.tx_type in (TxType.FEE_MARKET, TxType.BLOB, TxType.SET_CODE):
             return min(
                 self.max_fee_per_gas,
@@ -390,7 +423,10 @@ class Transaction:
         return self.gas_price
 
     def sender(self) -> bytes:
-        """Recover sender address from signature."""
+        """Recover sender address from signature (or return from_address for deposits)."""
+        if self.tx_type == TxType.DEPOSIT:
+            return self.from_address
+
         from ethclient.common.crypto import ecdsa_recover, pubkey_to_address
 
         if self.tx_type == TxType.LEGACY:

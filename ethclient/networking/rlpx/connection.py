@@ -34,10 +34,12 @@ class RLPxConnection:
         self.coder: Optional[FrameCoder] = None
         self.remote_pubkey: Optional[bytes] = None
         self.use_snappy: bool = True
+        self.last_handshake_error: Optional[str] = None
 
     async def initiate_handshake(self, remote_pubkey: bytes) -> bool:
         """Perform initiator-side handshake."""
         self.remote_pubkey = remote_pubkey
+        self.last_handshake_error = None
         try:
             # Send auth
             auth_data = self.handshake.create_auth(remote_pubkey)
@@ -73,11 +75,13 @@ class RLPxConnection:
             logger.debug("RLPx handshake completed (initiator)")
             return True
         except Exception as e:
+            self.last_handshake_error = f"{type(e).__name__}: {e}"
             logger.debug("Initiator handshake failed: %s", e)
             return False
 
     async def accept_handshake(self) -> bool:
         """Perform recipient-side handshake."""
+        self.last_handshake_error = None
         try:
             # Read auth
             auth_size_bytes = await asyncio.wait_for(
@@ -121,6 +125,7 @@ class RLPxConnection:
             logger.debug("RLPx handshake completed (recipient)")
             return True
         except Exception as e:
+            self.last_handshake_error = f"{type(e).__name__}: {e}"
             logger.debug("Recipient handshake failed: %s", e)
             return False
 

@@ -84,6 +84,14 @@ class ChainConfig:
     # Terminal total difficulty for the merge
     terminal_total_difficulty: Optional[int] = None
 
+    # Blob gas schedule parameters (EIP-4844 / EIP-7892 / EIP-7918)
+    target_blob_gas_per_block: int = 393_216
+    max_blob_gas_per_block: int = 786_432
+    blob_base_fee_update_fraction: int = 3_338_477
+    blob_schedule: dict[str, dict[str, int]] = field(default_factory=dict)
+    bpo1_time: Optional[int] = None
+    bpo2_time: Optional[int] = None
+
     def is_homestead(self, block_number: int) -> bool:
         return self.homestead_block is not None and block_number >= self.homestead_block
 
@@ -117,6 +125,38 @@ class ChainConfig:
     def is_prague(self, timestamp: int) -> bool:
         return self.prague_time is not None and timestamp >= self.prague_time
 
+    def is_osaka(self, timestamp: int) -> bool:
+        return self.osaka_time is not None and timestamp >= self.osaka_time
+
+    def get_blob_params_at(self, timestamp: int) -> tuple[int, int, int]:
+        """Return (target, max, base_fee_update_fraction) active at timestamp."""
+        # Base fallback from static config fields.
+        target = self.target_blob_gas_per_block
+        max_blobs = self.max_blob_gas_per_block
+        fraction = self.blob_base_fee_update_fraction
+
+        # Default fork timeline order.
+        timeline: list[tuple[str, Optional[int]]] = [
+            ("cancun", self.cancun_time),
+            ("prague", self.prague_time),
+            ("osaka", self.osaka_time),
+            ("bpo1", self.bpo1_time),
+            ("bpo2", self.bpo2_time),
+        ]
+
+        # Apply overrides in chronological order.
+        for name, fork_time in timeline:
+            if fork_time is None or timestamp < fork_time:
+                continue
+            params = self.blob_schedule.get(name)
+            if not params:
+                continue
+            target = params.get("target", target)
+            max_blobs = params.get("max", max_blobs)
+            fraction = params.get("baseFeeUpdateFraction", fraction)
+
+        return target, max_blobs, fraction
+
 
 # ---------------------------------------------------------------------------
 # Well-known chain configs
@@ -145,6 +185,14 @@ MAINNET_CONFIG = ChainConfig(
     prague_time=1_746_612_311,
     osaka_time=1_764_798_551,
     extra_fork_times=[1_765_290_071, 1_767_747_671],  # BPO1, BPO2
+    bpo1_time=1_765_290_071,
+    bpo2_time=1_767_747_671,
+    blob_schedule={
+        "cancun": {"target": 393_216, "max": 786_432, "baseFeeUpdateFraction": 3_338_477},
+        "osaka": {"target": 786_432, "max": 1_179_648, "baseFeeUpdateFraction": 5_007_716},
+        "bpo1": {"target": 1_310_720, "max": 1_966_080, "baseFeeUpdateFraction": 5_007_716},
+        "bpo2": {"target": 1_835_008, "max": 2_752_512, "baseFeeUpdateFraction": 5_007_716},
+    },
 )
 
 SEPOLIA_CONFIG = ChainConfig(
@@ -167,6 +215,14 @@ SEPOLIA_CONFIG = ChainConfig(
     prague_time=1_741_159_776,
     osaka_time=1_760_427_360,
     extra_fork_times=[1_761_017_184, 1_761_607_008],  # BPO1, BPO2
+    bpo1_time=1_761_017_184,
+    bpo2_time=1_761_607_008,
+    blob_schedule={
+        "cancun": {"target": 393_216, "max": 786_432, "baseFeeUpdateFraction": 3_338_477},
+        "osaka": {"target": 786_432, "max": 1_179_648, "baseFeeUpdateFraction": 5_007_716},
+        "bpo1": {"target": 1_310_720, "max": 1_966_080, "baseFeeUpdateFraction": 5_007_716},
+        "bpo2": {"target": 1_835_008, "max": 2_752_512, "baseFeeUpdateFraction": 5_007_716},
+    },
 )
 
 HOLESKY_CONFIG = ChainConfig(
@@ -243,7 +299,13 @@ class Genesis:
             nonce=self.nonce.to_bytes(8, "big"),
             base_fee_per_gas=self.base_fee_per_gas,
         )
+        # Shanghai: withdrawals_root required when shanghaiTime <= genesis timestamp
+        if (self.config and self.config.shanghai_time is not None
+                and self.config.shanghai_time <= self.timestamp):
+            header.withdrawals_root = EMPTY_TRIE_ROOT
+        # Cancun: blob gas fields + parent beacon block root
         if self.excess_blob_gas is not None:
+            header.withdrawals_root = EMPTY_TRIE_ROOT  # also ensure set for Cancun
             header.blob_gas_used = self.blob_gas_used or 0
             header.excess_blob_gas = self.excess_blob_gas
             header.parent_beacon_block_root = ZERO_HASH
@@ -274,6 +336,10 @@ class Genesis:
             shanghai_time=config_data.get("shanghaiTime"),
             cancun_time=config_data.get("cancunTime"),
             prague_time=config_data.get("pragueTime"),
+            target_blob_gas_per_block=config_data.get("targetBlobGasPerBlock", 393_216),
+            max_blob_gas_per_block=config_data.get("maxBlobGasPerBlock", 786_432),
+            blob_base_fee_update_fraction=config_data.get("blobBaseFeeUpdateFraction", 3_338_477),
+            blob_schedule=data.get("blobSchedule", {}),
         )
 
         alloc = []
@@ -309,6 +375,30 @@ class Genesis:
             if isinstance(val, str):
                 return int(val, 0) if val else default
             return default
+
+        chain_config.bpo1_time = parse_hex_int(config_data.get("bpo1Time", 0)) or None
+        chain_config.bpo2_time = parse_hex_int(config_data.get("bpo2Time", 0)) or None
+
+        # Normalize blob schedule value types.
+        normalized_blob_schedule: dict[str, dict[str, int]] = {}
+        for fork_name, values in chain_config.blob_schedule.items():
+            if not isinstance(values, dict):
+                continue
+            target_raw = parse_hex_int(values.get("target", chain_config.target_blob_gas_per_block))
+            max_raw = parse_hex_int(values.get("max", chain_config.max_blob_gas_per_block))
+            # Some configs use blob counts; convert to blob-gas units.
+            if target_raw <= 100:
+                target_raw *= 131_072
+            if max_raw <= 100:
+                max_raw *= 131_072
+            normalized_blob_schedule[fork_name] = {
+                "target": target_raw,
+                "max": max_raw,
+                "baseFeeUpdateFraction": parse_hex_int(
+                    values.get("baseFeeUpdateFraction", chain_config.blob_base_fee_update_fraction)
+                ),
+            }
+        chain_config.blob_schedule = normalized_blob_schedule
 
         return cls(
             config=chain_config,

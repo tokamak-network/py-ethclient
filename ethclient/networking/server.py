@@ -21,6 +21,7 @@ from ethclient.networking.eth.protocol import (
     EthMsg,
     DisconnectReason,
     ETH_VERSION,
+    ETH_VERSION_FALLBACK,
 )
 from ethclient.networking.eth.messages import (
     HelloMessage,
@@ -30,6 +31,8 @@ from ethclient.networking.eth.messages import (
     BlockHeadersMessage,
     GetBlockBodiesMessage,
     BlockBodiesMessage,
+    GetReceiptsMessage,
+    ReceiptsMessage,
     TransactionsMessage,
     NewPooledTransactionHashesMessage,
     NewBlockHashesMessage,
@@ -57,14 +60,17 @@ MAX_PEERS = 25
 PING_INTERVAL = 15.0   # seconds between pings
 DIAL_INTERVAL = 10.0   # seconds between dial attempts
 CLEANUP_INTERVAL = 30.0
+DIAL_COOLDOWN_SECONDS = 30.0
+DIAL_MAX_ATTEMPTS_PER_TICK = 6
+DIAL_PONG_FRESHNESS_SECONDS = 300.0
 
 
 # ---------------------------------------------------------------------------
 # Local capabilities
 # ---------------------------------------------------------------------------
 
-LOCAL_CAPS_ETH_ONLY = [Capability("eth", ETH_VERSION)]
-LOCAL_CAPS_WITH_SNAP = [Capability("eth", ETH_VERSION), Capability("snap", SNAP_VERSION)]
+LOCAL_CAPS_ETH_ONLY = [Capability("eth", ETH_VERSION), Capability("eth", ETH_VERSION_FALLBACK)]
+LOCAL_CAPS_WITH_SNAP = [Capability("eth", ETH_VERSION), Capability("eth", ETH_VERSION_FALLBACK), Capability("snap", SNAP_VERSION)]
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +121,7 @@ class P2PServer:
         listen_port: int = 30303,
         max_peers: int = MAX_PEERS,
         boot_nodes: Optional[list[Node]] = None,
+        bootnode_only: bool = False,
         network_id: int = 1,
         genesis_hash: bytes = b"\x00" * 32,
         fork_id: tuple[bytes, int] = (b"\x00" * 4, 0),
@@ -126,6 +133,7 @@ class P2PServer:
         self.listen_port = listen_port
         self.max_peers = max_peers
         self.boot_nodes = boot_nodes or []
+        self.bootnode_only = bootnode_only
         self.network_id = network_id
         self.genesis_hash = genesis_hash
         self.fork_id = fork_id
@@ -149,6 +157,9 @@ class P2PServer:
         self._discovery_transport: Optional[asyncio.DatagramTransport] = None
         self._tcp_server: Optional[asyncio.Server] = None
         self._running = False
+        self._dial_retry_after: dict[bytes, float] = {}
+        self._boot_node_ids: set[bytes] = {node.id for node in self.boot_nodes if node.id}
+        self._snap_bootstrap_attempts = 0
 
         # Local capabilities for Hello message
         self._local_caps = LOCAL_CAPS_WITH_SNAP if enable_snap else LOCAL_CAPS_ETH_ONLY
@@ -225,6 +236,8 @@ class P2PServer:
 
         conn = RLPxConnection(self.private_key, reader, writer)
         if not await conn.accept_handshake():
+            reason = conn.last_handshake_error or "unknown error"
+            logger.info("Incoming RLPx handshake failed: %s", reason)
             conn.close()
             return
 
@@ -251,6 +264,11 @@ class P2PServer:
         if len(self.peers) >= self.max_peers:
             return None
 
+        now = time.time()
+        retry_after = self._dial_retry_after.get(node.id, 0.0)
+        if retry_after > now:
+            return None
+
         logger.info("Connecting to %s:%d ...", node.ip, node.tcp_port or node.udp_port)
         try:
             reader, writer = await asyncio.wait_for(
@@ -259,14 +277,17 @@ class P2PServer:
             )
         except (asyncio.TimeoutError, ConnectionError, OSError) as e:
             logger.info("TCP connect failed to %s:%d: %s", node.ip, node.tcp_port, e)
+            self._dial_retry_after[node.id] = now + DIAL_COOLDOWN_SECONDS
             return None
 
         logger.info("TCP connected, starting RLPx handshake...")
         remote_pubkey = b"\x04" + node.id  # add uncompressed prefix
         conn = RLPxConnection(self.private_key, reader, writer)
         if not await conn.initiate_handshake(remote_pubkey):
-            logger.info("RLPx handshake failed with %s", node.ip)
+            reason = conn.last_handshake_error or "unknown error"
+            logger.info("RLPx handshake failed with %s: %s", node.ip, reason)
             conn.close()
+            self._dial_retry_after[node.id] = now + DIAL_COOLDOWN_SECONDS
             return None
 
         logger.info("RLPx handshake OK, starting protocol handshake...")
@@ -275,10 +296,12 @@ class P2PServer:
         if not await self._do_protocol_handshake(peer):
             logger.info("Protocol handshake failed with %s", node.ip)
             conn.close()
+            self._dial_retry_after[node.id] = now + DIAL_COOLDOWN_SECONDS
             return None
 
         self.peers[peer.remote_id] = peer
         peer.connected = True
+        self._dial_retry_after.pop(node.id, None)
         logger.info("Peer connected: %s (%s:%d, snap=%s)",
                      peer.remote_client, node.ip, node.tcp_port, peer.snap_supported)
 
@@ -351,20 +374,25 @@ class P2PServer:
         """Exchange eth Status messages. Separated for clean error handling."""
         total_difficulty = 0
         best_hash = self.genesis_hash
+        head_number = 0
         if self.store:
             head = self.store.get_latest_block_number()
             if head is not None:
+                head_number = head
                 header = self.store.get_block_header_by_number(head)
                 if header:
                     best_hash = header.block_hash()
 
         status = StatusMessage(
-            protocol_version=ETH_VERSION,
+            protocol_version=peer.eth_version or ETH_VERSION,
             network_id=self.network_id,
             total_difficulty=total_difficulty,
             best_hash=best_hash,
             genesis_hash=self.genesis_hash,
             fork_id=self.fork_id,
+            earliest_block=0,
+            latest_block=head_number,
+            latest_block_hash=best_hash,
         )
         try:
             await peer.send_eth_message(EthMsg.STATUS, status.encode())
@@ -396,8 +424,9 @@ class P2PServer:
             logger.info("Failed to decode Status: %s", e)
             return False
 
-        logger.info("Remote Status: network=%d, td=%d, genesis=%s, fork_id=(%s, %d)",
-                     remote_status.network_id, remote_status.total_difficulty,
+        logger.info("Remote Status: network=%d, version=%d, td=%d, latest=%d, genesis=%s, fork_id=(%s, %d)",
+                     remote_status.network_id, remote_status.protocol_version, remote_status.total_difficulty,
+                     remote_status.latest_block,
                      remote_status.genesis_hash.hex()[:16],
                      remote_status.fork_id[0].hex(), remote_status.fork_id[1])
 
@@ -414,7 +443,11 @@ class P2PServer:
             return False
 
         peer.total_difficulty = remote_status.total_difficulty
-        peer.best_hash = remote_status.best_hash
+        if remote_status.protocol_version >= 69:
+            peer.best_hash = remote_status.latest_block_hash
+            peer.best_block_number = remote_status.latest_block
+        else:
+            peer.best_hash = remote_status.best_hash
         peer.genesis_hash = remote_status.genesis_hash
 
         return True
@@ -439,6 +472,8 @@ class P2PServer:
         finally:
             peer.connected = False
             self.peers.pop(peer.remote_id, None)
+            if peer.remote_id:
+                self._dial_retry_after[peer.remote_id] = time.time() + DIAL_COOLDOWN_SECONDS
             peer.conn.close()
             logger.info("Peer disconnected: %s", peer.remote_client)
 
@@ -492,12 +527,18 @@ class P2PServer:
             await self._handle_get_block_headers(peer, payload)
         elif msg_code == EthMsg.GET_BLOCK_BODIES:
             await self._handle_get_block_bodies(peer, payload)
+        elif msg_code == EthMsg.GET_RECEIPTS:
+            await self._handle_get_receipts(peer, payload)
+        elif msg_code == EthMsg.RECEIPTS:
+            logger.debug("Received receipts response")
         elif msg_code == EthMsg.TRANSACTIONS:
             self._handle_transactions(payload)
         elif msg_code == EthMsg.NEW_POOLED_TX_HASHES:
             self._handle_new_pooled_tx_hashes(payload)
         elif msg_code == EthMsg.NEW_BLOCK_HASHES:
             self._handle_new_block_hashes(payload)
+        elif msg_code == EthMsg.BLOCK_RANGE_UPDATE:
+            logger.debug("Received BlockRangeUpdate")
         else:
             logger.debug("Unhandled eth message code: 0x%02x", msg_code)
 
@@ -561,6 +602,25 @@ class P2PServer:
         response = BlockBodiesMessage(request_id=msg.request_id, bodies=bodies)
         await peer.send_eth_message(EthMsg.BLOCK_BODIES, response.encode())
 
+    async def _handle_get_receipts(
+        self, peer: PeerConnection, data: bytes,
+    ) -> None:
+        """Respond to GetReceipts request."""
+        msg = GetReceiptsMessage.decode(data)
+        payload_receipts: list[list] = []
+
+        if self.store:
+            for block_hash in msg.hashes:
+                receipts = self.store.get_receipts(block_hash)
+                payload_receipts.append(receipts or [])
+
+        response = ReceiptsMessage(
+            request_id=msg.request_id,
+            receipts=payload_receipts,
+            protocol_version=peer.eth_version or ETH_VERSION,
+        )
+        await peer.send_eth_message(EthMsg.RECEIPTS, response.encode())
+
     def _handle_transactions(self, data: bytes) -> None:
         """Handle broadcast transactions."""
         msg = TransactionsMessage.decode(data)
@@ -608,15 +668,40 @@ class P2PServer:
                 continue
 
             if self._discovery:
+                now = time.time()
                 nodes = self._discovery.table.all_nodes()
-                for node in nodes:
-                    if node.id not in self.peers and node.tcp_port > 0:
-                        try:
-                            await self.connect_to_peer(node)
-                        except Exception as e:
-                            logger.debug("Dial error: %s", e)
-                        if len(self.peers) >= self.max_peers:
-                            break
+                if not nodes:
+                    continue
+
+                def _is_eligible(node: Node) -> bool:
+                    if node.id in self.peers or node.tcp_port <= 0:
+                        return False
+                    if self.bootnode_only and self._boot_node_ids and node.id not in self._boot_node_ids:
+                        return False
+                    # Always allow configured bootnodes.
+                    if node.id in self._boot_node_ids:
+                        return True
+                    # For non-bootnodes, require recent liveness (pong) to reduce dial churn.
+                    if node.last_pong <= 0:
+                        return False
+                    return (now - node.last_pong) <= DIAL_PONG_FRESHNESS_SECONDS
+
+                candidates = [n for n in nodes if _is_eligible(n)]
+                if not candidates:
+                    continue
+
+                # Prioritize bootnodes, then recently alive peers.
+                candidates.sort(
+                    key=lambda n: ((0 if n.id in self._boot_node_ids else 1), -n.last_pong)
+                )
+                dial_budget = min(DIAL_MAX_ATTEMPTS_PER_TICK, self.max_peers - len(self.peers))
+                for node in candidates[:dial_budget]:
+                    try:
+                        await self.connect_to_peer(node)
+                    except Exception as e:
+                        logger.debug("Dial error: %s", e)
+                    if len(self.peers) >= self.max_peers:
+                        break
 
     async def _ping_loop(self) -> None:
         """Periodically ping connected peers."""
@@ -650,6 +735,10 @@ class P2PServer:
             # Cleanup discovery pending pings
             if self._discovery:
                 self._discovery.cleanup_pending()
+            # Cleanup expired dial cooldown entries
+            expired = [node_id for node_id, ts in self._dial_retry_after.items() if ts <= now]
+            for node_id in expired:
+                self._dial_retry_after.pop(node_id, None)
 
     async def _disconnect_peer(
         self, peer: PeerConnection, reason: DisconnectReason,
@@ -670,9 +759,46 @@ class P2PServer:
 
     async def start_sync(self) -> None:
         """Start block synchronization."""
+        if self.syncer.is_syncing or (self.snap_syncer is not None and self.snap_syncer.is_syncing):
+            logger.debug("Sync already in progress, skipping start")
+            return
         peers = [p for p in self.peers.values() if p.connected]
-        if peers:
-            await self.syncer.start(peers)
+        if not peers:
+            return
+
+        if self.enable_snap and self.snap_syncer is not None:
+            snap_peers = [p for p in peers if p.snap_supported]
+            if snap_peers:
+                local_head = self.store.get_latest_block_number() if self.store else 0
+                if local_head == 0:
+                    self._snap_bootstrap_attempts += 1
+                else:
+                    self._snap_bootstrap_attempts = 0
+
+                # If snap keeps restarting while local head stays at genesis,
+                # periodically bootstrap via full sync to advance block height.
+                if self._snap_bootstrap_attempts >= 3:
+                    logger.info(
+                        "Snap bootstrap stalled at block 0, running full sync bootstrap"
+                    )
+                    self._snap_bootstrap_attempts = 0
+                    await self.syncer.start(peers)
+                    return
+
+                best_snap_peer = max(snap_peers, key=lambda p: p.best_block_number)
+                head_header = None
+                try:
+                    head_header = await self.syncer.discover_head_header(best_snap_peer)
+                except Exception as exc:
+                    logger.debug("snap head discovery failed: %s", exc)
+
+                if head_header is not None and head_header.state_root != b"\x00" * 32:
+                    await self.start_snap_sync(head_header.state_root, head_header.number)
+                    return
+
+                logger.warning("Could not determine snap target from peer, falling back to full sync")
+
+        await self.syncer.start(peers)
 
     async def start_snap_sync(self, target_root: bytes, target_block: int) -> None:
         """Start snap synchronization if snap syncer is set and peers support it."""
@@ -684,7 +810,14 @@ class P2PServer:
             logger.warning("No snap-capable peers, falling back to full sync")
             await self.start_sync()
             return
-        await self.snap_syncer.start(snap_peers, target_root, target_block)
+        await self.snap_syncer.start(
+            snap_peers,
+            target_root,
+            target_block,
+            peer_provider=lambda: [
+                p for p in self.peers.values() if p.connected and p.snap_supported
+            ],
+        )
 
     @property
     def peer_count(self) -> int:
@@ -692,4 +825,6 @@ class P2PServer:
 
     @property
     def is_syncing(self) -> bool:
-        return self.syncer.is_syncing
+        return self.syncer.is_syncing or (
+            self.snap_syncer is not None and self.snap_syncer.is_syncing
+        )

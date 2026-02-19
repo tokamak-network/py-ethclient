@@ -275,7 +275,7 @@ def register_engine_api(rpc: RPCServer, store=None, fork_choice=None, chain_conf
             "blockNumber": "0x0",
             "gasLimit": attrs.get("gasLimit", "0x0"),
             "gasUsed": "0x0",
-            "timestamp": hex(attrs.get("timestamp", 0)),
+            "timestamp": attrs.get("timestamp", "0x0"),
             "extraData": "0x",
             "baseFeePerGas": "0x0",
             "blockHash": _zero_hash(),

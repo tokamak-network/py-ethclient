@@ -27,7 +27,7 @@ from coincurve import PrivateKey
 
 from ethclient.common.config import (
     ChainConfig, Genesis, MAINNET_CONFIG, SEPOLIA_CONFIG, HOLESKY_CONFIG,
-    GENESIS_HASHES, get_network_fork_id,
+    GENESIS_HASHES, compute_fork_id,
 )
 from ethclient.storage.memory_backend import MemoryBackend
 from ethclient.blockchain.mempool import Mempool
@@ -124,8 +124,21 @@ class EthNode:
             # Use well-known genesis hash for known networks
             self.genesis_hash = GENESIS_HASHES.get(chain_config.chain_id, b"\x00" * 32)
 
-        # Compute ForkID for Status handshake
-        self.fork_id = get_network_fork_id(chain_config.chain_id)
+        # Compute ForkID using current local head state (EIP-2124)
+        head_block = 0
+        head_time = 0
+        latest_block = self.store.get_latest_block_number()
+        if latest_block is not None:
+            head_block = latest_block
+            latest_header = self.store.get_block_header_by_number(latest_block)
+            if latest_header is not None:
+                head_time = latest_header.timestamp
+        self.fork_id = compute_fork_id(
+            self.genesis_hash,
+            chain_config,
+            head_block=head_block,
+            head_time=head_time,
+        )
 
         # Blockchain engine
         self.mempool = Mempool()
@@ -161,8 +174,13 @@ class EthNode:
                          peer_count_provider=lambda: self.p2p.peer_count,
                          syncing_provider=lambda: self.p2p.is_syncing)
 
-        # Engine API server
+        # Engine API server (also serves standard eth methods for op-node compatibility)
         self.engine_rpc = RPCServer()
+        register_eth_api(self.engine_rpc, store=self.store, mempool=self.mempool,
+                         network_chain_id=chain_config.chain_id, config=chain_config,
+                         archive_enabled=archive_mode,
+                         peer_count_provider=lambda: self.p2p.peer_count,
+                         syncing_provider=lambda: self.p2p.is_syncing)
         register_engine_api(
             self.engine_rpc,
             store=self.store,
@@ -415,15 +433,7 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    # Chain config
-    if args.network == "mainnet":
-        chain_config = MAINNET_CONFIG
-    elif args.network == "sepolia":
-        chain_config = SEPOLIA_CONFIG
-    else:
-        chain_config = HOLESKY_CONFIG
-
-    # Genesis
+    # Genesis (must be parsed before chain config to allow override)
     genesis = None
     if args.genesis:
         genesis_path = Path(args.genesis)
@@ -435,6 +445,16 @@ def main() -> None:
         else:
             logger.error("Genesis file not found: %s", args.genesis)
             sys.exit(1)
+
+    # Chain config: use genesis config if available, otherwise fall back to network preset
+    if genesis is not None:
+        chain_config = genesis.config
+    elif args.network == "mainnet":
+        chain_config = MAINNET_CONFIG
+    elif args.network == "sepolia":
+        chain_config = SEPOLIA_CONFIG
+    else:
+        chain_config = HOLESKY_CONFIG
 
     # Private key
     if args.private_key:
@@ -467,9 +487,10 @@ def main() -> None:
     if args.jwt_secret:
         jwt_path = Path(args.jwt_secret)
         if jwt_path.exists():
-            jwt_secret = jwt_path.read_text().strip().encode()
+            hex_str = jwt_path.read_text().strip().removeprefix("0x")
         else:
-            jwt_secret = args.jwt_secret.strip().encode()
+            hex_str = args.jwt_secret.strip().removeprefix("0x")
+        jwt_secret = bytes.fromhex(hex_str)
 
     # Create and run node
     node = EthNode(

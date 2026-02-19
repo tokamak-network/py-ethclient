@@ -299,7 +299,13 @@ class Genesis:
             nonce=self.nonce.to_bytes(8, "big"),
             base_fee_per_gas=self.base_fee_per_gas,
         )
+        # Shanghai: withdrawals_root required when shanghaiTime <= genesis timestamp
+        if (self.config and self.config.shanghai_time is not None
+                and self.config.shanghai_time <= self.timestamp):
+            header.withdrawals_root = EMPTY_TRIE_ROOT
+        # Cancun: blob gas fields + parent beacon block root
         if self.excess_blob_gas is not None:
+            header.withdrawals_root = EMPTY_TRIE_ROOT  # also ensure set for Cancun
             header.blob_gas_used = self.blob_gas_used or 0
             header.excess_blob_gas = self.excess_blob_gas
             header.parent_beacon_block_root = ZERO_HASH

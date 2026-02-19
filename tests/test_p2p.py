@@ -990,3 +990,60 @@ class TestServerComponents:
         key = PrivateKey()
         server = P2PServer(private_key=key.secret, max_peers=10)
         assert server.max_peers == 10
+
+    @pytest.mark.asyncio
+    async def test_start_sync_prefers_snap_when_target_available(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.server import P2PServer
+        from ethclient.common.types import BlockHeader
+
+        key = PrivateKey()
+        server = P2PServer(private_key=key.secret, enable_snap=True)
+
+        peer = MagicMock()
+        peer.connected = True
+        peer.snap_supported = True
+        peer.best_block_number = 10
+        peer.remote_id = b"\x11" * 64
+
+        server.peers = {peer.remote_id: peer}
+        server.snap_syncer = MagicMock()
+        server.snap_syncer.is_syncing = False
+        server.syncer.state.syncing = False
+        server.syncer.discover_head_header = AsyncMock(
+            return_value=BlockHeader(number=10, state_root=b"\x22" * 32)
+        )
+        server.start_snap_sync = AsyncMock()
+        server.syncer.start = AsyncMock()
+
+        await server.start_sync()
+
+        server.start_snap_sync.assert_awaited_once_with(b"\x22" * 32, 10)
+        server.syncer.start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_start_sync_falls_back_to_full_when_snap_target_missing(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.server import P2PServer
+
+        key = PrivateKey()
+        server = P2PServer(private_key=key.secret, enable_snap=True)
+
+        peer = MagicMock()
+        peer.connected = True
+        peer.snap_supported = True
+        peer.best_block_number = 10
+        peer.remote_id = b"\x12" * 64
+
+        server.peers = {peer.remote_id: peer}
+        server.snap_syncer = MagicMock()
+        server.snap_syncer.is_syncing = False
+        server.syncer.state.syncing = False
+        server.syncer.discover_head_header = AsyncMock(return_value=None)
+        server.start_snap_sync = AsyncMock()
+        server.syncer.start = AsyncMock()
+
+        await server.start_sync()
+
+        server.start_snap_sync.assert_not_awaited()
+        server.syncer.start.assert_awaited_once()

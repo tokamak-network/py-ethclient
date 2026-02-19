@@ -71,10 +71,10 @@ class FullSync:
         self._body_responses: dict[int, list[tuple[list, list]]] = {}
         self._response_events: dict[int, asyncio.Event] = {}
 
-    async def _discover_head(self, peer: PeerConnection) -> int:
-        """Discover peer's head block number by requesting the header for best_hash."""
+    async def discover_head_header(self, peer: PeerConnection) -> Optional[BlockHeader]:
+        """Fetch the current head header from a peer using peer.best_hash."""
         if not peer.best_hash or peer.best_hash == b"\x00" * 32:
-            return 0
+            return None
 
         req_id = self.state.next_request_id()
         msg = GetBlockHeadersMessage(
@@ -91,16 +91,23 @@ class FullSync:
             await asyncio.wait_for(event.wait(), timeout=SYNC_TIMEOUT)
         except asyncio.TimeoutError:
             logger.warning("Head discovery timed out")
-            return 0
+            return None
         finally:
             self._response_events.pop(req_id, None)
 
         headers = self._header_responses.pop(req_id, [])
-        if headers:
-            head_number = headers[0].number
-            logger.info("Discovered peer head: block #%d", head_number)
-            return head_number
-        return 0
+        if not headers:
+            return None
+
+        return headers[0]
+
+    async def _discover_head(self, peer: PeerConnection) -> int:
+        """Discover peer's head block number by requesting the header for best_hash."""
+        header = await self.discover_head_header(peer)
+        if header is None:
+            return 0
+        logger.info("Discovered peer head: block #%d", header.number)
+        return header.number
 
     async def start(self, peers: list[PeerConnection]) -> None:
         """Start full sync with available peers."""
@@ -179,11 +186,18 @@ class FullSync:
                     body = bodies[i] if i < len(bodies) else ([], [])
                     try:
                         self.chain.execute_block(header, body)
+                        block_hash = header.block_hash()
+                        self.store.put_block_header(header)
+                        self.store.put_canonical_hash(header.number, block_hash)
                         self.state.current_block = header.number
                     except Exception as e:
                         logger.error("Block execution failed at %d: %s", header.number, e)
                         return
                 else:
+                    if self.store:
+                        block_hash = header.block_hash()
+                        self.store.put_block_header(header)
+                        self.store.put_canonical_hash(header.number, block_hash)
                     self.state.current_block = header.number
 
             logger.info("Synced to block %d / %d", self.state.current_block, self.state.target_block)

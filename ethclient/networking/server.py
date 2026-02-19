@@ -60,6 +60,7 @@ MAX_PEERS = 25
 PING_INTERVAL = 15.0   # seconds between pings
 DIAL_INTERVAL = 10.0   # seconds between dial attempts
 CLEANUP_INTERVAL = 30.0
+DIAL_COOLDOWN_SECONDS = 30.0
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +153,8 @@ class P2PServer:
         self._discovery_transport: Optional[asyncio.DatagramTransport] = None
         self._tcp_server: Optional[asyncio.Server] = None
         self._running = False
+        self._dial_retry_after: dict[bytes, float] = {}
+        self._boot_node_ids: set[bytes] = {node.id for node in self.boot_nodes if node.id}
 
         # Local capabilities for Hello message
         self._local_caps = LOCAL_CAPS_WITH_SNAP if enable_snap else LOCAL_CAPS_ETH_ONLY
@@ -254,6 +257,11 @@ class P2PServer:
         if len(self.peers) >= self.max_peers:
             return None
 
+        now = time.time()
+        retry_after = self._dial_retry_after.get(node.id, 0.0)
+        if retry_after > now:
+            return None
+
         logger.info("Connecting to %s:%d ...", node.ip, node.tcp_port or node.udp_port)
         try:
             reader, writer = await asyncio.wait_for(
@@ -262,6 +270,7 @@ class P2PServer:
             )
         except (asyncio.TimeoutError, ConnectionError, OSError) as e:
             logger.info("TCP connect failed to %s:%d: %s", node.ip, node.tcp_port, e)
+            self._dial_retry_after[node.id] = now + DIAL_COOLDOWN_SECONDS
             return None
 
         logger.info("TCP connected, starting RLPx handshake...")
@@ -270,6 +279,7 @@ class P2PServer:
         if not await conn.initiate_handshake(remote_pubkey):
             logger.info("RLPx handshake failed with %s", node.ip)
             conn.close()
+            self._dial_retry_after[node.id] = now + DIAL_COOLDOWN_SECONDS
             return None
 
         logger.info("RLPx handshake OK, starting protocol handshake...")
@@ -278,10 +288,12 @@ class P2PServer:
         if not await self._do_protocol_handshake(peer):
             logger.info("Protocol handshake failed with %s", node.ip)
             conn.close()
+            self._dial_retry_after[node.id] = now + DIAL_COOLDOWN_SECONDS
             return None
 
         self.peers[peer.remote_id] = peer
         peer.connected = True
+        self._dial_retry_after.pop(node.id, None)
         logger.info("Peer connected: %s (%s:%d, snap=%s)",
                      peer.remote_client, node.ip, node.tcp_port, peer.snap_supported)
 
@@ -648,6 +660,9 @@ class P2PServer:
             if self._discovery:
                 nodes = self._discovery.table.all_nodes()
                 for node in nodes:
+                    # When bootnodes are configured, prefer only those IDs to reduce churn.
+                    if self._boot_node_ids and node.id not in self._boot_node_ids:
+                        continue
                     if node.id not in self.peers and node.tcp_port > 0:
                         try:
                             await self.connect_to_peer(node)
@@ -688,6 +703,10 @@ class P2PServer:
             # Cleanup discovery pending pings
             if self._discovery:
                 self._discovery.cleanup_pending()
+            # Cleanup expired dial cooldown entries
+            expired = [node_id for node_id, ts in self._dial_retry_after.items() if ts <= now]
+            for node_id in expired:
+                self._dial_retry_after.pop(node_id, None)
 
     async def _disconnect_peer(
         self, peer: PeerConnection, reason: DisconnectReason,
@@ -708,12 +727,30 @@ class P2PServer:
 
     async def start_sync(self) -> None:
         """Start block synchronization."""
-        if self.syncer.is_syncing:
+        if self.syncer.is_syncing or (self.snap_syncer is not None and self.snap_syncer.is_syncing):
             logger.debug("Sync already in progress, skipping start")
             return
         peers = [p for p in self.peers.values() if p.connected]
-        if peers:
-            await self.syncer.start(peers)
+        if not peers:
+            return
+
+        if self.enable_snap and self.snap_syncer is not None:
+            snap_peers = [p for p in peers if p.snap_supported]
+            if snap_peers:
+                best_snap_peer = max(snap_peers, key=lambda p: p.best_block_number)
+                head_header = None
+                try:
+                    head_header = await self.syncer.discover_head_header(best_snap_peer)
+                except Exception as exc:
+                    logger.debug("snap head discovery failed: %s", exc)
+
+                if head_header is not None and head_header.state_root != b"\x00" * 32:
+                    await self.start_snap_sync(head_header.state_root, head_header.number)
+                    return
+
+                logger.warning("Could not determine snap target from peer, falling back to full sync")
+
+        await self.syncer.start(peers)
 
     async def start_snap_sync(self, target_root: bytes, target_block: int) -> None:
         """Start snap synchronization if snap syncer is set and peers support it."""
@@ -733,4 +770,6 @@ class P2PServer:
 
     @property
     def is_syncing(self) -> bool:
-        return self.syncer.is_syncing
+        return self.syncer.is_syncing or (
+            self.snap_syncer is not None and self.snap_syncer.is_syncing
+        )

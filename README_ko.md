@@ -96,6 +96,13 @@ ethclient --genesis ./genesis.json --port 30303
 | `--private-key` | 자동 생성 | 노드 ID용 secp256k1 private key (hex) |
 | `--log-level` | `INFO` | 로그 레벨 (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `--sync-mode` | `snap` | 동기화 모드: `snap` (빠른 상태 다운로드) 또는 `full` (순차 블록 실행) |
+| `--data-dir` | - | 영속 저장소용 데이터 디렉토리 (미설정 시 인메모리) |
+| `--datadir` | - | `--data-dir` 별칭 (geth 호환) |
+| `--engine-port` | `8551` | Engine API JSON-RPC 리슨 포트 |
+| `--metrics-port` | `6060` | Prometheus 메트릭 리슨 포트 |
+| `--bootnode-only` | off | 설정된 부트노드에만 다이얼 |
+| `--archive` | off | 히스토리컬 상태 조회를 위한 아카이브 모드 활성화 |
+| `--jwt-secret` | - | Engine API 인증용 JWT 시크릿 또는 파일 경로 |
 
 ## JSON-RPC API
 
@@ -122,6 +129,10 @@ ethclient --genesis ./genesis.json --port 30303
 | `eth_feeHistory` | 수수료 히스토리 |
 | `eth_chainId` | 체인 ID |
 | `eth_syncing` | 동기화 상태 |
+| `eth_getTransactionByHash` | 트랜잭션 해시로 조회 |
+| `eth_getTransactionReceipt` | 트랜잭션 영수증 조회 |
+| `eth_getBlockTransactionCountByNumber` | 블록 내 트랜잭션 수 (번호) |
+| `eth_getBlockTransactionCountByHash` | 블록 내 트랜잭션 수 (해시) |
 | `eth_getLogs` | 로그 필터 조회 |
 | `eth_getBlockReceipts` | 블록 영수증 조회 |
 
@@ -139,6 +150,16 @@ ethclient --genesis ./genesis.json --port 30303
 |---|---|
 | `web3_clientVersion` | 클라이언트 버전 |
 | `web3_sha3` | Keccak-256 해시 |
+
+**engine_ namespace** (`--engine-port`에서 제공, JWT 인증)
+
+| 메서드 | 설명 |
+|---|---|
+| `engine_exchangeCapabilities` | Capability 협상 |
+| `engine_getClientVersionV1` | 클라이언트 버전 정보 |
+| `engine_forkchoiceUpdatedV1/V2/V3` | Fork choice 상태 업데이트 + 페이로드 빌드 트리거 |
+| `engine_getPayloadV1/V2/V3` | 빌드된 실행 페이로드 조회 |
+| `engine_newPayloadV1/V2/V3` | 실행 페이로드 검증 및 임포트 |
 
 ### 사용 예시
 
@@ -171,7 +192,8 @@ pytest tests/test_p2p.py              # P2P 네트워킹
 pytest tests/test_protocol_registry.py # 멀티 프로토콜 capability 협상
 pytest tests/test_snap_messages.py    # snap/1 메시지 인코딩/디코딩
 pytest tests/test_snap_sync.py        # Snap sync 상태 머신
-pytest tests/test_rpc.py              # JSON-RPC 서버
+pytest tests/test_rpc.py              # JSON-RPC 서버 + Engine API
+pytest tests/test_disk_backend.py     # LMDB 영속 스토리지
 pytest tests/test_integration.py      # 통합 테스트
 
 # 상세 출력
@@ -226,7 +248,9 @@ ethclient/
 │       └── snap_sync.py             # Snap sync 4단계 상태 머신
 └── rpc/                             # JSON-RPC 서버
     ├── server.py                    # FastAPI 기반 JSON-RPC 2.0 디스패처
-    └── eth_api.py                   # eth_/net_/web3_ API 핸들러
+    ├── eth_api.py                   # eth_/net_/web3_ API 핸들러
+    ├── engine_api.py                # Engine API V1/V2/V3 핸들러
+    └── engine_types.py              # Engine API 요청/응답 타입
 ```
 
 ## Dependencies
@@ -265,6 +289,7 @@ ethclient/
 - **Discovery v4** — UDP Ping/Pong/FindNeighbours/Neighbours, Kademlia 라우팅 테이블
 - **Full Sync** — best_hash 기반 피어 head 발견 → 헤더 다운로드 → 바디 다운로드 → 블록 실행 파이프라인
 - **Snap Sync** — 4단계 상태 머신: 계정 다운로드 → 스토리지 다운로드 → 바이트코드 다운로드 → 트라이 힐링
+- **Engine API** — V1/V2/V3 forkchoiceUpdated, getPayload, newPayload; 결정적 payload ID, payload 큐, JWT 인증
 - **JSON-RPC 2.0** — 요청 파싱, 배치 지원, 에러 핸들링, 메서드 디스패치
 
 ### 지원 EIP
@@ -302,14 +327,14 @@ class L2Hook(ExecutionHook):
 
 | 모듈 | 파일 | LOC | 설명 |
 |---|---:|---:|---|
-| `common/` | 6 | 2,256 | RLP, types, trie (+ 증명), crypto, config |
-| `vm/` | 8 | 2,545 | EVM, opcodes, precompiles, gas |
-| `storage/` | 4 | 1,272 | Store 인터페이스, 인메모리 & LMDB 백엔드 |
-| `blockchain/` | 4 | 1,114 | 블록 검증, mempool, fork choice, simulate_call |
-| `networking/` | 19 | 3,684 | RLPx, discovery, eth/68, snap/1, 프로토콜 레지스트리, sync, server |
-| `rpc/` | 3 | 590 | JSON-RPC 서버, eth API |
-| `main.py` | 1 | 352 | CLI 진입점 |
-| **합계** | **44** | **11,214** | |
+| `common/` | 6 | 2,375 | RLP, types, trie (+ 증명), crypto, config |
+| `vm/` | 8 | 2,703 | EVM, opcodes, precompiles, gas |
+| `storage/` | 4 | 1,372 | Store 인터페이스, 인메모리 & LMDB 백엔드 |
+| `blockchain/` | 4 | 1,353 | 블록 검증, mempool, fork choice, simulate_call |
+| `networking/` | 19 | 4,339 | RLPx, discovery, eth/68, snap/1, 프로토콜 레지스트리, sync, server |
+| `rpc/` | 5 | 1,660 | JSON-RPC 서버, eth API, Engine API |
+| `main.py` | 1 | 527 | CLI 진입점 |
+| **합계** | **48** | **14,329** | |
 
 ### 테스트 코드
 
@@ -319,21 +344,22 @@ class L2Hook(ExecutionHook):
 | `test_trie.py` | 213 | 26 | 머클 패트리시아 트라이 |
 | `test_trie_proofs.py` | 254 | 23 | 트라이 증명 생성/검증, 범위 증명 |
 | `test_crypto.py` | 113 | 14 | keccak256, ECDSA, 주소 |
-| `test_evm.py` | 798 | 84 | 스택, 메모리, 옵코드, 프리컴파일 |
-| `test_storage.py` | 310 | 65 | Store CRUD, 상태 루트 (양 백엔드 parametrize) |
-| `test_blockchain.py` | 514 | 31 | 헤더 검증, 블록 실행, mempool |
-| `test_p2p.py` | 890 | 57 | RLPx, 핸드셰이크, eth 메시지, head discovery |
-| `test_rpc.py` | 700 | 70 | JSON-RPC 엔드포인트, eth_call/estimateGas, tx/receipt 조회 |
-| `test_protocol_registry.py` | 168 | 16 | 멀티 프로토콜 capability 협상 |
+| `test_evm.py` | 821 | 88 | 스택, 메모리, 옵코드, 프리컴파일 |
+| `test_storage.py` | 387 | 65 | Store CRUD, 상태 루트 (양 백엔드 parametrize) |
+| `test_blockchain.py` | 617 | 37 | 헤더 검증, 블록 실행, mempool, fork choice |
+| `test_p2p.py` | 1,100 | 66 | RLPx, 핸드셰이크, eth 메시지, head discovery |
+| `test_rpc.py` | 911 | 76 | JSON-RPC 엔드포인트, eth_call/estimateGas, Engine API, tx/receipt 조회 |
+| `test_protocol_registry.py` | 177 | 17 | 멀티 프로토콜 capability 협상 |
 | `test_snap_messages.py` | 267 | 21 | snap/1 메시지 encode/decode 라운드트립 |
-| `test_snap_sync.py` | 303 | 21 | Snap sync 상태 머신, 응답 핸들러 |
+| `test_snap_sync.py` | 413 | 27 | Snap sync 상태 머신, 응답 핸들러 |
 | `test_integration.py` | 250 | 12 | 모듈 간 통합 |
-| `test_disk_backend.py` | 370 | 28 | LMDB 영속성, flush, 오버레이, 상태 루트 일치 |
-| **합계** | **5,453** | **524** | |
+| `test_disk_backend.py` | 495 | 28 | LMDB 영속성, flush, 오버레이, 상태 루트 일치 |
+| `integration/` | 68 | 6 | 아카이브 모드, 체인데이터, Fusaka 호환 |
+| **합계** | **6,292** | **562** | |
 
 ## Current Limitations
 
-- **Engine API** — 미구현 (PoS 컨센서스 레이어 연동 없음)
+- **Engine API** — V1/V2/V3 구현 완료; 블록 생산 흐름 동작 중이나 최적화 진행 중
 
 ## License
 

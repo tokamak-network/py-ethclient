@@ -96,6 +96,13 @@ ethclient --genesis ./genesis.json --port 30303
 | `--private-key` | auto-generated | secp256k1 private key for node identity (hex) |
 | `--log-level` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `--sync-mode` | `snap` | Sync mode: `snap` (fast state download) or `full` (sequential block execution) |
+| `--data-dir` | — | Data directory for persistent storage (in-memory if not set) |
+| `--datadir` | — | Alias for `--data-dir` (geth-compatible) |
+| `--engine-port` | `8551` | Engine API JSON-RPC listen port |
+| `--metrics-port` | `6060` | Prometheus metrics listen port |
+| `--bootnode-only` | off | Only dial configured bootnodes |
+| `--archive` | off | Enable archive mode RPC semantics for historical state queries |
+| `--jwt-secret` | — | JWT secret or path to jwtsecret file for Engine API auth |
 
 ## JSON-RPC API
 
@@ -122,6 +129,10 @@ A JSON-RPC 2.0 endpoint is served at `http://localhost:8545`.
 | `eth_feeHistory` | Fee history |
 | `eth_chainId` | Chain ID |
 | `eth_syncing` | Sync status |
+| `eth_getTransactionByHash` | Transaction by hash |
+| `eth_getTransactionReceipt` | Transaction receipt |
+| `eth_getBlockTransactionCountByNumber` | Transaction count in block (by number) |
+| `eth_getBlockTransactionCountByHash` | Transaction count in block (by hash) |
 | `eth_getLogs` | Log filter query |
 | `eth_getBlockReceipts` | Block receipts |
 
@@ -139,6 +150,16 @@ A JSON-RPC 2.0 endpoint is served at `http://localhost:8545`.
 |---|---|
 | `web3_clientVersion` | Client version string |
 | `web3_sha3` | Keccak-256 hash |
+
+**engine_ namespace** (served on `--engine-port`, JWT-authenticated)
+
+| Method | Description |
+|---|---|
+| `engine_exchangeCapabilities` | Capability negotiation |
+| `engine_getClientVersionV1` | Client version info |
+| `engine_forkchoiceUpdatedV1/V2/V3` | Fork choice state update + payload build trigger |
+| `engine_getPayloadV1/V2/V3` | Retrieve built execution payload |
+| `engine_newPayloadV1/V2/V3` | Validate and import execution payload |
 
 ### Usage Examples
 
@@ -171,7 +192,8 @@ pytest tests/test_p2p.py              # P2P networking
 pytest tests/test_protocol_registry.py # Multi-protocol capability negotiation
 pytest tests/test_snap_messages.py    # snap/1 message encoding/decoding
 pytest tests/test_snap_sync.py        # Snap sync state machine
-pytest tests/test_rpc.py              # JSON-RPC server
+pytest tests/test_rpc.py              # JSON-RPC server + Engine API
+pytest tests/test_disk_backend.py     # LMDB persistent storage
 pytest tests/test_integration.py      # End-to-end integration
 
 # Verbose output
@@ -226,7 +248,9 @@ ethclient/
 │       └── snap_sync.py             # Snap sync 4-phase state machine
 └── rpc/                             # JSON-RPC server
     ├── server.py                    # FastAPI-based JSON-RPC 2.0 dispatcher
-    └── eth_api.py                   # eth_/net_/web3_ API handlers
+    ├── eth_api.py                   # eth_/net_/web3_ API handlers
+    ├── engine_api.py                # Engine API V1/V2/V3 handlers
+    └── engine_types.py              # Engine API request/response types
 ```
 
 ## Dependencies
@@ -265,6 +289,7 @@ ethclient/
 - **Discovery v4** — UDP Ping/Pong/FindNeighbours/Neighbours, Kademlia routing table
 - **Full Sync** — Peer head discovery via best_hash → header download → body download → block execution pipeline
 - **Snap Sync** — 4-phase state machine: account download → storage download → bytecode download → trie healing
+- **Engine API** — V1/V2/V3 forkchoiceUpdated, getPayload, newPayload; deterministic payload ID, payload queue, JWT authentication
 - **JSON-RPC 2.0** — Request parsing, batch support, error handling, method dispatch
 
 ### Supported EIPs
@@ -302,14 +327,14 @@ class L2Hook(ExecutionHook):
 
 | Module | Files | LOC | Description |
 |---|---:|---:|---|
-| `common/` | 6 | 2,256 | RLP, types, trie (+ proofs), crypto, config |
-| `vm/` | 8 | 2,545 | EVM, opcodes, precompiles, gas |
-| `storage/` | 4 | 1,272 | Store interface, in-memory & LMDB backends |
-| `blockchain/` | 4 | 1,114 | Block validation, mempool, fork choice, simulate_call |
-| `networking/` | 19 | 3,684 | RLPx, discovery, eth/68, snap/1, protocol registry, sync, server |
-| `rpc/` | 3 | 590 | JSON-RPC server, eth API |
-| `main.py` | 1 | 352 | CLI entry point |
-| **Total** | **44** | **11,214** | |
+| `common/` | 6 | 2,375 | RLP, types, trie (+ proofs), crypto, config |
+| `vm/` | 8 | 2,703 | EVM, opcodes, precompiles, gas |
+| `storage/` | 4 | 1,372 | Store interface, in-memory & LMDB backends |
+| `blockchain/` | 4 | 1,353 | Block validation, mempool, fork choice, simulate_call |
+| `networking/` | 19 | 4,339 | RLPx, discovery, eth/68, snap/1, protocol registry, sync, server |
+| `rpc/` | 5 | 1,660 | JSON-RPC server, eth API, Engine API |
+| `main.py` | 1 | 527 | CLI entry point |
+| **Total** | **48** | **14,329** | |
 
 ### Test Code
 
@@ -319,21 +344,22 @@ class L2Hook(ExecutionHook):
 | `test_trie.py` | 213 | 26 | Merkle Patricia Trie |
 | `test_trie_proofs.py` | 254 | 23 | Trie proof generation/verification, range proofs |
 | `test_crypto.py` | 113 | 14 | keccak256, ECDSA, addresses |
-| `test_evm.py` | 798 | 84 | Stack, memory, opcodes, precompiles |
-| `test_storage.py` | 407 | 33 | Store CRUD, state root |
-| `test_blockchain.py` | 514 | 31 | Header validation, block execution, mempool |
-| `test_p2p.py` | 890 | 57 | RLPx, handshake, eth messages, head discovery |
-| `test_rpc.py` | 700 | 70 | JSON-RPC endpoints, eth_call/estimateGas, tx/receipt lookup |
-| `test_protocol_registry.py` | 168 | 16 | Multi-protocol capability negotiation |
+| `test_evm.py` | 821 | 88 | Stack, memory, opcodes, precompiles |
+| `test_storage.py` | 387 | 65 | Store CRUD, state root (both backends parametrized) |
+| `test_blockchain.py` | 617 | 37 | Header validation, block execution, mempool, fork choice |
+| `test_p2p.py` | 1,100 | 66 | RLPx, handshake, eth messages, head discovery |
+| `test_rpc.py` | 911 | 76 | JSON-RPC endpoints, eth_call/estimateGas, Engine API, tx/receipt lookup |
+| `test_protocol_registry.py` | 177 | 17 | Multi-protocol capability negotiation |
 | `test_snap_messages.py` | 267 | 21 | snap/1 message encode/decode roundtrip |
-| `test_snap_sync.py` | 303 | 21 | Snap sync state machine, response handlers |
+| `test_snap_sync.py` | 413 | 27 | Snap sync state machine, response handlers |
 | `test_integration.py` | 250 | 12 | Cross-module integration |
-| `test_disk_backend.py` | 370 | 28 | LMDB persistence, flush, overlay, state root consistency |
-| **Total** | **5,453** | **524** | |
+| `test_disk_backend.py` | 495 | 28 | LMDB persistence, flush, overlay, state root consistency |
+| `integration/` | 68 | 6 | Archive mode, chaindata, Fusaka compliance |
+| **Total** | **6,292** | **562** | |
 
 ## Current Limitations
 
-- **Engine API** — Not implemented (no PoS consensus layer integration)
+- **Engine API** — V1/V2/V3 implemented; block production flow operational but ongoing optimization
 
 ## License
 

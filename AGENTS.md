@@ -8,7 +8,7 @@ Python Ethereum L1 execution client. Fully independent port referencing ethrex (
 # Install
 pip install -e ".[dev]"
 
-# Unit tests (524 tests, ~7s)
+# Unit tests (562 tests, ~7s)
 pytest
 
 # Test a specific module
@@ -71,7 +71,7 @@ Useful log signals:
 ## Project Structure
 
 ```
-py-ethclient/                    # ~15,900 LOC (source + tests)
+py-ethclient/                    # ~20,600 LOC (source + tests)
 ├── ethclient/
 │   ├── main.py                  # CLI entry point (argparse, asyncio event loop)
 │   ├── common/                  # Foundation modules (no internal dependencies)
@@ -117,8 +117,10 @@ py-ethclient/                    # ~15,900 LOC (source + tests)
 │   │       └── snap_sync.py     # Snap sync 4-phase state machine
 │   └── rpc/                     # JSON-RPC server
 │       ├── server.py            # FastAPI-based dispatcher
-│       └── eth_api.py           # eth_ namespace handlers
-├── tests/                       # pytest unit tests (524 tests)
+│       ├── eth_api.py           # eth_ namespace handlers
+│       ├── engine_api.py        # Engine API V1/V2/V3 handlers
+│       └── engine_types.py      # Engine API request/response types
+├── tests/                       # pytest unit tests (562 tests)
 │   ├── test_rlp.py              # RLP encoding/decoding
 │   ├── test_trie.py             # MPT + Ethereum official test vectors
 │   ├── test_trie_proofs.py      # Trie Merkle proofs & range verification
@@ -130,8 +132,13 @@ py-ethclient/                    # ~15,900 LOC (source + tests)
 │   ├── test_protocol_registry.py # Multi-protocol capability negotiation
 │   ├── test_snap_messages.py    # snap/1 message encode/decode roundtrip
 │   ├── test_snap_sync.py        # Snap sync state machine, response handlers
-│   ├── test_rpc.py              # JSON-RPC endpoints
+│   ├── test_rpc.py              # JSON-RPC endpoints + Engine API
+│   ├── test_disk_backend.py     # LMDB persistent storage
 │   └── test_integration.py      # Cross-module integration tests
+├── tests/integration/           # Integration test suite
+│   ├── archive_mode_test.py     # Archive mode RPC semantics
+│   ├── chaindata_test.py        # Chaindata persistence
+│   └── fusaka_compliance_test.py # Fusaka fork compliance
 ├── test_full_sync.py            # Live mainnet verification test (standalone)
 ├── Dockerfile                   # Ubuntu-based container image
 ├── docker-compose.yml           # One-command deployment
@@ -162,7 +169,7 @@ Lower modules never depend on higher modules. `common` can be safely imported fr
 ### Unit Tests (offline)
 
 ```bash
-pytest                           # All tests (524, ~7s)
+pytest                           # All tests (562, ~7s)
 pytest tests/test_rlp.py         # RLP only
 pytest tests/test_evm.py -k "test_add"  # Specific test
 pytest -v                        # Verbose output
@@ -177,15 +184,17 @@ Test coverage by file:
 | test_trie.py | 26 | MPT, Ethereum official vectors |
 | test_trie_proofs.py | 23 | Proof generation/verification, range proofs, iterate |
 | test_crypto.py | 14 | keccak256, ECDSA, addresses |
-| test_evm.py | 84 | Stack, memory, all opcodes, precompiles (BN128, KZG) |
-| test_storage.py | 33 | Store CRUD, state root, snap storage |
-| test_blockchain.py | 31 | Header validation, base fee, block execution, mempool |
-| test_p2p.py | 57 | RLPx, handshake, eth messages, head discovery |
-| test_protocol_registry.py | 16 | Capability negotiation, offset calculation |
+| test_evm.py | 88 | Stack, memory, all opcodes, precompiles (BN128, KZG) |
+| test_storage.py | 65 | Store CRUD, state root, snap storage (both backends parametrized) |
+| test_blockchain.py | 37 | Header validation, base fee, block execution, mempool, fork choice |
+| test_p2p.py | 66 | RLPx, handshake, eth messages, head discovery |
+| test_protocol_registry.py | 17 | Capability negotiation, offset calculation |
 | test_snap_messages.py | 21 | snap/1 message encode/decode roundtrip |
-| test_snap_sync.py | 21 | Snap sync state machine, response handlers |
-| test_rpc.py | 70 | JSON-RPC, eth_call/estimateGas EVM, tx/receipt lookup |
+| test_snap_sync.py | 27 | Snap sync state machine, response handlers |
+| test_rpc.py | 76 | JSON-RPC, eth_call/estimateGas EVM, Engine API, tx/receipt lookup |
 | test_integration.py | 12 | Cross-module integration |
+| test_disk_backend.py | 28 | LMDB persistence, flush, overlay, state root |
+| integration/ | 6 | Archive mode, chaindata, Fusaka compliance |
 
 ### Live Network Test
 
@@ -293,9 +302,9 @@ snap_peers = [p for p in peers if p.snap_supported]
 ## Areas for Improvement
 
 1. **Genesis state initialization** — Parse go-ethereum's genesis alloc data to build initial state
-2. **Engine API** — `engine_` namespace for Beacon Chain integration
-4. **EVM test suite** — Expand EVM correctness verification with ethereum/tests official vectors
-5. **Performance** — Trie caching, parallel transaction verification, asyncio optimization
+2. **Engine API optimization** — Background payload building, multi-candidate competition, builder revenue optimization
+3. **EVM test suite** — Expand EVM correctness verification with ethereum/tests official vectors
+4. **Performance** — Trie caching, parallel transaction verification, asyncio optimization
 
 ## Dependencies
 
@@ -337,5 +346,6 @@ CLI: `ethclient --network sepolia --bootnodes enode://...`
 4. `networking/` changed → run `test_p2p.py`, `test_protocol_registry.py`, `test_snap_messages.py`
 5. `networking/sync/` changed → run `test_snap_sync.py` + `test_full_sync.py`
 6. `blockchain/` changed → run `test_blockchain.py` + `test_integration.py` + `test_rpc.py`
+6b. `rpc/engine_api.py` changed → run `test_rpc.py`
 7. New hardfork support → add fork block/timestamp to `config.py`, add new fields to `types.py`
 8. Full regression: `pytest && python3 test_full_sync.py`

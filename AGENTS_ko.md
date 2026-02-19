@@ -8,7 +8,7 @@ Python으로 구현한 이더리움 L1 실행 클라이언트. ethrex (Rust)를 
 # 설치
 pip install -e ".[dev]"
 
-# 단위 테스트 (524개, ~7초)
+# 단위 테스트 (562개, ~7초)
 pytest
 
 # 특정 모듈 테스트
@@ -37,7 +37,7 @@ docker compose down                         # 종료
 ## 프로젝트 구조
 
 ```
-py-ethclient/                    # ~15,900 LOC (소스 + 테스트)
+py-ethclient/                    # ~20,600 LOC (소스 + 테스트)
 ├── ethclient/
 │   ├── main.py                  # CLI 진입점 (argparse, asyncio 이벤트 루프)
 │   ├── common/                  # 기초 모듈 (의존성 없음)
@@ -83,8 +83,10 @@ py-ethclient/                    # ~15,900 LOC (소스 + 테스트)
 │   │       └── snap_sync.py     # Snap sync 4단계 상태 머신
 │   └── rpc/                     # JSON-RPC 서버
 │       ├── server.py            # FastAPI 기반 디스패처
-│       └── eth_api.py           # eth_ 네임스페이스 핸들러
-├── tests/                       # pytest 단위 테스트 (524개)
+│       ├── eth_api.py           # eth_ 네임스페이스 핸들러
+│       ├── engine_api.py        # Engine API V1/V2/V3 핸들러
+│       └── engine_types.py      # Engine API 요청/응답 타입
+├── tests/                       # pytest 단위 테스트 (562개)
 │   ├── test_rlp.py              # RLP 인코딩/디코딩
 │   ├── test_trie.py             # MPT + 이더리움 공식 테스트 벡터
 │   ├── test_trie_proofs.py      # 트라이 머클 증명 & 범위 검증
@@ -96,8 +98,13 @@ py-ethclient/                    # ~15,900 LOC (소스 + 테스트)
 │   ├── test_protocol_registry.py # 멀티 프로토콜 capability 협상
 │   ├── test_snap_messages.py    # snap/1 메시지 encode/decode 라운드트립
 │   ├── test_snap_sync.py        # Snap sync 상태 머신, 응답 핸들러
-│   ├── test_rpc.py              # JSON-RPC 엔드포인트
+│   ├── test_rpc.py              # JSON-RPC 엔드포인트 + Engine API
+│   ├── test_disk_backend.py     # LMDB 영속 스토리지
 │   └── test_integration.py      # 모듈 간 통합 테스트
+├── tests/integration/           # 통합 테스트 스위트
+│   ├── archive_mode_test.py     # 아카이브 모드 RPC
+│   ├── chaindata_test.py        # 체인데이터 영속성
+│   └── fusaka_compliance_test.py # Fusaka 포크 호환
 ├── test_full_sync.py            # 라이브 메인넷 검증 테스트 (별도 실행)
 ├── Dockerfile                   # Ubuntu 기반 컨테이너 이미지
 ├── docker-compose.yml           # 원커맨드 배포
@@ -128,7 +135,7 @@ main.py (통합 진입점)
 ### 단위 테스트 (오프라인)
 
 ```bash
-pytest                           # 전체 (524개, ~7초)
+pytest                           # 전체 (562개, ~7초)
 pytest tests/test_rlp.py         # RLP만
 pytest tests/test_evm.py -k "test_add"  # 특정 테스트
 pytest -v                        # 상세 출력
@@ -143,15 +150,17 @@ pytest --tb=short                # 짧은 트레이스백
 | test_trie.py | 26 | MPT, 이더리움 공식 벡터 |
 | test_trie_proofs.py | 23 | 증명 생성/검증, 범위 증명, 순회 |
 | test_crypto.py | 14 | keccak256, ECDSA, 주소 |
-| test_evm.py | 84 | 스택, 메모리, 모든 옵코드, 프리컴파일 (BN128, KZG) |
-| test_storage.py | 33 | Store CRUD, 상태 루트, snap 저장소 |
-| test_blockchain.py | 31 | 헤더 검증, base fee, 블록 실행, mempool |
-| test_p2p.py | 57 | RLPx, 핸드셰이크, eth 메시지, head discovery |
-| test_protocol_registry.py | 16 | Capability 협상, 오프셋 계산 |
+| test_evm.py | 88 | 스택, 메모리, 모든 옵코드, 프리컴파일 (BN128, KZG) |
+| test_storage.py | 65 | Store CRUD, 상태 루트, snap 저장소 (양 백엔드 parametrize) |
+| test_blockchain.py | 37 | 헤더 검증, base fee, 블록 실행, mempool, fork choice |
+| test_p2p.py | 66 | RLPx, 핸드셰이크, eth 메시지, head discovery |
+| test_protocol_registry.py | 17 | Capability 협상, 오프셋 계산 |
 | test_snap_messages.py | 21 | snap/1 메시지 encode/decode 라운드트립 |
-| test_snap_sync.py | 21 | Snap sync 상태 머신, 응답 핸들러 |
-| test_rpc.py | 70 | JSON-RPC, eth_call/estimateGas EVM, tx/receipt 조회 |
+| test_snap_sync.py | 27 | Snap sync 상태 머신, 응답 핸들러 |
+| test_rpc.py | 76 | JSON-RPC, eth_call/estimateGas EVM, Engine API, tx/receipt 조회 |
 | test_integration.py | 12 | 모듈 간 통합 |
+| test_disk_backend.py | 28 | LMDB 영속성, flush, 오버레이, 상태 루트 |
+| integration/ | 6 | 아카이브 모드, 체인데이터, Fusaka 호환 |
 
 ### 라이브 네트워크 테스트
 
@@ -260,9 +269,9 @@ snap_peers = [p for p in peers if p.snap_supported]
 ## 개선 가능 영역
 
 1. **Genesis 상태 초기화** — go-ethereum의 genesis alloc 데이터를 파싱하여 초기 상태 구축
-2. **Engine API** — Beacon Chain 연동을 위한 `engine_` 네임스페이스
-4. **EVM 테스트 스위트** — ethereum/tests 공식 벡터로 EVM 정합성 검증 확대
-5. **성능 최적화** — 트라이 캐싱, 병렬 트랜잭션 검증, asyncio 최적화
+2. **Engine API 최적화** — 백그라운드 페이로드 빌드, 다중 후보 경쟁, 빌더 수익 최적화
+3. **EVM 테스트 스위트** — ethereum/tests 공식 벡터로 EVM 정합성 검증 확대
+4. **성능 최적화** — 트라이 캐싱, 병렬 트랜잭션 검증, asyncio 최적화
 
 ## 의존성
 
@@ -304,5 +313,6 @@ CLI: `ethclient --network sepolia --bootnodes enode://...`
 4. `networking/` 수정 시 → `test_p2p.py`, `test_protocol_registry.py`, `test_snap_messages.py` 실행
 5. `networking/sync/` 수정 시 → `test_snap_sync.py` + `test_full_sync.py` 실행
 6. `blockchain/` 수정 시 → `test_blockchain.py` + `test_integration.py` + `test_rpc.py` 실행
+6b. `rpc/engine_api.py` 수정 시 → `test_rpc.py` 실행
 7. 새 하드포크 지원 시 → `config.py`에 포크 블록/타임스탬프 추가, `types.py`에 새 필드 추가
 8. 전체 회귀 테스트: `pytest && python3 test_full_sync.py`

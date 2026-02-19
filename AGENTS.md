@@ -71,7 +71,7 @@ Useful log signals:
 ## Project Structure
 
 ```
-py-ethclient/                    # ~20,600 LOC (source + tests)
+py-ethclient/                    # ~20,600+ LOC (source + tests)
 ├── ethclient/
 │   ├── main.py                  # CLI entry point (argparse, asyncio event loop)
 │   ├── common/                  # Foundation modules (no internal dependencies)

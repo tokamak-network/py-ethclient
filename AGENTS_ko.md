@@ -37,7 +37,7 @@ docker compose down                         # 종료
 ## 프로젝트 구조
 
 ```
-py-ethclient/                    # ~20,600 LOC (소스 + 테스트)
+py-ethclient/                    # ~20,600+ LOC (소스 + 테스트)
 ├── ethclient/
 │   ├── main.py                  # CLI 진입점 (argparse, asyncio 이벤트 루프)
 │   ├── common/                  # 기초 모듈 (의존성 없음)

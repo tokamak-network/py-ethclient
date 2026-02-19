@@ -333,8 +333,8 @@ class L2Hook(ExecutionHook):
 | `blockchain/` | 4 | 1,353 | Block validation, mempool, fork choice, simulate_call |
 | `networking/` | 19 | 4,339 | RLPx, discovery, eth/68, snap/1, protocol registry, sync, server |
 | `rpc/` | 5 | 1,660 | JSON-RPC server, eth API, Engine API |
-| `main.py` | 1 | 527 | CLI entry point |
-| **Total** | **48** | **14,329** | |
+| `main.py` | 1 | 529 | CLI entry point |
+| **Total** | **48** | **14,331** | |
 
 ### Test Code
 
@@ -348,14 +348,14 @@ class L2Hook(ExecutionHook):
 | `test_storage.py` | 387 | 65 | Store CRUD, state root (both backends parametrized) |
 | `test_blockchain.py` | 617 | 37 | Header validation, block execution, mempool, fork choice |
 | `test_p2p.py` | 1,100 | 66 | RLPx, handshake, eth messages, head discovery |
-| `test_rpc.py` | 911 | 76 | JSON-RPC endpoints, eth_call/estimateGas, Engine API, tx/receipt lookup |
+| `test_rpc.py` | 909 | 76 | JSON-RPC endpoints, eth_call/estimateGas, Engine API, tx/receipt lookup |
 | `test_protocol_registry.py` | 177 | 17 | Multi-protocol capability negotiation |
 | `test_snap_messages.py` | 267 | 21 | snap/1 message encode/decode roundtrip |
 | `test_snap_sync.py` | 413 | 27 | Snap sync state machine, response handlers |
 | `test_integration.py` | 250 | 12 | Cross-module integration |
 | `test_disk_backend.py` | 495 | 28 | LMDB persistence, flush, overlay, state root consistency |
 | `integration/` | 68 | 6 | Archive mode, chaindata, Fusaka compliance |
-| **Total** | **6,292** | **562** | |
+| **Total** | **6,290** | **562** | |
 
 ## Current Limitations
 

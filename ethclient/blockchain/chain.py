@@ -36,6 +36,16 @@ from ethclient.vm.gas import (
 from ethclient.vm.precompiles import is_precompile, run_precompile, PRECOMPILES
 from ethclient.vm.hooks import ExecutionHook, DefaultHook
 
+# ---------------------------------------------------------------------------
+# Fusaka/Osaka safety limits
+# ---------------------------------------------------------------------------
+
+# EIP-7825
+MAX_TX_GAS = 16_777_216  # 2^24
+# EIP-7934
+MAX_RLP_BLOCK_SIZE = 128 * 1024 * 1024  # 128 MiB
+MIN_BLOB_BASE_FEE_PER_GAS = 1
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -47,6 +57,27 @@ class BlockValidationError(Exception):
 
 class TransactionError(Exception):
     pass
+
+
+def _fake_exponential(factor: int, numerator: int, denominator: int) -> int:
+    """Approximate e^(numerator/denominator) * factor with bounded integer series."""
+    output = 0
+    i = 1
+    term = factor * denominator
+    while term > 0:
+        output += term
+        term = (term * numerator) // (denominator * i)
+        i += 1
+    return output // denominator
+
+
+def calc_blob_base_fee(excess_blob_gas: int, config: ChainConfig, timestamp: int = 0) -> int:
+    """Compute blob base fee from excess blob gas (EIP-4844 style)."""
+    _, _, fraction = config.get_blob_params_at(timestamp)
+    # EIP-7918 guardrail.
+    if config.osaka_time is not None and timestamp >= config.osaka_time:
+        fraction = max(fraction, 5_007_716)
+    return _fake_exponential(MIN_BLOB_BASE_FEE_PER_GAS, excess_blob_gas, fraction)
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +129,7 @@ def simulate_call(
         env.gas_limit = header.gas_limit
         env.chain_id = config.chain_id
         env.base_fee = base_fee
+        env.blob_base_fee = calc_blob_base_fee(header.excess_blob_gas or 0, config, header.timestamp)
         env.gas_price = base_fee  # effective gas price = base_fee for calls
         env.prevrandao = int.from_bytes(header.mix_hash, "big")
         env.hook = DefaultHook()
@@ -306,6 +338,21 @@ def execute_transaction(
 ) -> TxExecutionResult:
     """Execute a single transaction against the current state."""
 
+    # EIP-7702 SetCode transaction gating.
+    if tx.tx_type == TxType.SET_CODE:
+        if not config.is_prague(header.timestamp):
+            return TxExecutionResult(
+                success=False,
+                gas_used=0,
+                error="SetCode transaction is not active before Prague",
+            )
+        if not tx.authorization_list:
+            return TxExecutionResult(
+                success=False,
+                gas_used=0,
+                error="SetCode transaction requires non-empty authorization list",
+            )
+
     # Recover sender
     try:
         sender = tx.sender()
@@ -318,6 +365,14 @@ def execute_transaction(
         return TxExecutionResult(
             success=False,
             error=f"Nonce mismatch: expected {expected_nonce}, got {tx.nonce}",
+        )
+
+    # Fusaka/Osaka tx gas limit check (EIP-7825)
+    if config.is_osaka(header.timestamp) and tx.gas_limit > MAX_TX_GAS:
+        return TxExecutionResult(
+            success=False,
+            gas_used=0,
+            error=f"Transaction gas limit exceeds MAX_TX_GAS ({MAX_TX_GAS})",
         )
 
     # Calculate intrinsic gas
@@ -358,6 +413,7 @@ def execute_transaction(
     env.gas_limit = header.gas_limit
     env.chain_id = config.chain_id
     env.base_fee = base_fee
+    env.blob_base_fee = calc_blob_base_fee(header.excess_blob_gas or 0, config, header.timestamp)
     env.gas_price = effective_gas_price
     env.prevrandao = int.from_bytes(header.mix_hash, "big")
     env.blob_hashes = tx.blob_versioned_hashes
@@ -580,6 +636,15 @@ def execute_block(
     cumulative_gas = 0
     block_bloom = bytearray(BLOOM_BYTE_SIZE)
 
+    # Fusaka/Osaka block size limit check (EIP-7934)
+    if config.is_osaka(block.header.timestamp):
+        block_rlp_size = len(block.encode_rlp())
+        if block_rlp_size > MAX_RLP_BLOCK_SIZE:
+            raise BlockValidationError(
+                f"Block RLP size exceeds MAX_RLP_BLOCK_SIZE: "
+                f"{block_rlp_size} > {MAX_RLP_BLOCK_SIZE}"
+            )
+
     # Snapshot original storage for SSTORE gas calculations
     store.commit_original_storage()
 
@@ -679,6 +744,15 @@ def validate_and_execute_block(
 
     # 1. Validate header
     validate_header(block.header, parent, config)
+
+    # Fusaka/Osaka tx gas limit check before execution (EIP-7825)
+    if config.is_osaka(block.header.timestamp):
+        for i, tx in enumerate(block.transactions):
+            if tx.gas_limit > MAX_TX_GAS:
+                raise BlockValidationError(
+                    f"Transaction {i} gas limit exceeds MAX_TX_GAS: "
+                    f"{tx.gas_limit} > {MAX_TX_GAS}"
+                )
 
     # 2. Validate transactions root
     tx_rlps = [tx.encode_rlp() for tx in block.transactions]

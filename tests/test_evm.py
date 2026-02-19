@@ -321,6 +321,14 @@ class TestBitwise:
         code = bytecode(push(16), push(4), Op.SHR)
         assert self._run(code).stack.pop() == 1
 
+    def test_clz(self):
+        code = bytecode(push(0x0F), Op.CLZ)
+        assert self._run(code).stack.pop() == 252
+
+    def test_clz_zero(self):
+        code = bytecode(push(0), Op.CLZ)
+        assert self._run(code).stack.pop() == 256
+
 
 class TestMemoryOps:
     def _run(self, code: bytes) -> tuple[CallFrame, ExecutionEnvironment]:
@@ -645,6 +653,21 @@ class TestPrecompiles:
         assert result is not None
         _, output = result
         assert int.from_bytes(output, "big") == 3
+
+    def test_modexp_input_bound(self):
+        from ethclient.vm.precompiles import run_precompile
+        huge = (2**20).to_bytes(32, "big")
+        # Only lengths are needed to trigger bound check.
+        data = huge + huge + huge
+        result = run_precompile(b"\x00" * 19 + b"\x05", data)
+        assert result is None
+
+    def test_p256verify_invalid_signature(self):
+        from ethclient.vm.precompiles import run_precompile
+        result = run_precompile(b"\x00" * 18 + b"\x01\x00", b"\x00" * 160)
+        assert result is not None
+        _, output = result
+        assert int.from_bytes(output, "big") == 0
 
     # --- BN128 ecAdd (0x06) ---
 

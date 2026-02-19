@@ -103,6 +103,7 @@ class Op:
     SHL             = 0x1B
     SHR             = 0x1C
     SAR             = 0x1D
+    CLZ             = 0x1F
     KECCAK256       = 0x20
     ADDRESS         = 0x30
     BALANCE         = 0x31
@@ -362,6 +363,16 @@ def op_sar(frame, env):
         frame.stack.push(_to_unsigned(-1 if signed < 0 else 0))
     else:
         frame.stack.push(_to_unsigned(signed >> shift))
+    frame.pc += 1
+
+
+def op_clz(frame, env):
+    """Count leading zero bits in a 256-bit word."""
+    value = frame.stack.pop()
+    if value == 0:
+        frame.stack.push(256)
+    else:
+        frame.stack.push(256 - value.bit_length())
     frame.pc += 1
 
 
@@ -1019,6 +1030,7 @@ def _register():
     t[Op.SHL] = (op_shl, G_VERY_LOW)
     t[Op.SHR] = (op_shr, G_VERY_LOW)
     t[Op.SAR] = (op_sar, G_VERY_LOW)
+    t[Op.CLZ] = (op_clz, G_VERY_LOW)
 
     t[Op.KECCAK256] = (op_keccak256, G_KECCAK256)
 

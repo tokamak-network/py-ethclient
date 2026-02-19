@@ -72,6 +72,9 @@ def _decode_g2_point(data: bytes):
 
 _kzg_trusted_setup = None
 
+# EIP-7883: reject oversized MODEXP lengths.
+MODEXP_MAX_INPUT_FIELD_BYTES = 1024
+
 
 def _get_kzg_trusted_setup():
     """Load KZG trusted setup on first use."""
@@ -152,6 +155,13 @@ def precompile_modexp(data: bytes) -> Optional[tuple[int, bytes]]:
     e_size = int.from_bytes(data[32:64], "big")
     m_size = int.from_bytes(data[64:96], "big")
 
+    if (
+        b_size > MODEXP_MAX_INPUT_FIELD_BYTES
+        or e_size > MODEXP_MAX_INPUT_FIELD_BYTES
+        or m_size > MODEXP_MAX_INPUT_FIELD_BYTES
+    ):
+        return None
+
     rest = data[96:]
     rest = rest.ljust(b_size + e_size + m_size, b"\x00")
 
@@ -188,6 +198,50 @@ def precompile_modexp(data: bytes) -> Optional[tuple[int, bytes]]:
         result = result_int.to_bytes(m_size, "big") if m_size > 0 else b""
 
     return gas, result
+
+
+# ---------------------------------------------------------------------------
+# 0x0100: P256VERIFY (Fusaka / EIP-7951)
+# ---------------------------------------------------------------------------
+
+def precompile_p256verify(data: bytes) -> Optional[tuple[int, bytes]]:
+    """Verify ECDSA P-256 signature.
+
+    Input layout (160 bytes):
+      msg(32) || r(32) || s(32) || pubkey_x(32) || pubkey_y(32)
+    Output:
+      32-byte boolean word (1 for valid, 0 for invalid)
+    """
+    GAS = 3450
+    if len(data) != 160:
+        return None
+
+    msg = data[0:32]
+    r = int.from_bytes(data[32:64], "big")
+    s = int.from_bytes(data[64:96], "big")
+    qx = int.from_bytes(data[96:128], "big")
+    qy = int.from_bytes(data[128:160], "big")
+
+    # Reject zero/invalid signature scalars early.
+    if r == 0 or s == 0:
+        return GAS, b"\x00" * 32
+
+    try:
+        from Crypto.PublicKey import ECC
+        from Crypto.Signature import DSS
+        from Crypto.Hash import SHA256
+    except Exception:
+        return None
+
+    try:
+        public_key = ECC.construct(curve="P-256", point_x=qx, point_y=qy)
+        verifier = DSS.new(public_key, "fips-186-3")
+        digest = SHA256.new(msg)
+        signature = r.to_bytes(32, "big") + s.to_bytes(32, "big")
+        verifier.verify(digest, signature)
+        return GAS, (1).to_bytes(32, "big")
+    except Exception:
+        return GAS, b"\x00" * 32
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +449,7 @@ PRECOMPILES: dict[bytes, callable] = {
     b"\x00" * 19 + b"\x08": precompile_ecpairing,
     b"\x00" * 19 + b"\x09": precompile_blake2f,
     b"\x00" * 19 + b"\x0a": precompile_kzg_point_eval,
+    b"\x00" * 18 + b"\x01\x00": precompile_p256verify,
 }
 
 

@@ -21,10 +21,13 @@ from ethclient.storage.memory_backend import MemoryBackend
 from ethclient.blockchain.chain import (
     validate_header,
     calc_base_fee,
+    calc_blob_base_fee,
     execute_block,
     execute_transaction,
+    validate_and_execute_block,
     BlockValidationError,
 )
+import ethclient.blockchain.chain as chain_mod
 from ethclient.blockchain.mempool import Mempool
 from ethclient.blockchain.fork_choice import ForkChoice
 
@@ -79,6 +82,34 @@ def make_signed_tx(
     msg_hash = tx.signing_hash(chain_id)
     v, r, s = ecdsa_sign(msg_hash, pk)
     tx.v = v + 35 + 2 * chain_id  # EIP-155
+    tx.r = r
+    tx.s = s
+    return tx
+
+
+def make_signed_setcode_tx(
+    pk: bytes,
+    nonce: int = 0,
+    gas_limit: int = 100000,
+    chain_id: int = 1337,
+    authorization_list: list[list] | None = None,
+) -> Transaction:
+    tx = Transaction(
+        tx_type=TxType.SET_CODE,
+        chain_id=chain_id,
+        nonce=nonce,
+        max_priority_fee_per_gas=1_000_000_000,
+        max_fee_per_gas=2_000_000_000,
+        gas_limit=gas_limit,
+        to=ADDR2,
+        value=0,
+        data=b"",
+        access_list=[],
+        authorization_list=authorization_list or [],
+    )
+    msg_hash = tx.signing_hash(chain_id)
+    v, r, s = ecdsa_sign(msg_hash, pk)
+    tx.v = v
     tx.r = r
     tx.s = s
     return tx
@@ -214,6 +245,23 @@ class TestBaseFee:
         new_fee = calc_base_fee(parent, ALL_FORKS_CONFIG)
         assert new_fee >= 0
 
+    def test_blob_base_fee_nonzero(self):
+        fee = calc_blob_base_fee(100_000, ALL_FORKS_CONFIG)
+        assert fee >= 1
+
+    def test_blob_base_fee_uses_schedule_fraction(self):
+        cfg = ChainConfig(
+            chain_id=1,
+            osaka_time=100,
+            blob_schedule={
+                "osaka": {"target": 786_432, "max": 1_179_648, "baseFeeUpdateFraction": 8_000_000}
+            },
+        )
+        # Same excess gas, different active timestamp -> different fee curve.
+        pre = calc_blob_base_fee(10_000_000, cfg, timestamp=0)
+        post = calc_blob_base_fee(10_000_000, cfg, timestamp=200)
+        assert pre != post
+
 
 # ---------------------------------------------------------------------------
 # Transaction execution tests
@@ -262,6 +310,34 @@ class TestTransactionExecution:
         result = execute_transaction(tx, header, store, ALL_FORKS_CONFIG, 0, 0)
         assert result.success is False
         assert "balance" in result.error.lower()
+
+    def test_max_tx_gas_enforced_on_osaka(self):
+        store, header = self._setup()
+        # Ensure Osaka/Fusaka-era rule is active.
+        header.timestamp = 2_000_000_000
+        osaka_config = ChainConfig(chain_id=1337, osaka_time=1)
+        tx = make_signed_tx(PK1, nonce=0, to=ADDR2, gas_limit=chain_mod.MAX_TX_GAS + 1)
+
+        result = execute_transaction(tx, header, store, osaka_config, 0, 0)
+        assert result.success is False
+        assert "MAX_TX_GAS" in (result.error or "")
+
+    def test_setcode_rejected_before_prague(self):
+        store, header = self._setup()
+        cfg = ChainConfig(chain_id=1337, prague_time=10_000_000_000)
+        tx = make_signed_setcode_tx(PK1, nonce=0, authorization_list=[[1, ADDR1, 0, 0, 0, 0]])
+        result = execute_transaction(tx, header, store, cfg, 0, 0)
+        assert result.success is False
+        assert "not active before Prague" in (result.error or "")
+
+    def test_setcode_requires_authorization_list(self):
+        store, header = self._setup()
+        header.timestamp = 2_000_000_000
+        cfg = ChainConfig(chain_id=1337, prague_time=1)
+        tx = make_signed_setcode_tx(PK1, nonce=0, authorization_list=[])
+        result = execute_transaction(tx, header, store, cfg, 0, 0)
+        assert result.success is False
+        assert "authorization list" in (result.error or "").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +408,33 @@ class TestBlockExecution:
 
         result = execute_block(block, store, ALL_FORKS_CONFIG)
         assert store.get_balance(ADDR2) == 1_000_000 * 10**9
+
+    def test_max_rlp_block_size_enforced(self, monkeypatch):
+        store = MemoryBackend()
+        from ethclient.common.types import Account
+        store.put_account(ADDR1, Account(balance=10 * 10**18, nonce=0))
+
+        osaka_config = ChainConfig(chain_id=1337, osaka_time=1)
+        header = BlockHeader(
+            number=1,
+            timestamp=2_000_000_000,
+            gas_limit=30_000_000,
+            coinbase=COINBASE,
+            base_fee_per_gas=1_000_000_000,
+        )
+        tx = make_signed_tx(PK1, nonce=0, to=ADDR2, data=b"\x01" * 4096, gas_limit=100000)
+        block = Block(header=header, transactions=[tx])
+        parent = make_parent_header()
+        parent.number = 0
+        parent.timestamp = 1_999_999_999
+        block.header.parent_hash = parent.block_hash()
+        block.header.number = 1
+        block.header.gas_used = 0
+        block.header.transactions_root = ordered_trie_root([t.encode_rlp() for t in block.transactions])
+
+        monkeypatch.setattr(chain_mod, "MAX_RLP_BLOCK_SIZE", 1024)
+        with pytest.raises(BlockValidationError, match="MAX_RLP_BLOCK_SIZE"):
+            validate_and_execute_block(block, parent, store, osaka_config)
 
 
 # ---------------------------------------------------------------------------

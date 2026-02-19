@@ -21,6 +21,7 @@ from ethclient.networking.eth.protocol import (
     EthMsg,
     DisconnectReason,
     ETH_VERSION,
+    ETH_VERSION_FALLBACK,
 )
 from ethclient.networking.eth.messages import (
     HelloMessage,
@@ -30,6 +31,8 @@ from ethclient.networking.eth.messages import (
     BlockHeadersMessage,
     GetBlockBodiesMessage,
     BlockBodiesMessage,
+    GetReceiptsMessage,
+    ReceiptsMessage,
     TransactionsMessage,
     NewPooledTransactionHashesMessage,
     NewBlockHashesMessage,
@@ -63,8 +66,8 @@ CLEANUP_INTERVAL = 30.0
 # Local capabilities
 # ---------------------------------------------------------------------------
 
-LOCAL_CAPS_ETH_ONLY = [Capability("eth", ETH_VERSION)]
-LOCAL_CAPS_WITH_SNAP = [Capability("eth", ETH_VERSION), Capability("snap", SNAP_VERSION)]
+LOCAL_CAPS_ETH_ONLY = [Capability("eth", ETH_VERSION), Capability("eth", ETH_VERSION_FALLBACK)]
+LOCAL_CAPS_WITH_SNAP = [Capability("eth", ETH_VERSION), Capability("eth", ETH_VERSION_FALLBACK), Capability("snap", SNAP_VERSION)]
 
 
 # ---------------------------------------------------------------------------
@@ -351,20 +354,25 @@ class P2PServer:
         """Exchange eth Status messages. Separated for clean error handling."""
         total_difficulty = 0
         best_hash = self.genesis_hash
+        head_number = 0
         if self.store:
             head = self.store.get_latest_block_number()
             if head is not None:
+                head_number = head
                 header = self.store.get_block_header_by_number(head)
                 if header:
                     best_hash = header.block_hash()
 
         status = StatusMessage(
-            protocol_version=ETH_VERSION,
+            protocol_version=peer.eth_version or ETH_VERSION,
             network_id=self.network_id,
             total_difficulty=total_difficulty,
             best_hash=best_hash,
             genesis_hash=self.genesis_hash,
             fork_id=self.fork_id,
+            earliest_block=0,
+            latest_block=head_number,
+            latest_block_hash=best_hash,
         )
         try:
             await peer.send_eth_message(EthMsg.STATUS, status.encode())
@@ -396,8 +404,9 @@ class P2PServer:
             logger.info("Failed to decode Status: %s", e)
             return False
 
-        logger.info("Remote Status: network=%d, td=%d, genesis=%s, fork_id=(%s, %d)",
-                     remote_status.network_id, remote_status.total_difficulty,
+        logger.info("Remote Status: network=%d, version=%d, td=%d, latest=%d, genesis=%s, fork_id=(%s, %d)",
+                     remote_status.network_id, remote_status.protocol_version, remote_status.total_difficulty,
+                     remote_status.latest_block,
                      remote_status.genesis_hash.hex()[:16],
                      remote_status.fork_id[0].hex(), remote_status.fork_id[1])
 
@@ -414,7 +423,11 @@ class P2PServer:
             return False
 
         peer.total_difficulty = remote_status.total_difficulty
-        peer.best_hash = remote_status.best_hash
+        if remote_status.protocol_version >= 69:
+            peer.best_hash = remote_status.latest_block_hash
+            peer.best_block_number = remote_status.latest_block
+        else:
+            peer.best_hash = remote_status.best_hash
         peer.genesis_hash = remote_status.genesis_hash
 
         return True
@@ -492,12 +505,18 @@ class P2PServer:
             await self._handle_get_block_headers(peer, payload)
         elif msg_code == EthMsg.GET_BLOCK_BODIES:
             await self._handle_get_block_bodies(peer, payload)
+        elif msg_code == EthMsg.GET_RECEIPTS:
+            await self._handle_get_receipts(peer, payload)
+        elif msg_code == EthMsg.RECEIPTS:
+            logger.debug("Received receipts response")
         elif msg_code == EthMsg.TRANSACTIONS:
             self._handle_transactions(payload)
         elif msg_code == EthMsg.NEW_POOLED_TX_HASHES:
             self._handle_new_pooled_tx_hashes(payload)
         elif msg_code == EthMsg.NEW_BLOCK_HASHES:
             self._handle_new_block_hashes(payload)
+        elif msg_code == EthMsg.BLOCK_RANGE_UPDATE:
+            logger.debug("Received BlockRangeUpdate")
         else:
             logger.debug("Unhandled eth message code: 0x%02x", msg_code)
 
@@ -560,6 +579,25 @@ class P2PServer:
 
         response = BlockBodiesMessage(request_id=msg.request_id, bodies=bodies)
         await peer.send_eth_message(EthMsg.BLOCK_BODIES, response.encode())
+
+    async def _handle_get_receipts(
+        self, peer: PeerConnection, data: bytes,
+    ) -> None:
+        """Respond to GetReceipts request."""
+        msg = GetReceiptsMessage.decode(data)
+        payload_receipts: list[list] = []
+
+        if self.store:
+            for block_hash in msg.hashes:
+                receipts = self.store.get_receipts(block_hash)
+                payload_receipts.append(receipts or [])
+
+        response = ReceiptsMessage(
+            request_id=msg.request_id,
+            receipts=payload_receipts,
+            protocol_version=peer.eth_version or ETH_VERSION,
+        )
+        await peer.send_eth_message(EthMsg.RECEIPTS, response.encode())
 
     def _handle_transactions(self, data: bytes) -> None:
         """Handle broadcast transactions."""

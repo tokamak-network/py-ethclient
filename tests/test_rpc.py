@@ -237,6 +237,15 @@ class TestEthAPI:
         result = self._call("eth_chainId")
         assert result["result"] == "0x1"
 
+    def test_eth_config(self):
+        result = self._call("eth_config")
+        assert "result" in result
+        assert "current" in result["result"]
+        assert "chainId" in result["result"]["current"]
+        assert "blobSchedule" in result["result"]["current"]
+        assert "target" in result["result"]["current"]["blobSchedule"]
+        assert "baseFeeUpdateFraction" in result["result"]["current"]["blobSchedule"]
+
     def test_syncing(self):
         result = self._call("eth_syncing")
         assert result["result"] is False

@@ -146,7 +146,8 @@ def _parse_call_params(tx_obj: dict) -> tuple[bytes, Optional[bytes], bytes, int
 
 
 def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
-                     network_chain_id: int = 1, config: Optional[ChainConfig] = None) -> None:
+                     network_chain_id: int = 1, config: Optional[ChainConfig] = None,
+                     archive_enabled: bool = False) -> None:
     """Register all eth_ namespace methods on the RPC server."""
 
     def _resolve_block_number(block_param: str) -> Optional[int]:
@@ -165,10 +166,23 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
             return 0
         return latest
 
+    def _require_archive_or_latest(block: str) -> None:
+        """Fail clearly on historical state queries when archive mode is disabled."""
+        parsed = parse_block_param(block)
+        if archive_enabled:
+            return
+        if parsed in ("latest", "pending", "safe", "finalized"):
+            return
+        raise RPCError(
+            INVALID_PARAMS,
+            "archive mode is not enabled; historical state queries are unavailable",
+        )
+
     # -- Account methods --
 
     @rpc.method("eth_getBalance")
     def get_balance(address: str, block: str = "latest") -> str:
+        _require_archive_or_latest(block)
         if store is None:
             return int_to_hex(0)
         addr = hex_to_bytes(address)
@@ -179,6 +193,7 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
 
     @rpc.method("eth_getTransactionCount")
     def get_transaction_count(address: str, block: str = "latest") -> str:
+        _require_archive_or_latest(block)
         if store is None:
             return int_to_hex(0)
         addr = hex_to_bytes(address)
@@ -189,6 +204,7 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
 
     @rpc.method("eth_getCode")
     def get_code(address: str, block: str = "latest") -> str:
+        _require_archive_or_latest(block)
         if store is None:
             return "0x"
         addr = hex_to_bytes(address)
@@ -199,6 +215,7 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
 
     @rpc.method("eth_getStorageAt")
     def get_storage_at(address: str, position: str, block: str = "latest") -> str:
+        _require_archive_or_latest(block)
         if store is None:
             return bytes_to_hex(b"\x00" * 32)
         addr = hex_to_bytes(address)
@@ -399,6 +416,97 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
     def get_chain_id() -> str:
         return int_to_hex(network_chain_id)
 
+    @rpc.method("eth_config")
+    def eth_config() -> dict:
+        """Return chain configuration metadata (EIP-7910)."""
+        if config is None:
+            return {
+                "current": {
+                    "chainId": int_to_hex(network_chain_id),
+                    "activationTime": int_to_hex(0),
+                    "blobSchedule": {
+                        "target": int_to_hex(393_216 // 131_072),
+                        "max": int_to_hex(786_432 // 131_072),
+                        "baseFeeUpdateFraction": int_to_hex(3_338_477),
+                    },
+                },
+                "next": {},
+                "lastFork": "0x0",
+            }
+
+        def _current_time() -> int:
+            if store is None:
+                return 0
+            latest = store.get_latest_block_number()
+            if latest is None:
+                return 0
+            header = store.get_block_header_by_number(latest)
+            return header.timestamp if header is not None else 0
+
+        now = _current_time()
+
+        def _to_blob_count(blob_gas_value: int) -> int:
+            return blob_gas_value // 131_072 if blob_gas_value % 131_072 == 0 else blob_gas_value
+
+        def _blob_schedule_for_fork(name: str) -> Optional[dict]:
+            params = config.blob_schedule.get(name)
+            if not params:
+                return None
+            return {
+                "target": int_to_hex(_to_blob_count(params.get("target", config.target_blob_gas_per_block))),
+                "max": int_to_hex(_to_blob_count(params.get("max", config.max_blob_gas_per_block))),
+                "baseFeeUpdateFraction": int_to_hex(
+                    params.get("baseFeeUpdateFraction", config.blob_base_fee_update_fraction)
+                ),
+            }
+
+        def _fork_obj(activation_time: int) -> dict:
+            target, max_blob_gas, fraction = config.get_blob_params_at(activation_time)
+            return {
+                "chainId": int_to_hex(config.chain_id),
+                "activationTime": int_to_hex(activation_time),
+                "blobSchedule": {
+                    "target": int_to_hex(_to_blob_count(target)),
+                    "max": int_to_hex(_to_blob_count(max_blob_gas)),
+                    "baseFeeUpdateFraction": int_to_hex(fraction),
+                },
+            }
+
+        known_forks: list[tuple[str, int]] = []
+        for name, t in [
+            ("shanghai", config.shanghai_time),
+            ("cancun", config.cancun_time),
+            ("prague", config.prague_time),
+            ("osaka", config.osaka_time),
+            ("bpo1", config.bpo1_time),
+            ("bpo2", config.bpo2_time),
+        ]:
+            if t:
+                known_forks.append((name, t))
+        known_forks.sort(key=lambda x: x[1])
+
+        past = [f for f in known_forks if f[1] <= now]
+        future = [f for f in known_forks if f[1] > now]
+
+        last_fork_time = past[-1][1] if past else 0
+        next_fork_time = future[0][1] if future else 0
+        current = _fork_obj(last_fork_time or now)
+
+        # Expose the full configured blob schedule as metadata.
+        schedule_meta = {}
+        for fork_name in ["cancun", "prague", "osaka", "bpo1", "bpo2"]:
+            item = _blob_schedule_for_fork(fork_name)
+            if item is not None:
+                schedule_meta[fork_name] = item
+        if schedule_meta:
+            current["blobScheduleByFork"] = schedule_meta
+
+        return {
+            "current": current,
+            "next": _fork_obj(next_fork_time) if next_fork_time else {},
+            "lastFork": int_to_hex(last_fork_time),
+        }
+
     @rpc.method("eth_syncing")
     def syncing() -> bool | dict:
         return False
@@ -437,7 +545,7 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
 
     @rpc.method("net_version")
     def net_version() -> str:
-        return "1"
+        return str(network_chain_id)
 
     @rpc.method("net_peerCount")
     def net_peer_count() -> str:

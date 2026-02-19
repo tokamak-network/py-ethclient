@@ -18,6 +18,7 @@ class TestCapability:
 
     def test_length_lookup(self):
         assert Capability("eth", 68).length == 17
+        assert Capability("eth", 69).length == 18
         assert Capability("snap", 1).length == 8
         assert Capability("unknown", 1).length == 0
 
@@ -164,5 +165,13 @@ class TestResolveMessageCode:
 class TestProtocolLengths:
     def test_known_lengths(self):
         assert PROTOCOL_LENGTHS[("eth", 68)] == 17
+        assert PROTOCOL_LENGTHS[("eth", 69)] == 18
         assert PROTOCOL_LENGTHS[("eth", 67)] == 17
         assert PROTOCOL_LENGTHS[("snap", 1)] == 8
+
+    def test_snap_offset_with_eth69(self):
+        local = [Capability("eth", 69), Capability("snap", 1)]
+        remote = [Capability("eth", 69), Capability("snap", 1)]
+        result = negotiate_capabilities(local, remote)
+        assert result.offsets["eth"] == 0x10
+        assert result.offsets["snap"] == 0x10 + 18

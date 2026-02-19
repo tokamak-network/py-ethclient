@@ -354,6 +354,33 @@ class TestEthMessages:
         assert decoded.genesis_hash == genesis
         assert decoded.fork_id == fork_id
 
+    def test_status_roundtrip_eth69(self):
+        from ethclient.networking.eth.messages import StatusMessage
+
+        genesis = os.urandom(32)
+        latest_hash = os.urandom(32)
+        fork_id = (os.urandom(4), 777777)
+
+        msg = StatusMessage(
+            protocol_version=69,
+            network_id=11155111,
+            genesis_hash=genesis,
+            fork_id=fork_id,
+            earliest_block=0,
+            latest_block=12_345_678,
+            latest_block_hash=latest_hash,
+        )
+        encoded = msg.encode()
+        decoded = StatusMessage.decode(encoded)
+
+        assert decoded.protocol_version == 69
+        assert decoded.network_id == 11155111
+        assert decoded.genesis_hash == genesis
+        assert decoded.fork_id == fork_id
+        assert decoded.earliest_block == 0
+        assert decoded.latest_block == 12_345_678
+        assert decoded.latest_block_hash == latest_hash
+
     def test_get_block_headers_by_number(self):
         from ethclient.networking.eth.messages import GetBlockHeadersMessage
 
@@ -410,6 +437,49 @@ class TestEthMessages:
 
         assert decoded.request_id == 99
         assert decoded.hashes == hashes
+
+    def test_get_receipts_roundtrip(self):
+        from ethclient.networking.eth.messages import GetReceiptsMessage
+
+        hashes = [os.urandom(32) for _ in range(2)]
+        msg = GetReceiptsMessage(request_id=7, hashes=hashes)
+        encoded = msg.encode()
+        decoded = GetReceiptsMessage.decode(encoded)
+        assert decoded.request_id == 7
+        assert decoded.hashes == hashes
+
+    def test_receipts_roundtrip_eth68(self):
+        from ethclient.networking.eth.messages import ReceiptsMessage
+        from ethclient.common.types import Receipt, Log, TxType
+
+        r = Receipt(
+            succeeded=True,
+            cumulative_gas_used=21000,
+            logs_bloom=b"\x00" * 256,
+            logs=[Log(address=b"\x11" * 20, topics=[b"\x22" * 32], data=b"")],
+            tx_type=TxType.LEGACY,
+        )
+        msg = ReceiptsMessage(request_id=1, receipts=[[r]], protocol_version=68)
+        decoded = ReceiptsMessage.decode(msg.encode(), protocol_version=68)
+        assert decoded.request_id == 1
+        assert decoded.receipts[0][0].cumulative_gas_used == 21000
+
+    def test_receipts_roundtrip_eth69(self):
+        from ethclient.networking.eth.messages import ReceiptsMessage
+        from ethclient.common.types import Receipt, Log, TxType
+
+        r = Receipt(
+            succeeded=True,
+            cumulative_gas_used=22000,
+            logs_bloom=b"\x00" * 256,
+            logs=[Log(address=b"\x33" * 20, topics=[], data=b"\x01\x02")],
+            tx_type=TxType.FEE_MARKET,
+        )
+        msg = ReceiptsMessage(request_id=2, receipts=[[r]], protocol_version=69)
+        decoded = ReceiptsMessage.decode(msg.encode(), protocol_version=69)
+        assert decoded.request_id == 2
+        assert decoded.receipts[0][0].tx_type == TxType.FEE_MARKET
+        assert decoded.receipts[0][0].cumulative_gas_used == 22000
 
     def test_transactions_roundtrip(self):
         from ethclient.networking.eth.messages import TransactionsMessage

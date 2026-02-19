@@ -168,7 +168,7 @@ def _parse_call_params(tx_obj: dict) -> tuple[bytes, Optional[bytes], bytes, int
     return sender, to, data, value, gas_limit
 
 
-def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
+def register_eth_api(rpc: RPCServer, store=None, mempool=None,
                      network_chain_id: int = 1, config: Optional[ChainConfig] = None,
                      archive_enabled: bool = False,
                      peer_count_provider=None,
@@ -362,7 +362,7 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
         """Submit a raw signed transaction."""
         tx_bytes = hex_to_bytes(raw_tx)
         try:
-            tx = Transaction.decode_raw(tx_bytes)
+            tx = Transaction.decode_rlp(tx_bytes)
         except Exception as e:
             raise RPCError(INVALID_PARAMS, f"Failed to decode transaction: {e}")
 

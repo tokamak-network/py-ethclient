@@ -154,7 +154,7 @@ class TestEthAPI:
     def setup_method(self):
         self.rpc = RPCServer()
         from ethclient.rpc.eth_api import register_eth_api
-        register_eth_api(self.rpc, store=None, chain=None, mempool=None)
+        register_eth_api(self.rpc, store=None, mempool=None)
         self.client = TestClient(self.rpc.app)
 
     def _call(self, method: str, params=None, id=1):
@@ -256,7 +256,6 @@ class TestEthAPI:
         register_eth_api(
             rpc,
             store=None,
-            chain=None,
             mempool=None,
             syncing_provider=lambda: True,
         )
@@ -290,7 +289,6 @@ class TestEthAPI:
         register_eth_api(
             rpc,
             store=None,
-            chain=None,
             mempool=None,
             peer_count_provider=lambda: 3,
         )

@@ -360,6 +360,8 @@ class L2Hook(ExecutionHook):
 ## Current Limitations
 
 - **Engine API** — V1/V2/V3 implemented; block production flow operational but ongoing optimization
+- **eth_getLogs** — Stub implementation; log filtering not yet implemented
+- **contractAddress** — Transaction receipt does not yet derive the contract address for CREATE transactions
 
 ## License
 

@@ -360,6 +360,8 @@ class L2Hook(ExecutionHook):
 ## Current Limitations
 
 - **Engine API** — V1/V2/V3 구현 완료; 블록 생산 흐름 동작 중이나 최적화 진행 중
+- **eth_getLogs** — 스텁 구현; 로그 필터링 미구현
+- **contractAddress** — 트랜잭션 영수증에서 CREATE 컨트랙트 주소 미계산
 
 ## License
 

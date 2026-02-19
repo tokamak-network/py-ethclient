@@ -106,9 +106,9 @@ async def do_handshake(conn: RLPxConnection, remote_pubkey: bytes,
     if msg_code == 0x01:
         try:
             dm = DisconnectMessage.decode(payload)
-            print(f"  Disconnect: {dm.reason.name}")
+            print(f"  Disconnect: {dm.reason.name} ({dm.reason.value})")
         except Exception:
-            print(f"  Disconnect (raw)")
+            print(f"  Disconnect (raw payload: {payload.hex() if payload else 'empty'})")
         return None
     if msg_code != 0x00:
         print(f"  Expected Hello, got msg_code={msg_code}")
@@ -139,6 +139,12 @@ async def do_handshake(conn: RLPxConnection, remote_pubkey: bytes,
             print(f"  Network ID: {remote_status.network_id}")
             print(f"  Genesis: {remote_status.genesis_hash.hex()[:16]}...")
             print(f"  ForkID: {remote_status.fork_id[0].hex()} / next={remote_status.fork_id[1]}")
+            if remote_status.protocol_version >= 69:
+                print(f"  eth/69: latest_block={remote_status.latest_block}, "
+                      f"hash={remote_status.latest_block_hash.hex()[:16]}...")
+            else:
+                print(f"  eth/68: TD={remote_status.total_difficulty}, "
+                      f"best_hash={remote_status.best_hash.hex()[:16]}...")
             return remote_status
         if msg_code == 0x02:
             await conn.send_message(0x03, encode_pong())
@@ -162,9 +168,9 @@ async def recv_eth_message(conn: RLPxConnection, expected_eth_code: int, timeout
         if msg_code == 0x01:  # Disconnect
             try:
                 dm = DisconnectMessage.decode(payload)
-                print(f"    [recv] Disconnect: {dm.reason.name}")
+                print(f"    [recv] Disconnect: {dm.reason.name} ({dm.reason.value})")
             except Exception:
-                print(f"    [recv] Disconnect (raw)")
+                print(f"    [recv] Disconnect (raw payload: {payload.hex() if payload else 'empty'})")
             return None
         if msg_code == target_code:
             return payload
@@ -198,86 +204,19 @@ async def request_bodies(conn: RLPxConnection, hashes: list[bytes], req_id: int)
 
 
 
-async def main():
-    # Try mainnet first, then sepolia
-    networks = [
-        ("Ethereum Mainnet", MAINNET_ENODES, MAINNET_CONFIG, MAINNET_GENESIS_HASH, 1),
-        ("Sepolia Testnet", SEPOLIA_ENODES, SEPOLIA_CONFIG, SEPOLIA_GENESIS_HASH, 11155111),
-    ]
+async def run_sync_test(conn, remote_status, chain_config, net_name):
+    """Run full verification sync test on an established connection.
+    Returns True on success, False on failure."""
 
-    conn = None
-    remote_status = None
-    network_name = ""
-    chain_config = None
-    genesis_hash = None
-    network_id = 0
-
-    for net_name, enodes, config, gen_hash, net_id in networks:
-        fid = compute_fork_id(gen_hash, config, head_block=100_000_000, head_time=2_000_000_000)
-
-        print("=" * 70)
-        print(f"Full Verification Sync Test — {net_name}")
-        print("=" * 70)
-        print(f"Our ForkID: {fid[0].hex()} / next={fid[1]}")
-
-        # Try each bootnode with retry
-        for attempt in range(2):
-            for enode in enodes:
-                host, port, pubkey = parse_enode(enode)
-                print(f"\n--- Trying {host}:{port} (attempt {attempt+1}) ---")
-                try:
-                    reader, writer = await asyncio.wait_for(
-                        asyncio.open_connection(host, port), timeout=10.0
-                    )
-                    c = RLPxConnection(PRIVATE_KEY, reader, writer)
-
-                    status_msg = StatusMessage(
-                        protocol_version=ETH_VERSION,
-                        network_id=net_id,
-                        total_difficulty=58_750_000_000_000_000_000_000 if net_id == 1 else 17_000_000_000_000_000,
-                        best_hash=gen_hash,
-                        genesis_hash=gen_hash,
-                        fork_id=fid,
-                    )
-
-                    rs = await do_handshake(c, pubkey, status_msg)
-                    if rs is not None:
-                        conn = c
-                        remote_status = rs
-                        network_name = net_name
-                        chain_config = config
-                        genesis_hash = gen_hash
-                        network_id = net_id
-                        break
-                    c.close()
-                except Exception as e:
-                    print(f"  Connection failed: {e}")
-
-            if conn is not None:
-                break
-            if attempt == 0:
-                print("\n  Retrying in 3 seconds...")
-                await asyncio.sleep(3)
-
-        if conn is not None:
-            break
-        print(f"\n✗ Could not connect to any {net_name} bootnode\n")
-
-    if conn is None:
-        print("\n✗ Could not connect to any network")
-        return
-
-    # ========================================================================
-    # Phase 1: Download recent block headers (near chain head)
-    # ========================================================================
     print("\n" + "=" * 70)
-    print("Phase 1: Download Recent Block Headers")
+    print(f"Phase 1: Download Recent Block Headers — {net_name}")
     print("=" * 70)
 
-    # Request 32 headers ending at the best hash (reverse order)
     t0 = time.time()
+    # eth/69: use latest_block_hash; eth/68: use best_hash
+    head_hash = remote_status.latest_block_hash if remote_status.protocol_version >= 69 else remote_status.best_hash
     recent_headers = await request_headers(
-        conn, remote_status.best_hash, count=32, req_id=1, reverse=True,
+        conn, head_hash, count=32, req_id=1, reverse=True,
     )
     elapsed = time.time() - t0
 
@@ -288,14 +227,12 @@ async def main():
     if not recent_headers:
         print("  ✗ No headers received")
         conn.close()
-        return
+        return False
 
-    # Sort by block number
     recent_headers.sort(key=lambda h: h.number)
     print(f"  Received {len(recent_headers)} headers in {elapsed:.2f}s")
     print(f"  Block range: {recent_headers[0].number} → {recent_headers[-1].number}")
 
-    # Display sample headers
     for h in recent_headers[:3]:
         has_txs = h.transactions_root != EMPTY_TRIE_ROOT
         blob = f", blob_gas={h.blob_gas_used}" if h.blob_gas_used else ""
@@ -309,11 +246,9 @@ async def main():
         print(f"    #{h.number}: gas={h.gas_used}/{h.gas_limit}, "
               f"txs={'YES' if has_txs else 'empty'}, base_fee={h.base_fee_per_gas}{blob}")
 
-    # ========================================================================
-    # Phase 2: Validate header chain
-    # ========================================================================
+    # ── Phase 2: Validate header chain ──
     print("\n" + "=" * 70)
-    print("Phase 2: Validate Header Chain")
+    print(f"Phase 2: Validate Header Chain — {net_name}")
     print("=" * 70)
 
     valid_links = 0
@@ -330,11 +265,9 @@ async def main():
     total_links = len(recent_headers) - 1
     print(f"  ✓ {valid_links}/{total_links} header chain links validated")
 
-    # ========================================================================
-    # Phase 3: Download block bodies
-    # ========================================================================
+    # ── Phase 3: Download block bodies ──
     print("\n" + "=" * 70)
-    print("Phase 3: Download Block Bodies")
+    print(f"Phase 3: Download Block Bodies — {net_name}")
     print("=" * 70)
 
     all_bodies = []
@@ -349,11 +282,9 @@ async def main():
     elapsed = time.time() - t0
     print(f"  Total: {len(all_bodies)} bodies in {elapsed:.2f}s")
 
-    # ========================================================================
-    # Phase 4: Decode transactions & verify roots
-    # ========================================================================
+    # ── Phase 4: Decode transactions & verify roots ──
     print("\n" + "=" * 70)
-    print("Phase 4: Transaction Decoding & Root Verification")
+    print(f"Phase 4: Transaction Decoding & Root Verification — {net_name}")
     print("=" * 70)
 
     tx_root_ok = 0
@@ -376,7 +307,6 @@ async def main():
         body_ommers_rlp = body[1]
         body_withdrawals_rlp = body[2] if len(body) > 2 else []
 
-        # Decode transactions
         try:
             txs = decode_transactions(body_txs_rlp)
         except Exception as e:
@@ -385,7 +315,6 @@ async def main():
             tx_root_fail += 1
             continue
 
-        # Verify transaction root
         tx_rlps = [tx.encode_rlp() for tx in txs]
         computed_root = ordered_trie_root(tx_rlps) if tx_rlps else EMPTY_TRIE_ROOT
         if computed_root == header.transactions_root:
@@ -397,7 +326,6 @@ async def main():
                       f"(expected {header.transactions_root.hex()[:16]}..., "
                       f"got {computed_root.hex()[:16]}...)")
 
-        # Count transactions
         if txs:
             blocks_with_txs += 1
         total_txs += len(txs)
@@ -406,7 +334,6 @@ async def main():
             type_counts[tx.tx_type] = type_counts.get(tx.tx_type, 0) + 1
             total_value_wei += tx.value
 
-            # Recover sender (ECDSA signature verification)
             try:
                 sender = tx.sender()
                 if len(sender) == 20:
@@ -416,7 +343,6 @@ async def main():
             except Exception:
                 sender_fail += 1
 
-        # Count ommers and withdrawals
         if body_ommers_rlp:
             ommer_count += len(body_ommers_rlp)
         if body_withdrawals_rlp:
@@ -440,13 +366,11 @@ async def main():
     print(f"  Ommers (uncle blocks):    {ommer_count}")
     print(f"  Withdrawals:              {withdrawal_count}")
 
-    # ========================================================================
-    # Phase 5: Base fee (EIP-1559) validation
-    # ========================================================================
+    # ── Phase 5: Base fee validation ──
     has_base_fee = any(h.base_fee_per_gas is not None for h in recent_headers)
     if has_base_fee:
         print("\n" + "=" * 70)
-        print("Phase 5: Base Fee (EIP-1559) Validation")
+        print(f"Phase 5: Base Fee (EIP-1559) Validation — {net_name}")
         print("=" * 70)
 
         from ethclient.blockchain.chain import calc_base_fee
@@ -470,11 +394,9 @@ async def main():
         if bf_fail == 0 and bf_ok > 0:
             print(f"  ✓ All {bf_ok} base fee calculations verified!")
 
-    # ========================================================================
-    # Summary
-    # ========================================================================
+    # ── Summary ──
     print("\n" + "=" * 70)
-    print("SUMMARY")
+    print(f"SUMMARY — {net_name}")
     print("=" * 70)
 
     all_ok = tx_root_fail == 0 and decode_errors == 0
@@ -487,12 +409,107 @@ async def main():
         print(f"  - {sender_ok} sender addresses recovered via ECDSA")
         if withdrawal_count:
             print(f"  - {withdrawal_count} withdrawals processed")
+        conn.close()
+        return True
     elif total_txs == 0:
         print("△ Header chain validated but no transactions found")
     else:
         print("✗ Some verifications failed — see details above")
 
     conn.close()
+    return False
+
+
+async def try_connect_single(enode, net_id, gen_hash, fid, attempt_label=""):
+    """Try connecting to a single enode. Returns (conn, remote_status) or None."""
+    host, port, pubkey = parse_enode(enode)
+    print(f"\n--- Trying {host}:{port} {attempt_label}---")
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=10.0
+        )
+        c = RLPxConnection(PRIVATE_KEY, reader, writer)
+
+        status_msg = StatusMessage(
+            protocol_version=ETH_VERSION,
+            network_id=net_id,
+            genesis_hash=gen_hash,
+            fork_id=fid,
+            # eth/69 fields — at block 0, latest_block_hash = genesis hash
+            earliest_block=0,
+            latest_block=0,
+            latest_block_hash=gen_hash,
+        )
+
+        rs = await do_handshake(c, pubkey, status_msg)
+        if rs is not None:
+            return c, rs
+        c.close()
+    except Exception as e:
+        print(f"  Connection failed: {e}")
+    return None
+
+
+async def main():
+    networks = [
+        ("Ethereum Mainnet", MAINNET_ENODES, MAINNET_CONFIG, MAINNET_GENESIS_HASH, 1),
+        ("Sepolia Testnet", SEPOLIA_ENODES, SEPOLIA_CONFIG, SEPOLIA_GENESIS_HASH, 11155111),
+    ]
+
+    results = {}
+
+    for net_name, enodes, config, gen_hash, net_id in networks:
+        fid = compute_fork_id(gen_hash, config, head_block=100_000_000, head_time=2_000_000_000)
+
+        print("=" * 70)
+        print(f"Full Verification Sync Test — {net_name}")
+        print("=" * 70)
+        print(f"Our ForkID: {fid[0].hex()} / next={fid[1]}")
+
+        passed = False
+        # Try each bootnode up to 3 rounds, connecting + downloading data
+        for attempt in range(3):
+            for enode in enodes:
+                result = await try_connect_single(
+                    enode, net_id, gen_hash, fid,
+                    attempt_label=f"(attempt {attempt+1})"
+                )
+                if result is None:
+                    continue
+
+                conn, remote_status = result
+                ok = await run_sync_test(conn, remote_status, config, net_name)
+                if ok:
+                    passed = True
+                    break
+                # Connection succeeded but data download failed — try next peer
+                print(f"  Data download failed, trying next peer...")
+
+            if passed:
+                break
+            if attempt < 2:
+                print(f"\n  Round {attempt+1} exhausted, retrying in 3s...")
+                await asyncio.sleep(3)
+
+        if passed:
+            results[net_name] = "PASSED"
+        else:
+            results[net_name] = "FAILED"
+            print(f"\n✗ {net_name}: all peers exhausted")
+        print()
+
+    # ── Final Report ──
+    print("\n" + "=" * 70)
+    print("FINAL REPORT")
+    print("=" * 70)
+    for net_name, status in results.items():
+        icon = "✓" if status == "PASSED" else "✗"
+        print(f"  {icon} {net_name}: {status}")
+
+    if all(s == "PASSED" for s in results.values()):
+        print("\n✓ All networks passed!")
+    elif any(s == "PASSED" for s in results.values()):
+        print(f"\n△ Partial success — {sum(1 for s in results.values() if s == 'PASSED')}/{len(results)} passed")
 
 
 if __name__ == "__main__":

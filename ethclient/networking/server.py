@@ -61,6 +61,8 @@ PING_INTERVAL = 15.0   # seconds between pings
 DIAL_INTERVAL = 10.0   # seconds between dial attempts
 CLEANUP_INTERVAL = 30.0
 DIAL_COOLDOWN_SECONDS = 30.0
+DIAL_MAX_ATTEMPTS_PER_TICK = 6
+DIAL_PONG_FRESHNESS_SECONDS = 300.0
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +121,7 @@ class P2PServer:
         listen_port: int = 30303,
         max_peers: int = MAX_PEERS,
         boot_nodes: Optional[list[Node]] = None,
+        bootnode_only: bool = False,
         network_id: int = 1,
         genesis_hash: bytes = b"\x00" * 32,
         fork_id: tuple[bytes, int] = (b"\x00" * 4, 0),
@@ -130,6 +133,7 @@ class P2PServer:
         self.listen_port = listen_port
         self.max_peers = max_peers
         self.boot_nodes = boot_nodes or []
+        self.bootnode_only = bootnode_only
         self.network_id = network_id
         self.genesis_hash = genesis_hash
         self.fork_id = fork_id
@@ -232,6 +236,8 @@ class P2PServer:
 
         conn = RLPxConnection(self.private_key, reader, writer)
         if not await conn.accept_handshake():
+            reason = conn.last_handshake_error or "unknown error"
+            logger.info("Incoming RLPx handshake failed: %s", reason)
             conn.close()
             return
 
@@ -278,7 +284,8 @@ class P2PServer:
         remote_pubkey = b"\x04" + node.id  # add uncompressed prefix
         conn = RLPxConnection(self.private_key, reader, writer)
         if not await conn.initiate_handshake(remote_pubkey):
-            logger.info("RLPx handshake failed with %s", node.ip)
+            reason = conn.last_handshake_error or "unknown error"
+            logger.info("RLPx handshake failed with %s: %s", node.ip, reason)
             conn.close()
             self._dial_retry_after[node.id] = now + DIAL_COOLDOWN_SECONDS
             return None
@@ -465,6 +472,8 @@ class P2PServer:
         finally:
             peer.connected = False
             self.peers.pop(peer.remote_id, None)
+            if peer.remote_id:
+                self._dial_retry_after[peer.remote_id] = time.time() + DIAL_COOLDOWN_SECONDS
             peer.conn.close()
             logger.info("Peer disconnected: %s", peer.remote_client)
 
@@ -659,18 +668,40 @@ class P2PServer:
                 continue
 
             if self._discovery:
+                now = time.time()
                 nodes = self._discovery.table.all_nodes()
-                for node in nodes:
-                    # When bootnodes are configured, prefer only those IDs to reduce churn.
-                    if self._boot_node_ids and node.id not in self._boot_node_ids:
-                        continue
-                    if node.id not in self.peers and node.tcp_port > 0:
-                        try:
-                            await self.connect_to_peer(node)
-                        except Exception as e:
-                            logger.debug("Dial error: %s", e)
-                        if len(self.peers) >= self.max_peers:
-                            break
+                if not nodes:
+                    continue
+
+                def _is_eligible(node: Node) -> bool:
+                    if node.id in self.peers or node.tcp_port <= 0:
+                        return False
+                    if self.bootnode_only and self._boot_node_ids and node.id not in self._boot_node_ids:
+                        return False
+                    # Always allow configured bootnodes.
+                    if node.id in self._boot_node_ids:
+                        return True
+                    # For non-bootnodes, require recent liveness (pong) to reduce dial churn.
+                    if node.last_pong <= 0:
+                        return False
+                    return (now - node.last_pong) <= DIAL_PONG_FRESHNESS_SECONDS
+
+                candidates = [n for n in nodes if _is_eligible(n)]
+                if not candidates:
+                    continue
+
+                # Prioritize bootnodes, then recently alive peers.
+                candidates.sort(
+                    key=lambda n: ((0 if n.id in self._boot_node_ids else 1), -n.last_pong)
+                )
+                dial_budget = min(DIAL_MAX_ATTEMPTS_PER_TICK, self.max_peers - len(self.peers))
+                for node in candidates[:dial_budget]:
+                    try:
+                        await self.connect_to_peer(node)
+                    except Exception as e:
+                        logger.debug("Dial error: %s", e)
+                    if len(self.peers) >= self.max_peers:
+                        break
 
     async def _ping_loop(self) -> None:
         """Periodically ping connected peers."""

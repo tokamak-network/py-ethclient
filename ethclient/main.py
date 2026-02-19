@@ -94,6 +94,7 @@ class EthNode:
         engine_port: int = 8551,
         metrics_port: int = 6060,
         boot_nodes: Optional[list[Node]] = None,
+        bootnode_only: bool = False,
         max_peers: int = 25,
         sync_mode: str = "snap",
         data_dir: Optional[str] = None,
@@ -151,6 +152,7 @@ class EthNode:
             listen_port=listen_port,
             max_peers=max_peers,
             boot_nodes=boot_nodes or [],
+            bootnode_only=bootnode_only,
             network_id=chain_config.chain_id,
             genesis_hash=self.genesis_hash,
             fork_id=self.fork_id,
@@ -379,6 +381,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated enode URLs for bootstrap",
     )
     parser.add_argument(
+        "--bootnode-only",
+        action="store_true",
+        help="Only dial configured bootnodes (default: disabled)",
+    )
+    parser.add_argument(
         "--private-key",
         type=str,
         default=None,
@@ -502,6 +509,7 @@ def main() -> None:
         engine_port=args.engine_port,
         metrics_port=args.metrics_port,
         boot_nodes=boot_nodes,
+        bootnode_only=args.bootnode_only,
         max_peers=args.max_peers,
         sync_mode=args.sync_mode,
         data_dir=data_dir,

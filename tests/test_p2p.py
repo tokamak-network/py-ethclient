@@ -954,6 +954,57 @@ class TestFullSync:
         assert sync.state.target_block == 500
         discover_mock.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_fetch_headers_timeout_returns_none(self):
+        """Header timeout should be treated as failure (None), not completion ([])."""
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+        import ethclient.networking.sync.full_sync as fs_mod
+
+        sync = FullSync()
+        peer = MagicMock()
+        peer.send_eth_message = AsyncMock()
+
+        original_timeout = fs_mod.SYNC_TIMEOUT
+        fs_mod.SYNC_TIMEOUT = 0.05
+        try:
+            headers = await sync._fetch_headers(peer, start=1, count=2)
+        finally:
+            fs_mod.SYNC_TIMEOUT = original_timeout
+
+        assert headers is None
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_triggers_failover_after_header_failures(self):
+        """Repeated header failures should trigger failover instead of completing sync."""
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+        import ethclient.networking.sync.full_sync as fs_mod
+
+        sync = FullSync()
+        peer = MagicMock()
+        peer.connected = True
+        peer.remote_id = b"\x01" * 64
+
+        sync._candidate_peers = [peer]
+        sync.state.best_peer = peer
+        sync.state.current_block = 100
+        sync.state.target_block = 200
+        sync.state.syncing = True
+
+        sync._fetch_headers = AsyncMock(return_value=None)
+        sync._failover_peer = AsyncMock(return_value=False)
+
+        original_backoff = fs_mod.HEADER_RETRY_BACKOFF
+        fs_mod.HEADER_RETRY_BACKOFF = 0.01
+        try:
+            await sync._sync_loop()
+        finally:
+            fs_mod.HEADER_RETRY_BACKOFF = original_backoff
+
+        assert sync._fetch_headers.call_count == fs_mod.MAX_HEADER_FAILURES
+        sync._failover_peer.assert_called_once()
+
 
 # ===================================================================
 # P2P Server component tests

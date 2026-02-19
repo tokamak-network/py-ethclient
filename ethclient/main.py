@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -35,6 +36,7 @@ from ethclient.networking.discv4.routing import Node
 from ethclient.networking.server import P2PServer
 from ethclient.rpc.server import RPCServer
 from ethclient.rpc.eth_api import register_eth_api
+from ethclient.rpc.engine_api import register_engine_api
 
 
 logger = logging.getLogger("ethclient")
@@ -89,16 +91,23 @@ class EthNode:
         genesis: Optional[Genesis] = None,
         listen_port: int = 30303,
         rpc_port: int = 8545,
+        engine_port: int = 8551,
+        metrics_port: int = 6060,
         boot_nodes: Optional[list[Node]] = None,
         max_peers: int = 25,
         sync_mode: str = "snap",
         data_dir: Optional[str] = None,
+        archive_mode: bool = False,
+        jwt_secret: Optional[bytes] = None,
     ) -> None:
         self.private_key = private_key
         self.chain_config = chain_config
         self.listen_port = listen_port
         self.rpc_port = rpc_port
+        self.engine_port = engine_port
+        self.metrics_port = metrics_port
         self.sync_mode = sync_mode
+        self.archive_mode = archive_mode
 
         # Initialize storage
         if data_dir:
@@ -147,7 +156,23 @@ class EthNode:
         # RPC server
         self.rpc = RPCServer()
         register_eth_api(self.rpc, store=self.store, mempool=self.mempool,
-                         network_chain_id=chain_config.chain_id, config=chain_config)
+                         network_chain_id=chain_config.chain_id, config=chain_config,
+                         archive_enabled=archive_mode)
+
+        # Engine API server
+        self.engine_rpc = RPCServer()
+        register_engine_api(
+            self.engine_rpc,
+            store=self.store,
+            fork_choice=self.fork_choice,
+            chain_config=chain_config,
+        )
+        if jwt_secret is not None:
+            self.engine_rpc.set_engine_jwt_secret(jwt_secret)
+
+        # Metrics server
+        self.metrics_rpc = RPCServer()
+        self.metrics_rpc.set_metrics_provider(self._collect_metrics)
 
         self._running = False
 
@@ -162,6 +187,8 @@ class EthNode:
         logger.info("  Chain ID: %d", self.chain_config.chain_id)
         logger.info("  P2P port: %d", self.listen_port)
         logger.info("  RPC port: %d", self.rpc_port)
+        logger.info("  Engine port: %d", self.engine_port)
+        logger.info("  Metrics port: %d", self.metrics_port)
 
         # Start P2P
         await self.p2p.start()
@@ -179,6 +206,30 @@ class EthNode:
         self._rpc_server.config.setup_event_loop = lambda: None
         self._rpc_task = asyncio.create_task(self._rpc_server.serve())
 
+        # Engine RPC server in background
+        engine_config = uvicorn.Config(
+            self.engine_rpc.app,
+            host="0.0.0.0",
+            port=self.engine_port,
+            log_level="warning",
+            loop="asyncio",
+        )
+        self._engine_rpc_server = uvicorn.Server(engine_config)
+        self._engine_rpc_server.config.setup_event_loop = lambda: None
+        self._engine_rpc_task = asyncio.create_task(self._engine_rpc_server.serve())
+
+        # Metrics server in background
+        metrics_config = uvicorn.Config(
+            self.metrics_rpc.app,
+            host="0.0.0.0",
+            port=self.metrics_port,
+            log_level="warning",
+            loop="asyncio",
+        )
+        self._metrics_server = uvicorn.Server(metrics_config)
+        self._metrics_server.config.setup_event_loop = lambda: None
+        self._metrics_task = asyncio.create_task(self._metrics_server.serve())
+
         logger.info("Node started successfully")
 
         # Start sync after a brief delay
@@ -194,6 +245,10 @@ class EthNode:
 
         if hasattr(self, "_rpc_server"):
             self._rpc_server.should_exit = True
+        if hasattr(self, "_engine_rpc_server"):
+            self._engine_rpc_server.should_exit = True
+        if hasattr(self, "_metrics_server"):
+            self._metrics_server.should_exit = True
 
         # Flush and close disk backend
         if hasattr(self.store, "flush"):
@@ -203,6 +258,16 @@ class EthNode:
             self.store.close()
 
         logger.info("Node stopped")
+
+    def _collect_metrics(self) -> dict[str, int]:
+        """Return a minimal Prometheus-compatible metrics snapshot."""
+        latest_block = self.store.get_latest_block_number()
+        return {
+            "ethclient_up": 1,
+            "eth_block_number": latest_block if latest_block is not None else 0,
+            "eth_peer_count": self.p2p.peer_count,
+            "eth_syncing": 1 if self.p2p.is_syncing else 0,
+        }
 
     async def run_until_stopped(self) -> None:
         """Run until shutdown signal is received."""
@@ -254,6 +319,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON-RPC listen port (default: 8545)",
     )
     parser.add_argument(
+        "--engine-port",
+        type=int,
+        default=8551,
+        help="Engine API JSON-RPC listen port (default: 8551)",
+    )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=6060,
+        help="Prometheus metrics listen port (default: 6060)",
+    )
+    parser.add_argument(
         "--max-peers",
         type=int,
         default=25,
@@ -288,6 +365,23 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Data directory for persistent storage (default: in-memory)",
+    )
+    parser.add_argument(
+        "--datadir",
+        type=str,
+        default=None,
+        help="Alias for --data-dir (geth-compatible)",
+    )
+    parser.add_argument(
+        "--archive",
+        action="store_true",
+        help="Enable archive mode RPC semantics for historical state queries",
+    )
+    parser.add_argument(
+        "--jwt-secret",
+        type=str,
+        default=None,
+        help="JWT secret or path to jwtsecret file for Engine API auth",
     )
     return parser
 
@@ -328,7 +422,6 @@ def main() -> None:
     if args.private_key:
         private_key = bytes.fromhex(args.private_key.removeprefix("0x"))
     else:
-        import os
         private_key = os.urandom(32)
         logger.info("Generated new node identity")
 
@@ -350,6 +443,16 @@ def main() -> None:
             if node:
                 boot_nodes.append(node)
 
+    data_dir = args.data_dir or args.datadir or os.getenv("DATADIR") or os.getenv("DATA_DIR")
+
+    jwt_secret = None
+    if args.jwt_secret:
+        jwt_path = Path(args.jwt_secret)
+        if jwt_path.exists():
+            jwt_secret = jwt_path.read_text().strip().encode()
+        else:
+            jwt_secret = args.jwt_secret.strip().encode()
+
     # Create and run node
     node = EthNode(
         private_key=private_key,
@@ -357,10 +460,14 @@ def main() -> None:
         genesis=genesis,
         listen_port=args.port,
         rpc_port=args.rpc_port,
+        engine_port=args.engine_port,
+        metrics_port=args.metrics_port,
         boot_nodes=boot_nodes,
         max_peers=args.max_peers,
         sync_mode=args.sync_mode,
-        data_dir=args.data_dir,
+        data_dir=data_dir,
+        archive_mode=args.archive,
+        jwt_secret=jwt_secret,
     )
 
     try:

@@ -325,10 +325,30 @@ def _serialize_block(block, include_txs: bool) -> dict:
     return result
 
 
+def _get_tx_type(tx) -> int:
+    tx_type = getattr(tx, 'type_id', None)
+    if tx_type is not None:
+        return tx_type
+    if hasattr(tx, 'max_priority_fee_per_gas'):
+        if tx.max_priority_fee_per_gas is not None and tx.max_priority_fee_per_gas != tx.gas_price:
+            return 2
+    return 0
+
+
 def _serialize_tx(tx, block) -> dict:
     tx_hash = _tx_hash(tx)
     
-    is_eip1559 = hasattr(tx, "max_fee_per_gas")
+    tx_type = _get_tx_type(tx)
+    is_eip1559 = tx_type == 2
+    
+    if is_eip1559:
+        y_parity = getattr(tx, 'y_parity', None)
+        if y_parity is not None:
+            v_hex = hex(y_parity)
+        else:
+            v_hex = hex(tx.v) if hasattr(tx, 'v') else "0x0"
+    else:
+        v_hex = hex(tx.v) if hasattr(tx, 'v') else "0x0"
     
     result = {
         "hash": "0x" + tx_hash.hex(),
@@ -340,7 +360,7 @@ def _serialize_tx(tx, block) -> dict:
         "nonce": hex(tx.nonce),
         "to": to_checksum_address(tx.to) if tx.to else None,
         "value": hex(tx.value),
-        "v": hex(tx.v),
+        "v": v_hex,
         "r": hex(tx.r),
         "s": hex(tx.s),
     }
@@ -350,7 +370,8 @@ def _serialize_tx(tx, block) -> dict:
         result["maxFeePerGas"] = hex(tx.max_fee_per_gas)
         result["maxPriorityFeePerGas"] = hex(tx.max_priority_fee_per_gas)
         result["gasPrice"] = hex(tx.max_fee_per_gas)
-        result["chainId"] = hex(tx.chain_id) if hasattr(tx, "chain_id") else "0x0"
+        chain_id = getattr(tx, 'chain_id', None)
+        result["chainId"] = hex(chain_id) if chain_id is not None else "0x0"
     else:
         result["type"] = "0x0"
         result["gasPrice"] = hex(tx.gas_price)
@@ -376,8 +397,9 @@ def _serialize_receipt(receipt_data, chain) -> dict:
     tx = block.transactions[tx_index]
     tx_hash = _tx_hash(tx)
     
-    is_eip1559 = hasattr(tx, "max_fee_per_gas")
-    tx_type = "0x2" if is_eip1559 else "0x0"
+    tx_type = _get_tx_type(tx)
+    is_eip1559 = tx_type == 2
+    tx_type_hex = "0x2" if is_eip1559 else "0x0"
     effective_gas_price = tx.max_fee_per_gas if is_eip1559 else tx.gas_price
     
     logs = []
@@ -408,6 +430,6 @@ def _serialize_receipt(receipt_data, chain) -> dict:
         "to": to_checksum_address(tx.to) if tx.to else None,
         "contractAddress": to_checksum_address(receipt.contract_address) if receipt.contract_address else None,
         "gasUsed": hex(receipt.cumulative_gas_used),
-        "type": tx_type,
+        "type": tx_type_hex,
         "effectiveGasPrice": hex(effective_gas_price),
     }

@@ -246,19 +246,21 @@ class Chain:
         pending = self.mempool.get_pending(100, current_nonces)
         
         receipts = []
-        gas_used = 0
+        cumulative_gas = 0
         
         for tx in pending:
             block, evm_receipt, computation = self.evm.apply_transaction(tx)
             
             if computation.is_error:
-                gas_used += tx.gas
+                tx_gas = tx.gas
             else:
-                gas_used = computation.get_gas_used()
+                tx_gas = evm_receipt.gas_used if hasattr(evm_receipt, 'gas_used') else tx.gas
+            
+            cumulative_gas += tx_gas
             
             receipt = Receipt(
                 status=0 if computation.is_error else 1,
-                cumulative_gas_used=gas_used,
+                cumulative_gas_used=cumulative_gas,
                 logs=computation.get_log_entries() if hasattr(computation, "get_log_entries") else [],
                 contract_address=None,
             )
@@ -295,7 +297,7 @@ class Chain:
             difficulty=0,
             number=number,
             gas_limit=self.gas_limit,
-            gas_used=gas_used,
+            gas_used=cumulative_gas,
             timestamp=block_timestamp,
             base_fee_per_gas=new_base_fee,
         )

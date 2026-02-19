@@ -171,7 +171,7 @@ storage = chain.get_storage_at(address, 0)
 | Prefunded account setup | ✅ |
 | RPC server startup | ✅ |
 
-### Tests (~650 LOC)
+### Tests (~1,200 LOC)
 | Test | Status | Description |
 |------|--------|-------------|
 | `test_get_balance` | ✅ | Balance query |
@@ -209,6 +209,13 @@ storage = chain.get_storage_at(address, 0)
 | `test_block_time_prevents_immediate_mining` | ✅ | No mining before elapsed |
 | `test_block_time_allows_mining_after_elapsed` | ✅ | Mining after elapsed |
 | `test_send_transaction_respects_block_time` | ✅ | sendTransaction respects block_time |
+| **Ethereum Compatibility Tests** | | |
+| `test_crypto_compatibility` | ✅ | keccak256, ECDSA, address derivation |
+| `test_rlp_compatibility` | ✅ | RLP encoding/decoding for Account, Receipt |
+| `test_block_compatibility` | ✅ | Block structure, hash calculation |
+| `test_rpc_compatibility` | ✅ | RPC response format (eth_* methods) |
+| `test_transaction_compatibility` | ✅ | Legacy (0x0) and EIP-1559 (0x2) tx types |
+| `test_state_compatibility` | ✅ | State queries, EVM execution |
 
 ## Development Roadmap
 
@@ -268,6 +275,7 @@ class Sequencer:
 | 1 | Transaction Pool (Mempool) | ✅ Done | Priority-based with nonce tracking, replacement, eviction |
 | 2 | Periodic Block Production | ✅ Done | Timer-based block building with `block_time` parameter |
 | 3 | `estimateGas` | ⚠️ Partial | Simple estimation (hardcoded) |
+| 4 | Ethereum Compatibility Tests | ✅ Done | Comprehensive compatibility test suite |
 
 **Implemented Mempool Features:**
 - Priority-based transaction ordering (by max_priority_fee_per_gas)
@@ -280,6 +288,14 @@ class Sequencer:
 - `block_time` parameter in `Chain.from_genesis()`
 - `should_build_block()` checks if enough time elapsed
 - Prevents immediate mining on `send_transaction()`
+
+**Ethereum Compatibility Tests (152 tests):**
+- **Crypto**: keccak256 hash verification, ECDSA sign/recover, address derivation
+- **RLP**: Account, BlockHeader, Receipt, Transaction encoding/decoding
+- **Block**: Structure validation, hash calculation, state root, transactions root
+- **RPC**: All eth_* methods response format compliance
+- **Transaction**: Legacy (0x0) and EIP-1559 (0x2) type support
+- **State**: Balance, nonce, code, storage queries; EVM execution
 
 ### Phase 3: Improved Compatibility (~150 LOC)
 
@@ -332,7 +348,11 @@ class Sequencer:
 ├── [x] eth_feeHistory RPC endpoint (rpc/methods.py)
 ├── [x] Mempool with priority queue and nonce tracking (sequencer/mempool.py)
 ├── [x] Block time support for periodic block building (chain.py)
-└── [x] Unit tests for EIP-1559, Mempool, Block Time (tests/test_sequencer.py)
+├── [x] Unit tests for EIP-1559, Mempool, Block Time (tests/test_sequencer.py)
+├── [x] Ethereum compatibility test suite (tests/test_*_compatibility.py)
+├── [x] gas_used cumulative tracking fix (chain.py)
+├── [x] Transaction type detection improvement (methods.py)
+└── [x] y_parity support for EIP-1559 transactions (methods.py)
 
 Phase 2 - Operations (Remaining):
 └── [ ] Real estimateGas implementation (rpc/methods.py)
@@ -352,10 +372,10 @@ Phase 4 - Prague Preparation:
 
 | Phase | Components | LOC |
 |-------|------------|-----|
-| Current | All (with Mempool + Block Time) | ~1,500 |
+| Current | All (with Mempool + Block Time + Tests) | ~1,700 |
 | Phase 2 | estimateGas | +~50 |
 | Phase 3 | Improved compatibility | +~150 |
-| **Total** | | **~1,700** |
+| **Total** | | **~1,900** |
 
 ## Architecture
 
@@ -379,15 +399,26 @@ py-ethclient/
 │   │
 │   ├── rpc/                     # JSON-RPC
 │   │   ├── server.py            # http.server (~85 LOC)
-│   │   └── methods.py           # eth_* methods (~340 LOC)
+│   │   └── methods.py           # eth_* methods (~420 LOC)
 │   │
 │   └── cli.py                   # Entry point (~55 LOC)
 │
 └── tests/
-    └── test_sequencer.py        # Integration tests (~650 LOC)
+    ├── test_sequencer.py        # Integration tests (~650 LOC)
+    ├── test_eip1559.py          # EIP-1559 tests (~110 LOC)
+    ├── test_mempool.py          # Mempool tests (~280 LOC)
+    ├── test_block_time.py       # Block time tests (~65 LOC)
+    ├── test_fee_history.py      # Fee history tests (~120 LOC)
+    ├── test_integration.py      # Integration tests (~55 LOC)
+    ├── test_crypto_compatibility.py    # Crypto compatibility (~75 LOC)
+    ├── test_rlp_compatibility.py       # RLP compatibility (~65 LOC)
+    ├── test_block_compatibility.py     # Block compatibility (~120 LOC)
+    ├── test_rpc_compatibility.py       # RPC compatibility (~165 LOC)
+    ├── test_transaction_compatibility.py # Transaction compatibility (~120 LOC)
+    └── test_state_compatibility.py     # State compatibility (~130 LOC)
 ```
 
-**Total: ~1,500 LOC** (Target: ~1,700 LOC)
+**Total: ~1,700 LOC (src) + ~1,200 LOC (tests) = ~2,900 LOC**
 
 ## Dependencies
 

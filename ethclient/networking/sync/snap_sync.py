@@ -17,7 +17,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional, TYPE_CHECKING
+from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ethclient.networking.server import PeerConnection
@@ -49,6 +49,8 @@ STORAGE_PER_REQUEST = 1024
 BYTECODES_PER_REQUEST = 64
 TRIE_NODES_PER_REQUEST = 128
 SNAP_TIMEOUT = 15.0               # seconds
+PEER_WAIT_TIMEOUT = 30.0          # seconds
+PEER_WAIT_POLL_INTERVAL = 1.0     # seconds
 MAX_HASH = b"\xff" * 32           # 2^256 - 1
 ZERO_HASH = b"\x00" * 32
 STRICT_RANGE_PROOFS = False
@@ -122,6 +124,7 @@ class SnapSync:
         self.store = store
         self.state = SnapSyncState()
         self._response_events: dict[int, asyncio.Event] = {}
+        self._peer_provider: Optional[Callable[[], list[PeerConnection]]] = None
 
         # Response buffers keyed by request_id
         self._account_responses: dict[int, AccountRangeMessage] = {}
@@ -134,11 +137,13 @@ class SnapSync:
         peers: list[PeerConnection],
         target_root: bytes,
         target_block: int,
+        peer_provider: Optional[Callable[[], list[PeerConnection]]] = None,
     ) -> None:
         """Start snap sync with available snap-capable peers."""
         if not peers:
             logger.warning("No snap peers available")
             return
+        self._peer_provider = peer_provider
 
         self.state.target_root = target_root
         self.state.target_block = target_block
@@ -152,6 +157,16 @@ class SnapSync:
             # Phase 1: Account download
             self.state.phase = SyncPhase.ACCOUNT_DOWNLOAD
             await self._download_accounts(peers)
+            account_download_complete = self.state.account_cursor >= MAX_HASH
+
+            if not account_download_complete:
+                logger.info(
+                    "Snap sync paused before account completion: downloaded=%d cursor=%s",
+                    self.state.accounts_downloaded,
+                    self.state.account_cursor.hex()[:16],
+                )
+                self.state.phase = SyncPhase.IDLE
+                return
 
             # Phase 2: Storage download
             if self.state.storage_queue:
@@ -181,6 +196,30 @@ class SnapSync:
             logger.error("Snap sync error: %s", e)
             self.state.phase = SyncPhase.IDLE
 
+    def _connected_peers(self, fallback_peers: list[PeerConnection]) -> list[PeerConnection]:
+        """Return current connected snap peers (refreshing from provider when available)."""
+        if self._peer_provider is not None:
+            candidates = self._peer_provider()
+        else:
+            candidates = fallback_peers
+        return [peer for peer in candidates if peer.connected]
+
+    async def _wait_for_connected_peers(
+        self, fallback_peers: list[PeerConnection], phase_name: str
+    ) -> bool:
+        """Wait briefly for peers to reconnect instead of pausing immediately."""
+        deadline = asyncio.get_running_loop().time() + PEER_WAIT_TIMEOUT
+        while asyncio.get_running_loop().time() < deadline:
+            if self._connected_peers(fallback_peers):
+                return True
+            await asyncio.sleep(PEER_WAIT_POLL_INTERVAL)
+        logger.warning(
+            "No connected peers for %s after %.0fs",
+            phase_name,
+            PEER_WAIT_TIMEOUT,
+        )
+        return False
+
     # ------------------------------------------------------------------
     # Phase 1: Account download
     # ------------------------------------------------------------------
@@ -190,12 +229,14 @@ class SnapSync:
         peer_idx = 0
 
         while self.state.account_cursor < MAX_HASH:
-            peer = peers[peer_idx % len(peers)]
+            connected_peers = self._connected_peers(peers)
+            if not connected_peers:
+                if not await self._wait_for_connected_peers(peers, "account download"):
+                    break
+                continue
+            peer = connected_peers[peer_idx % len(connected_peers)]
             if not peer.connected:
                 peer_idx += 1
-                if not any(p.connected for p in peers):
-                    logger.warning("All peers disconnected during account download")
-                    break
                 continue
 
             req_id = self.state.next_request_id()
@@ -232,9 +273,23 @@ class SnapSync:
                 logger.info("Empty AccountRange response, account download complete")
                 break
 
+            normalized_accounts: list[tuple[bytes, bytes, list]] = []
+            for account_hash, account_payload in response.accounts:
+                if isinstance(account_payload, list):
+                    # Some peers send slim account as decoded list, not raw RLP bytes.
+                    account_rlp = rlp.encode(account_payload)
+                    acct_fields = account_payload
+                else:
+                    account_rlp = account_payload
+                    try:
+                        acct_fields = rlp.decode_list(account_rlp)
+                    except Exception:
+                        acct_fields = []
+                normalized_accounts.append((account_hash, account_rlp, acct_fields))
+
             # Verify range proof
-            keys = [h for h, _ in response.accounts]
-            values = [rlp_data for _, rlp_data in response.accounts]
+            keys = [h for h, _, _ in normalized_accounts]
+            values = [account_rlp for _, account_rlp, _ in normalized_accounts]
 
             if response.proof:
                 first_key = self.state.account_cursor
@@ -261,13 +316,12 @@ class SnapSync:
                     )
 
             # Store accounts and enqueue storage/code work
-            for account_hash, account_rlp in response.accounts:
+            for account_hash, account_rlp, acct_fields in normalized_accounts:
                 if self.store:
                     self.store.put_snap_account(account_hash, account_rlp)
 
                 # Parse slim account to check for storage and code
                 try:
-                    acct_fields = rlp.decode_list(account_rlp)
                     # Slim account: [nonce, balance, storage_root, code_hash]
                     if len(acct_fields) >= 4:
                         storage_root = acct_fields[2]
@@ -297,6 +351,7 @@ class SnapSync:
                 self.state.accounts_downloaded,
                 self.state.account_cursor.hex()[:16],
             )
+            peer_idx += 1
 
         # Save progress
         if self.store:
@@ -316,11 +371,14 @@ class SnapSync:
         batch_size = 6  # request storage for multiple accounts at once
 
         while queue:
-            peer = peers[peer_idx % len(peers)]
+            connected_peers = self._connected_peers(peers)
+            if not connected_peers:
+                if not await self._wait_for_connected_peers(peers, "storage download"):
+                    break
+                continue
+            peer = connected_peers[peer_idx % len(connected_peers)]
             if not peer.connected:
                 peer_idx += 1
-                if not any(p.connected for p in peers):
-                    break
                 continue
 
             # Take a batch of accounts
@@ -395,6 +453,7 @@ class SnapSync:
                 "Storage download: %d slots, %d accounts remaining",
                 self.state.storage_downloaded, len(queue),
             )
+            peer_idx += 1
 
         if self.store:
             self.store.put_snap_progress({
@@ -412,11 +471,14 @@ class SnapSync:
         queue = list(self.state.code_queue)
 
         while queue:
-            peer = peers[peer_idx % len(peers)]
+            connected_peers = self._connected_peers(peers)
+            if not connected_peers:
+                if not await self._wait_for_connected_peers(peers, "bytecode download"):
+                    break
+                continue
+            peer = connected_peers[peer_idx % len(connected_peers)]
             if not peer.connected:
                 peer_idx += 1
-                if not any(p.connected for p in peers):
-                    break
                 continue
 
             batch = queue[:BYTECODES_PER_REQUEST]
@@ -470,6 +532,7 @@ class SnapSync:
                 "Bytecode download: %d codes, %d remaining",
                 self.state.codes_downloaded, len(queue),
             )
+            peer_idx += 1
 
         if self.store:
             self.store.put_snap_progress({
@@ -487,11 +550,14 @@ class SnapSync:
         queue = list(self.state.healing_queue)
 
         while queue:
-            peer = peers[peer_idx % len(peers)]
+            connected_peers = self._connected_peers(peers)
+            if not connected_peers:
+                if not await self._wait_for_connected_peers(peers, "trie healing"):
+                    break
+                continue
+            peer = connected_peers[peer_idx % len(connected_peers)]
             if not peer.connected:
                 peer_idx += 1
-                if not any(p.connected for p in peers):
-                    break
                 continue
 
             batch = queue[:TRIE_NODES_PER_REQUEST]
@@ -535,6 +601,7 @@ class SnapSync:
                 "Trie healing: %d nodes healed, %d remaining",
                 self.state.nodes_healed, len(queue),
             )
+            peer_idx += 1
 
         if self.store:
             self.store.put_snap_progress({

@@ -155,6 +155,7 @@ class P2PServer:
         self._running = False
         self._dial_retry_after: dict[bytes, float] = {}
         self._boot_node_ids: set[bytes] = {node.id for node in self.boot_nodes if node.id}
+        self._snap_bootstrap_attempts = 0
 
         # Local capabilities for Hello message
         self._local_caps = LOCAL_CAPS_WITH_SNAP if enable_snap else LOCAL_CAPS_ETH_ONLY
@@ -737,6 +738,22 @@ class P2PServer:
         if self.enable_snap and self.snap_syncer is not None:
             snap_peers = [p for p in peers if p.snap_supported]
             if snap_peers:
+                local_head = self.store.get_latest_block_number() if self.store else 0
+                if local_head == 0:
+                    self._snap_bootstrap_attempts += 1
+                else:
+                    self._snap_bootstrap_attempts = 0
+
+                # If snap keeps restarting while local head stays at genesis,
+                # periodically bootstrap via full sync to advance block height.
+                if self._snap_bootstrap_attempts >= 3:
+                    logger.info(
+                        "Snap bootstrap stalled at block 0, running full sync bootstrap"
+                    )
+                    self._snap_bootstrap_attempts = 0
+                    await self.syncer.start(peers)
+                    return
+
                 best_snap_peer = max(snap_peers, key=lambda p: p.best_block_number)
                 head_header = None
                 try:
@@ -762,7 +779,14 @@ class P2PServer:
             logger.warning("No snap-capable peers, falling back to full sync")
             await self.start_sync()
             return
-        await self.snap_syncer.start(snap_peers, target_root, target_block)
+        await self.snap_syncer.start(
+            snap_peers,
+            target_root,
+            target_block,
+            peer_provider=lambda: [
+                p for p in self.peers.values() if p.connected and p.snap_supported
+            ],
+        )
 
     @property
     def peer_count(self) -> int:

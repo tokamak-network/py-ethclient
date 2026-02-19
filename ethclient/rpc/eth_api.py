@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from ethclient.common.types import Transaction, BlockHeader
+from ethclient.common.types import Transaction, BlockHeader, TxType
 from ethclient.common.config import ChainConfig
 from ethclient.rpc.server import (
     RPCServer,
@@ -57,30 +57,53 @@ def _format_block_header(header: BlockHeader, full_txs: bool = False) -> dict:
         result["blobGasUsed"] = int_to_hex(header.blob_gas_used)
     if header.excess_blob_gas is not None:
         result["excessBlobGas"] = int_to_hex(header.excess_blob_gas)
+    if header.parent_beacon_block_root is not None:
+        result["parentBeaconBlockRoot"] = bytes_to_hex(header.parent_beacon_block_root)
     return result
 
 
 def _format_transaction(tx: Transaction, block_hash: bytes = b"",
                          block_number: int = 0, tx_index: int = 0) -> dict:
     """Format a transaction for JSON-RPC response."""
-    result = {
+    result: dict = {
+        "type": int_to_hex(tx.tx_type),
         "hash": bytes_to_hex(tx.tx_hash()),
-        "nonce": int_to_hex(tx.nonce),
         "blockHash": bytes_to_hex(block_hash) if block_hash else None,
         "blockNumber": int_to_hex(block_number) if block_hash else None,
         "transactionIndex": int_to_hex(tx_index),
-        "from": bytes_to_hex(tx.sender()) if tx.v is not None else None,
-        "to": bytes_to_hex(tx.to) if tx.to else None,
-        "value": int_to_hex(tx.value),
-        "gas": int_to_hex(tx.gas_limit),
-        "input": bytes_to_hex(tx.data),
     }
-    if tx.tx_type == 0:
+
+    if tx.tx_type == TxType.DEPOSIT:
+        # OP Stack deposit: no signature, no nonce/gas-price fields
+        result["sourceHash"] = bytes_to_hex(tx.source_hash)
+        result["from"] = bytes_to_hex(tx.from_address)
+        result["to"] = bytes_to_hex(tx.to) if tx.to else None
+        result["mint"] = int_to_hex(tx.mint)
+        result["value"] = int_to_hex(tx.value)
+        result["gas"] = int_to_hex(tx.gas_limit)
+        result["isSystemTx"] = tx.is_system_tx
+        result["input"] = bytes_to_hex(tx.data)
+        result["nonce"] = int_to_hex(0)
+        return result
+
+    # Non-deposit transactions: include common fields
+    result["nonce"] = int_to_hex(tx.nonce)
+    result["from"] = bytes_to_hex(tx.sender()) if tx.v is not None else None
+    result["to"] = bytes_to_hex(tx.to) if tx.to else None
+    result["value"] = int_to_hex(tx.value)
+    result["gas"] = int_to_hex(tx.gas_limit)
+    result["input"] = bytes_to_hex(tx.data)
+
+    if tx.tx_type == TxType.LEGACY:
         result["gasPrice"] = int_to_hex(tx.gas_price)
+    elif tx.tx_type == TxType.ACCESS_LIST:
+        result["gasPrice"] = int_to_hex(tx.gas_price)
+        result["chainId"] = int_to_hex(tx.chain_id)
     else:
         result["maxFeePerGas"] = int_to_hex(tx.max_fee_per_gas)
         result["maxPriorityFeePerGas"] = int_to_hex(tx.max_priority_fee_per_gas)
-    result["type"] = int_to_hex(tx.tx_type)
+        result["chainId"] = int_to_hex(tx.chain_id)
+
     return result
 
 

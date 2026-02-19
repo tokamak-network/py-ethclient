@@ -124,6 +124,7 @@ class RPCServer:
             else:
                 return _error_response(req_id, INVALID_PARAMS, "Invalid params")
         except TypeError as e:
+            logger.warning("RPC TypeError in %s: %s", method, e)
             return _error_response(req_id, INVALID_PARAMS, str(e))
         except RPCError as e:
             return _error_response(req_id, e.code, e.message, e.data)

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Optional, Any
+
+logger = logging.getLogger(__name__)
 
 from ethclient.blockchain.chain import (
     BlockValidationError,
@@ -216,6 +219,25 @@ def register_engine_api(rpc: RPCServer, store=None, fork_choice=None, chain_conf
         header.logs_bloom = result.logs_bloom
         block_hash = header.block_hash()
 
+        # Debug: dump build-time header fields
+        build_items = header.to_rlp_list()
+        logger.info("buildPayload blockHash=%s number=%d rlp_fields=%d",
+                     bytes_hex(block_hash), header.number, len(build_items))
+        field_names = [
+            "parentHash", "ommersHash", "coinbase", "stateRoot",
+            "txRoot", "receiptsRoot", "logsBloom", "difficulty",
+            "number", "gasLimit", "gasUsed", "timestamp",
+            "extraData", "mixHash", "nonce", "baseFeePerGas",
+            "withdrawalsRoot", "blobGasUsed", "excessBlobGas",
+            "parentBeaconBlockRoot", "requestsHash",
+        ]
+        for i, item in enumerate(build_items):
+            name = field_names[i] if i < len(field_names) else f"field{i}"
+            if isinstance(item, bytes):
+                logger.info("  BUILD [%d] %s = 0x%s", i, name, item.hex()[:64])
+            else:
+                logger.info("  BUILD [%d] %s = %s", i, name, item)
+
         store.rollback(snap)
 
         execution_payload = {
@@ -259,6 +281,7 @@ def register_engine_api(rpc: RPCServer, store=None, fork_choice=None, chain_conf
 
     def _handle_forkchoice_update(forkchoice_state: dict, payload_attributes: Optional[dict], version: int) -> dict:
         state = ForkchoiceState.from_rpc(forkchoice_state)
+        logger.info("forkchoiceUpdated V%d head=%s", version, bytes_hex(state.head_block_hash))
 
         if _is_zero_hash(state.head_block_hash):
             return {"payloadStatus": _payload_status("INVALID", None, None), "payloadId": None}
@@ -342,11 +365,20 @@ def register_engine_api(rpc: RPCServer, store=None, fork_choice=None, chain_conf
     @rpc.method("engine_getPayloadV3")
     def engine_get_payload_v3(payload_id: str) -> dict:
         payload = _get_payload(payload_id)
+        ep = payload.execution_payload
+        # Per Engine API spec, parentBeaconBlockRoot is an envelope-level field,
+        # NOT inside executionPayload. op-node reads it from envelope and passes
+        # it as the 3rd param to newPayloadV3.
+        parent_beacon = ep.get("parentBeaconBlockRoot", "0x" + "00" * 32)
+        logger.info("getPayloadV3 id=%s blockHash=%s number=%s parentBeacon=%s",
+                     payload_id, ep.get("blockHash", "?"),
+                     ep.get("blockNumber", "?"), parent_beacon)
         return {
-            "executionPayload": payload.execution_payload,
+            "executionPayload": ep,
             "blockValue": "0x0",
             "blobsBundle": {"commitments": [], "proofs": [], "blobs": []},
             "shouldOverrideBuilder": False,
+            "parentBeaconBlockRoot": parent_beacon,
         }
 
     def _parse_quantity(value: Any, name: str) -> int:
@@ -405,6 +437,9 @@ def register_engine_api(rpc: RPCServer, store=None, fork_choice=None, chain_conf
         expected_blob_versioned_hashes: Optional[list] = None,
         parent_beacon_block_root: Optional[str] = None,
     ) -> dict:
+        logger.info("_execute_payload called V%d blockHash=%s blockNumber=%s",
+                     version, payload.get("blockHash", "?"), payload.get("blockNumber", "?"))
+
         if store is None or chain_config is None:
             return _payload_status("SYNCING", None, None)
 
@@ -436,23 +471,18 @@ def register_engine_api(rpc: RPCServer, store=None, fork_choice=None, chain_conf
         if version == 3:
             timestamp = _parse_quantity(payload.get("timestamp", "0x0"), "timestamp")
             if withdrawals is None:
-                raise EngineValidationError(ENGINE_INVALID_PARAMS, "nil withdrawals post-shanghai")
+                withdrawals = []  # OP Stack: default to empty withdrawals
             if blob_gas_used_raw is None:
-                raise EngineValidationError(ENGINE_INVALID_PARAMS, "nil blobGasUsed post-cancun")
+                blob_gas_used_raw = "0x0"  # OP Stack L2: no blobs
             if excess_blob_gas_raw is None:
-                raise EngineValidationError(ENGINE_INVALID_PARAMS, "nil excessBlobGas post-cancun")
+                excess_blob_gas_raw = "0x0"  # OP Stack L2: no blobs
             if expected_blob_versioned_hashes is None:
                 expected_blob_versioned_hashes = []  # OP Stack L2: blobs disabled
-            # Resolve parentBeaconBlockRoot: prefer RPC param, fallback to payload body
+            # Resolve parentBeaconBlockRoot: RPC param > payload body > ZERO_HASH
             if parent_beacon_block_root is not None:
                 parsed_parent_beacon = parent_beacon_block_root
             if parsed_parent_beacon is None:
-                raise EngineValidationError(ENGINE_INVALID_PARAMS, "nil parentBeaconBlockRoot post-cancun")
-            if chain_config is not None and not chain_config.is_cancun(timestamp):
-                raise EngineValidationError(
-                    ENGINE_UNSUPPORTED_FORK,
-                    "newPayloadV3 must only be called for cancun payloads",
-                )
+                parsed_parent_beacon = "0x" + "00" * 32  # Default to ZERO_HASH
 
         txs_raw = payload.get("transactions", [])
         if not isinstance(txs_raw, list):
@@ -508,10 +538,31 @@ def register_engine_api(rpc: RPCServer, store=None, fork_choice=None, chain_conf
         if parsed_parent_beacon is not None:
             header.parent_beacon_block_root = _parse_bytes(parsed_parent_beacon, "parentBeaconBlockRoot", 32)
 
-        if block_hash != header.block_hash():
+        computed_hash = header.block_hash()
+        if block_hash != computed_hash:
+            logger.error("block hash mismatch: expected=%s computed=%s number=%d",
+                         bytes_hex(block_hash), bytes_hex(computed_hash), header.number)
+            # Dump all header RLP fields for debugging
+            rlp_items = header.to_rlp_list()
+            field_names = [
+                "parentHash", "ommersHash", "coinbase", "stateRoot",
+                "txRoot", "receiptsRoot", "logsBloom", "difficulty",
+                "number", "gasLimit", "gasUsed", "timestamp",
+                "extraData", "mixHash", "nonce", "baseFeePerGas",
+                "withdrawalsRoot", "blobGasUsed", "excessBlobGas",
+                "parentBeaconBlockRoot", "requestsHash",
+            ]
+            for i, item in enumerate(rlp_items):
+                name = field_names[i] if i < len(field_names) else f"field{i}"
+                if isinstance(item, bytes):
+                    logger.error("  [%d] %s = 0x%s", i, name, item.hex()[:64])
+                else:
+                    logger.error("  [%d] %s = %s", i, name, item)
             return _payload_status("INVALID", parent_hash, "block hash mismatch")
 
         block = Block(header=header, transactions=txs, withdrawals=withdrawals)
+
+        logger.info("newPayload V%d block=%s number=%d txs=%d", version, bytes_hex(block_hash), header.number, len(txs))
 
         snap = store.snapshot()
         try:
@@ -519,12 +570,15 @@ def register_engine_api(rpc: RPCServer, store=None, fork_choice=None, chain_conf
             store.put_block(block)
             store.put_receipts(block_hash, result.receipts)
             store.commit(snap)
+            logger.info("newPayload VALID block=%s", bytes_hex(block_hash))
             return _payload_status("VALID", block_hash, None)
         except BlockValidationError as exc:
             store.rollback(snap)
+            logger.error("newPayload INVALID block=%s error=%s", bytes_hex(block_hash), exc)
             return _payload_status("INVALID", parent_hash, str(exc))
         except Exception as exc:
             store.rollback(snap)
+            logger.error("newPayload ERROR block=%s error=%s", bytes_hex(block_hash), exc, exc_info=True)
             return _payload_status("INVALID", parent_hash, f"Execution error: {exc}")
 
     @rpc.method("engine_newPayloadV1")

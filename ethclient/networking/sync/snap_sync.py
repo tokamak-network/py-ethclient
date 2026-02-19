@@ -494,7 +494,7 @@ class SnapSync:
                     account_rlp = account_payload
                     try:
                         acct_fields = rlp.decode_list(account_rlp)
-                    except Exception:
+                    except rlp.RLPDecodingError:
                         acct_fields = []
                 normalized_accounts.append((account_hash, account_rlp, acct_fields))
 

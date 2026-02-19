@@ -203,7 +203,7 @@ def _verify_jwt_hs256(token: str, secret: bytes) -> bool:
             return False
 
         return True
-    except Exception:
+    except (json.JSONDecodeError, ValueError, TypeError, KeyError, UnicodeDecodeError):
         return False
 
 

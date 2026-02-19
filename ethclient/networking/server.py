@@ -708,6 +708,9 @@ class P2PServer:
 
     async def start_sync(self) -> None:
         """Start block synchronization."""
+        if self.syncer.is_syncing:
+            logger.debug("Sync already in progress, skipping start")
+            return
         peers = [p for p in self.peers.values() if p.connected]
         if peers:
             await self.syncer.start(peers)

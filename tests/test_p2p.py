@@ -922,6 +922,38 @@ class TestFullSync:
         assert sync.state.target_block == 5_000_000
         assert peer.best_block_number == 5_000_000
 
+    @pytest.mark.asyncio
+    async def test_start_prefers_peer_with_highest_best_block_number(self):
+        """start() should prioritize eth/69 latest block over total difficulty."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from ethclient.networking.sync.full_sync import FullSync
+
+        sync = FullSync()
+
+        low_head_peer = MagicMock()
+        low_head_peer.best_hash = b"\xaa" * 32
+        low_head_peer.best_block_number = 100
+        low_head_peer.total_difficulty = 999999
+        low_head_peer.connected = True
+        low_head_peer.remote_id = b"\x02" * 64
+        low_head_peer.send_eth_message = AsyncMock()
+
+        high_head_peer = MagicMock()
+        high_head_peer.best_hash = b"\xbb" * 32
+        high_head_peer.best_block_number = 500
+        high_head_peer.total_difficulty = 0
+        high_head_peer.connected = True
+        high_head_peer.remote_id = b"\x03" * 64
+        high_head_peer.send_eth_message = AsyncMock()
+
+        with patch.object(sync, "_discover_head", new_callable=AsyncMock, return_value=0) as discover_mock:
+            with patch.object(sync, "_sync_loop", new_callable=AsyncMock):
+                await sync.start([low_head_peer, high_head_peer])
+
+        assert sync.state.best_peer is high_head_peer
+        assert sync.state.target_block == 500
+        discover_mock.assert_not_called()
+
 
 # ===================================================================
 # P2P Server component tests

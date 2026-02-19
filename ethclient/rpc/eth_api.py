@@ -147,7 +147,9 @@ def _parse_call_params(tx_obj: dict) -> tuple[bytes, Optional[bytes], bytes, int
 
 def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
                      network_chain_id: int = 1, config: Optional[ChainConfig] = None,
-                     archive_enabled: bool = False) -> None:
+                     archive_enabled: bool = False,
+                     peer_count_provider=None,
+                     syncing_provider=None) -> None:
     """Register all eth_ namespace methods on the RPC server."""
 
     def _resolve_block_number(block_param: str) -> Optional[int]:
@@ -509,7 +511,12 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
 
     @rpc.method("eth_syncing")
     def syncing() -> bool | dict:
-        return False
+        if syncing_provider is None:
+            return False
+        try:
+            return bool(syncing_provider())
+        except Exception:
+            return False
 
     # -- Log methods --
 
@@ -549,7 +556,12 @@ def register_eth_api(rpc: RPCServer, store=None, chain=None, mempool=None,
 
     @rpc.method("net_peerCount")
     def net_peer_count() -> str:
-        return int_to_hex(0)
+        if peer_count_provider is None:
+            return int_to_hex(0)
+        try:
+            return int_to_hex(max(0, int(peer_count_provider())))
+        except Exception:
+            return int_to_hex(0)
 
     @rpc.method("net_listening")
     def net_listening() -> bool:

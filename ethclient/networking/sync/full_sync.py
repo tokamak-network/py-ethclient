@@ -104,19 +104,34 @@ class FullSync:
 
     async def start(self, peers: list[PeerConnection]) -> None:
         """Start full sync with available peers."""
-        if not peers:
+        connected_peers = [p for p in peers if p.connected]
+        if not connected_peers:
             logger.warning("No peers available for sync")
             return
 
-        # Find best peer (highest total difficulty)
-        best = max(peers, key=lambda p: p.total_difficulty)
-        self.state.best_peer = best
+        # Prefer peers that already announced a head number (eth/69).
+        best = max(connected_peers, key=lambda p: p.best_block_number)
+        best_head = best.best_block_number
 
-        # Discover head block number from best_hash (eth/68 Status has no block number)
-        head_number = await self._discover_head(best)
-        if head_number > 0:
-            best.best_block_number = head_number
-        self.state.target_block = best.best_block_number
+        # Fallback for peers without block number (eth/68) or stale status.
+        if best_head == 0:
+            discovered_best = 0
+            discovered_peer: Optional[PeerConnection] = None
+            for peer in connected_peers:
+                try:
+                    head_number = await self._discover_head(peer)
+                except Exception:
+                    continue
+                if head_number > discovered_best:
+                    discovered_best = head_number
+                    discovered_peer = peer
+            if discovered_peer is not None:
+                best = discovered_peer
+                best.best_block_number = discovered_best
+                best_head = discovered_best
+
+        self.state.best_peer = best
+        self.state.target_block = best_head
         self.state.syncing = True
 
         if self.store:

@@ -157,7 +157,9 @@ class EthNode:
         self.rpc = RPCServer()
         register_eth_api(self.rpc, store=self.store, mempool=self.mempool,
                          network_chain_id=chain_config.chain_id, config=chain_config,
-                         archive_enabled=archive_mode)
+                         archive_enabled=archive_mode,
+                         peer_count_provider=lambda: self.p2p.peer_count,
+                         syncing_provider=lambda: self.p2p.is_syncing)
 
         # Engine API server
         self.engine_rpc = RPCServer()
@@ -173,6 +175,7 @@ class EthNode:
         # Metrics server
         self.metrics_rpc = RPCServer()
         self.metrics_rpc.set_metrics_provider(self._collect_metrics)
+        self._sync_task: Optional[asyncio.Task] = None
 
         self._running = False
 
@@ -232,9 +235,8 @@ class EthNode:
 
         logger.info("Node started successfully")
 
-        # Start sync after a brief delay
-        await asyncio.sleep(2.0)
-        asyncio.create_task(self.p2p.start_sync())
+        # Keep retrying sync start because peers may connect after startup.
+        self._sync_task = asyncio.create_task(self._sync_supervisor())
 
     async def stop(self) -> None:
         """Gracefully stop all subsystems."""
@@ -249,6 +251,12 @@ class EthNode:
             self._engine_rpc_server.should_exit = True
         if hasattr(self, "_metrics_server"):
             self._metrics_server.should_exit = True
+        if self._sync_task is not None:
+            self._sync_task.cancel()
+            try:
+                await self._sync_task
+            except asyncio.CancelledError:
+                pass
 
         # Flush and close disk backend
         if hasattr(self.store, "flush"):
@@ -258,6 +266,16 @@ class EthNode:
             self.store.close()
 
         logger.info("Node stopped")
+
+    async def _sync_supervisor(self) -> None:
+        """Periodically attempt synchronization while the node is running."""
+        await asyncio.sleep(2.0)
+        while self._running:
+            try:
+                await self.p2p.start_sync()
+            except Exception as exc:
+                logger.debug("sync supervisor error: %s", exc)
+            await asyncio.sleep(5.0)
 
     def _collect_metrics(self) -> dict[str, int]:
         """Return a minimal Prometheus-compatible metrics snapshot."""

@@ -250,6 +250,20 @@ class TestEthAPI:
         result = self._call("eth_syncing")
         assert result["result"] is False
 
+    def test_syncing_with_provider(self):
+        from ethclient.rpc.eth_api import register_eth_api
+        rpc = RPCServer()
+        register_eth_api(
+            rpc,
+            store=None,
+            chain=None,
+            mempool=None,
+            syncing_provider=lambda: True,
+        )
+        client = TestClient(rpc.app)
+        result = client.post("/", json={"jsonrpc": "2.0", "method": "eth_syncing", "id": 1}).json()
+        assert result["result"] is True
+
     # -- Logs --
 
     def test_get_logs(self):
@@ -269,6 +283,20 @@ class TestEthAPI:
     def test_net_peer_count(self):
         result = self._call("net_peerCount")
         assert result["result"] == "0x0"
+
+    def test_net_peer_count_with_provider(self):
+        from ethclient.rpc.eth_api import register_eth_api
+        rpc = RPCServer()
+        register_eth_api(
+            rpc,
+            store=None,
+            chain=None,
+            mempool=None,
+            peer_count_provider=lambda: 3,
+        )
+        client = TestClient(rpc.app)
+        result = client.post("/", json={"jsonrpc": "2.0", "method": "net_peerCount", "id": 1}).json()
+        assert result["result"] == "0x3"
 
     def test_net_listening(self):
         result = self._call("net_listening")

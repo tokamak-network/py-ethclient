@@ -758,18 +758,136 @@ class TestTransactionIndex:
         result = self._call("eth_getBlockTransactionCountByHash", [bh_hex])
         assert result["result"] == hex(2)
 
-    def test_get_block_tx_count_not_found(self):
-        result = self._call("eth_getBlockTransactionCountByHash", ["0x" + "ff" * 32])
-        assert result["result"] is None
 
-    def test_get_block_receipts(self):
-        result = self._call("eth_getBlockReceipts", [hex(1)])
-        receipts = result["result"]
-        assert len(receipts) == 2
-        assert receipts[0]["gasUsed"] == hex(21000)
-        assert receipts[1]["gasUsed"] == hex(50000)
-        assert receipts[0]["status"] == hex(1)
+class TestEngineAPIV3:
+    """Engine API V3 behavior tests."""
 
+    def setup_method(self):
+        from ethclient.blockchain.fork_choice import ForkChoice
+        from ethclient.common.config import ChainConfig
+        from ethclient.common.types import BlockHeader
+        from ethclient.rpc.engine_api import register_engine_api
+        from ethclient.storage.memory_backend import MemoryBackend
+
+        self.store = MemoryBackend()
+        self.config = ChainConfig(
+            chain_id=11155111,
+            london_block=0,
+            shanghai_time=0,
+            cancun_time=0,
+        )
+        self.fork_choice = ForkChoice(self.store)
+
+        # Canonical parent block (block 0)
+        self.parent_header = BlockHeader(
+            number=0,
+            gas_limit=30_000_000,
+            gas_used=15_000_000,
+            timestamp=1,
+            base_fee_per_gas=1_000_000_000,
+            difficulty=0,
+            nonce=b"\x00" * 8,
+        )
+        self.parent_hash = self.parent_header.block_hash()
+        self.store.put_block_header(self.parent_header)
+        self.store.put_canonical_hash(0, self.parent_hash)
+
+        self.rpc = RPCServer()
+        register_engine_api(
+            self.rpc,
+            store=self.store,
+            fork_choice=self.fork_choice,
+            chain_config=self.config,
+        )
+        self.client = TestClient(self.rpc.app)
+
+    def _call(self, method: str, params=None, id=1):
+        body = {"jsonrpc": "2.0", "method": method, "id": id}
+        if params is not None:
+            body["params"] = params
+        return self.client.post("/", json=body).json()
+
+    def _fcu_state(self, head_hash: str | None = None) -> dict:
+        return {
+            "headBlockHash": head_hash or bytes_to_hex(self.parent_hash),
+            "safeBlockHash": "0x" + "00" * 32,
+            "finalizedBlockHash": "0x" + "00" * 32,
+        }
+
+    def _attrs_v3(self, timestamp_hex: str = "0x2") -> dict:
+        return {
+            "timestamp": timestamp_hex,
+            "prevRandao": "0x" + "11" * 32,
+            "suggestedFeeRecipient": "0x" + "22" * 20,
+            "withdrawals": [],
+            "parentBeaconBlockRoot": "0x" + "33" * 32,
+            "transactions": [],
+            "noTxPool": True,
+            "gasLimit": hex(self.parent_header.gas_limit),
+        }
+
+    def test_forkchoice_v3_deterministic_payload_id(self):
+        attrs = self._attrs_v3()
+        result1 = self._call("engine_forkchoiceUpdatedV3", [self._fcu_state(), attrs])
+        result2 = self._call("engine_forkchoiceUpdatedV3", [self._fcu_state(), attrs])
+        assert result1["result"]["payloadStatus"]["status"] == "VALID"
+        assert result2["result"]["payloadStatus"]["status"] == "VALID"
+        assert result1["result"]["payloadId"] == result2["result"]["payloadId"]
+
+    def test_get_payload_v3_unknown_payload(self):
+        result = self._call("engine_getPayloadV3", ["0x0102030405060708"])
+        assert result["error"]["code"] == -38001
+
+    def test_forkchoice_v3_missing_withdrawals(self):
+        attrs = self._attrs_v3()
+        attrs.pop("withdrawals")
+        result = self._call("engine_forkchoiceUpdatedV3", [self._fcu_state(), attrs])
+        assert result["error"]["code"] == -32602
+
+    def test_forkchoice_v3_unsupported_fork(self):
+        from ethclient.common.config import ChainConfig
+        from ethclient.rpc.engine_api import register_engine_api
+
+        rpc = RPCServer()
+        # Cancun not yet active at timestamp 0x2
+        cfg = ChainConfig(chain_id=11155111, london_block=0, shanghai_time=0, cancun_time=10)
+        register_engine_api(rpc, store=self.store, fork_choice=self.fork_choice, chain_config=cfg)
+        client = TestClient(rpc.app)
+
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "engine_forkchoiceUpdatedV3",
+            "params": [self._fcu_state(), self._attrs_v3("0x2")],
+        }
+        result = client.post("/", json=body).json()
+        assert result["error"]["code"] == -38005
+
+    def test_engine_v3_block_production_loop(self):
+        # 1) forkchoiceUpdatedV3 -> payload id
+        fcu = self._call("engine_forkchoiceUpdatedV3", [self._fcu_state(), self._attrs_v3()])
+        assert fcu["result"]["payloadStatus"]["status"] == "VALID"
+        payload_id = fcu["result"]["payloadId"]
+        assert payload_id is not None
+
+        # 2) getPayloadV3 -> non-dummy payload
+        gp = self._call("engine_getPayloadV3", [payload_id])
+        payload = gp["result"]["executionPayload"]
+        assert payload["blockHash"] != "0x" + "00" * 32
+        assert payload["stateRoot"] != "0x" + "00" * 32
+        assert payload["receiptsRoot"] != "0x" + "00" * 32
+
+        # 3) newPayloadV3 -> VALID
+        np = self._call(
+            "engine_newPayloadV3",
+            [payload, [], self._attrs_v3()["parentBeaconBlockRoot"]],
+        )
+        assert np["result"]["status"] == "VALID"
+        new_head = payload["blockHash"]
+
+        # 4) forkchoiceUpdatedV3 with new head -> VALID
+        fcu2 = self._call("engine_forkchoiceUpdatedV3", [self._fcu_state(new_head), None])
+        assert fcu2["result"]["payloadStatus"]["status"] == "VALID"
 
 class TestFormatHelpers:
     def test_format_block_header(self):

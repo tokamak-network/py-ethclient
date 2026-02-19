@@ -327,6 +327,173 @@ class TxExecutionResult:
     logs: list[Log] = field(default_factory=list)
 
 
+def _execute_deposit_transaction(
+    tx: Transaction,
+    header: BlockHeader,
+    store: Store,
+    config: ChainConfig,
+    cumulative_gas: int,
+    tx_index: int,
+    hook: ExecutionHook = DefaultHook(),
+) -> TxExecutionResult:
+    """Execute an OP Stack deposit transaction (type 0x7E).
+
+    Deposit tx rules per OP Stack spec:
+    - No signature verification (sender from tx.from_address)
+    - No nonce verification
+    - Mint ETH to sender if tx.mint > 0
+    - Gas is pre-paid by L1 (no L2 gas market deduction)
+    - Deposit txs always produce a receipt (never excluded from block)
+    """
+    sender = tx.from_address
+
+    # Mint ETH on L2 if specified
+    if tx.mint > 0:
+        store.set_balance(sender, store.get_balance(sender) + tx.mint)
+
+    # Increment nonce for deposit sender
+    store.increment_nonce(sender)
+
+    # Calculate intrinsic gas
+    is_create = tx.to is None
+    base_gas = intrinsic_gas(tx.data, is_create, 0)
+
+    # System txs use 0 gas
+    if tx.is_system_tx:
+        gas_available = tx.gas_limit
+    else:
+        if base_gas > tx.gas_limit:
+            # Deposit txs still produce a receipt even if gas is insufficient
+            gas_used = tx.gas_limit
+            cumulative = cumulative_gas + gas_used
+            receipt = Receipt(
+                succeeded=False,
+                cumulative_gas_used=cumulative,
+                logs_bloom=b"\x00" * BLOOM_BYTE_SIZE,
+                logs=[],
+                tx_type=tx.tx_type,
+            )
+            return TxExecutionResult(success=False, gas_used=gas_used, receipt=receipt)
+        gas_available = tx.gas_limit - base_gas
+
+    # Set up EVM execution environment
+    env = ExecutionEnvironment()
+    env.block_number = header.number
+    env.timestamp = header.timestamp
+    env.coinbase = header.coinbase
+    env.gas_limit = header.gas_limit
+    env.chain_id = config.chain_id
+    env.base_fee = header.base_fee_per_gas or 0
+    env.gas_price = 0  # Deposit txs have no gas price
+    env.prevrandao = int.from_bytes(header.mix_hash, "big")
+    env.hook = hook
+
+    _bind_env_to_store(env, store)
+
+    env.access_sets.mark_warm_address(sender)
+    if tx.to:
+        env.access_sets.mark_warm_address(tx.to)
+    env.access_sets.mark_warm_address(header.coinbase)
+    for precompile_addr in PRECOMPILES:
+        env.access_sets.mark_warm_address(precompile_addr)
+
+    snap = env.snapshot()
+    success = True
+    return_data = b""
+
+    if tx.to is None:
+        # Contract creation
+        nonce = store.get_nonce(sender) - 1
+        contract_addr = keccak256(rlp.encode([sender, nonce]))[12:]
+        env.set_nonce(contract_addr, 1)
+        if tx.value > 0:
+            env.add_balance(contract_addr, tx.value)
+            env.sub_balance(sender, tx.value)
+        frame = CallFrame(
+            caller=sender, address=contract_addr, code_address=contract_addr,
+            origin=sender, code=tx.data, gas=gas_available, value=tx.value, depth=0,
+        )
+        hook.before_call(frame)
+        success, return_data = run_bytecode(frame, env)
+        hook.after_call(frame, success, return_data)
+        if success and return_data and len(return_data) <= 24576:
+            code_cost = G_CODEDEPOSIT * len(return_data)
+            if frame.gas_used + code_cost <= gas_available:
+                frame.gas_used += code_cost
+                env.set_code(contract_addr, return_data)
+                store.set_account_code(contract_addr, return_data)
+            else:
+                success = False
+                frame.gas_used = gas_available
+        elif success and return_data:
+            success = False
+            frame.gas_used = gas_available
+    else:
+        # Message call
+        if tx.value > 0:
+            env.sub_balance(sender, tx.value)
+            env.add_balance(tx.to, tx.value)
+
+        if is_precompile(tx.to):
+            result = run_precompile(tx.to, tx.data)
+            if result is not None:
+                pc_gas, output = result
+                frame = CallFrame(gas=gas_available)
+                frame.gas_used = pc_gas
+                success = True
+                return_data = output
+            else:
+                frame = CallFrame(gas=gas_available)
+                frame.gas_used = gas_available
+                success = False
+                return_data = b""
+        else:
+            code = env.get_code(tx.to)
+            frame = CallFrame(
+                caller=sender, address=tx.to, code_address=tx.to,
+                origin=sender, code=code, gas=gas_available, value=tx.value,
+                calldata=tx.data, depth=0,
+            )
+            if code:
+                hook.before_call(frame)
+                success, return_data = run_bytecode(frame, env)
+                hook.after_call(frame, success, return_data)
+            else:
+                success = True
+                return_data = b""
+
+    evm_gas_used = frame.gas_used if not tx.is_system_tx else 0
+    total_gas_used = (base_gas + evm_gas_used) if not tx.is_system_tx else 0
+
+    if success:
+        env.commit(snap)
+        _sync_env_to_store(env, store)
+    else:
+        env.rollback(snap)
+
+    # No gas refund for deposit txs (gas pre-paid by L1)
+    # No coinbase reward for deposit txs
+
+    tx_logs = env.logs if success else []
+    bloom = logs_bloom(tx_logs)
+    cumulative = cumulative_gas + total_gas_used
+    receipt = Receipt(
+        succeeded=success,
+        cumulative_gas_used=cumulative,
+        logs_bloom=bloom,
+        logs=tx_logs,
+        tx_type=tx.tx_type,
+    )
+
+    return TxExecutionResult(
+        success=success,
+        gas_used=total_gas_used,
+        receipt=receipt,
+        return_data=return_data,
+        logs=tx_logs,
+    )
+
+
 def execute_transaction(
     tx: Transaction,
     header: BlockHeader,
@@ -337,6 +504,10 @@ def execute_transaction(
     hook: ExecutionHook = DefaultHook(),
 ) -> TxExecutionResult:
     """Execute a single transaction against the current state."""
+
+    # OP Stack Deposit transaction (type 0x7E) — special execution rules
+    if tx.tx_type == TxType.DEPOSIT:
+        return _execute_deposit_transaction(tx, header, store, config, cumulative_gas, tx_index, hook)
 
     # EIP-7702 SetCode transaction gating.
     if tx.tx_type == TxType.SET_CODE:

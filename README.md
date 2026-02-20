@@ -327,14 +327,14 @@ class L2Hook(ExecutionHook):
 
 | Module | Files | LOC | Description |
 |---|---:|---:|---|
-| `common/` | 6 | 2,375 | RLP, types, trie (+ proofs), crypto, config |
+| `common/` | 6 | 2,374 | RLP, types, trie (+ proofs), crypto, config |
 | `vm/` | 8 | 2,703 | EVM, opcodes, precompiles, gas |
-| `storage/` | 4 | 1,372 | Store interface, in-memory & LMDB backends |
+| `storage/` | 4 | 1,431 | Store interface, in-memory & LMDB backends |
 | `blockchain/` | 4 | 1,353 | Block validation, mempool, fork choice, simulate_call |
-| `networking/` | 19 | 4,339 | RLPx, discovery, eth/68, snap/1, protocol registry, sync, server |
+| `networking/` | 19 | 5,117 | RLPx, discovery, eth/68, snap/1, protocol registry, sync, server |
 | `rpc/` | 5 | 1,660 | JSON-RPC server, eth API, Engine API |
-| `main.py` | 1 | 529 | CLI entry point |
-| **Total** | **48** | **14,331** | |
+| `main.py` | 1 | 633 | CLI entry point |
+| **Total** | **47** | **15,271** | |
 
 ### Test Code
 
@@ -347,15 +347,15 @@ class L2Hook(ExecutionHook):
 | `test_evm.py` | 821 | 88 | Stack, memory, opcodes, precompiles |
 | `test_storage.py` | 387 | 65 | Store CRUD, state root (both backends parametrized) |
 | `test_blockchain.py` | 617 | 37 | Header validation, block execution, mempool, fork choice |
-| `test_p2p.py` | 1,100 | 66 | RLPx, handshake, eth messages, head discovery |
+| `test_p2p.py` | 1,624 | 90 | RLPx, handshake, eth messages, head discovery |
 | `test_rpc.py` | 909 | 76 | JSON-RPC endpoints, eth_call/estimateGas, Engine API, tx/receipt lookup |
 | `test_protocol_registry.py` | 177 | 17 | Multi-protocol capability negotiation |
 | `test_snap_messages.py` | 267 | 21 | snap/1 message encode/decode roundtrip |
-| `test_snap_sync.py` | 413 | 27 | Snap sync state machine, response handlers |
-| `test_integration.py` | 250 | 12 | Cross-module integration |
-| `test_disk_backend.py` | 495 | 28 | LMDB persistence, flush, overlay, state root consistency |
+| `test_snap_sync.py` | 446 | 29 | Snap sync state machine, response handlers |
+| `test_integration.py` | 272 | 14 | Cross-module integration |
+| `test_disk_backend.py` | 543 | 31 | LMDB persistence, flush, overlay, state root consistency |
 | `integration/` | 68 | 6 | Archive mode, chaindata, Fusaka compliance |
-| **Total** | **6,290** | **562** | |
+| **Total** | **6,917** | **593** | |
 
 ## Current Limitations
 

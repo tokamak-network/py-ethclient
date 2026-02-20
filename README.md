@@ -155,6 +155,7 @@ storage = chain.get_storage_at(address, 0)
 | `eth_getBlockByHash` | ✅ | Block by hash |
 | `eth_sendTransaction` | ✅ | Sign and send (supports EIP-1559 and Legacy) |
 | `eth_sendRawTransaction` | ✅ | Send pre-signed transaction |
+| `eth_getTransactionByHash` | ✅ | Query transaction by hash |
 | `eth_getTransactionReceipt` | ✅ | Transaction receipt with effectiveGasPrice |
 | `eth_estimateGas` | ✅ | Full binary search estimation |
 | `eth_gasPrice` | ✅ | Returns 1 Gwei |
@@ -209,6 +210,29 @@ storage = chain.get_storage_at(address, 0)
 | `test_block_time_prevents_immediate_mining` | ✅ | No mining before elapsed |
 | `test_block_time_allows_mining_after_elapsed` | ✅ | Mining after elapsed |
 | `test_send_transaction_respects_block_time` | ✅ | sendTransaction respects block_time |
+| **Estimate Gas Tests** | | |
+| `test_simple_transfer_no_data` | ✅ | Simple transfer returns 21,000 gas |
+| `test_transfer_with_zero_value` | ✅ | Zero value transfer |
+| `test_transaction_with_data_no_recipient` | ✅ | Contract creation estimation |
+| `test_transaction_with_data_and_recipient` | ✅ | Contract call with calldata |
+| `test_transaction_with_large_data` | ✅ | Large calldata estimation |
+| `test_contract_creation_with_value` | ✅ | Contract creation with ETH |
+| `test_contract_creation_bytecode_sizes` | ✅ | Different bytecode sizes |
+| `test_estimate_then_execute_simple_transfer` | ✅ | Estimate then use for execution |
+| `test_estimate_gas_after_block_production` | ✅ | Estimate after multiple blocks |
+| **Get Transaction Tests** | | |
+| `test_returns_none_for_unknown_transaction` | ✅ | Unknown hash returns null |
+| `test_returns_legacy_transaction_details` | ✅ | Legacy tx all fields |
+| `test_legacy_transaction_has_vrs_signature` | ✅ | v, r, s signature fields |
+| `test_legacy_transaction_has_gas_price` | ✅ | gasPrice field for legacy |
+| `test_returns_eip1559_transaction_details` | ✅ | EIP-1559 tx all fields |
+| `test_eip1559_transaction_has_fee_fields` | ✅ | maxFeePerGas, maxPriorityFeePerGas |
+| `test_eip1559_transaction_has_chain_id` | ✅ | chainId field for EIP-1559 |
+| `test_transaction_includes_block_hash` | ✅ | blockHash in response |
+| `test_transaction_includes_correct_block_number` | ✅ | Correct blockNumber |
+| `test_contract_creation_transaction` | ✅ | Contract creation (to=null) |
+| `test_can_retrieve_multiple_transactions` | ✅ | Multiple txs by hash |
+| `test_transactions_in_same_block` | ✅ | Multiple txs same block |
 | **Ethereum Compatibility Tests** | | |
 | `test_crypto_compatibility` | ✅ | keccak256, ECDSA, address derivation |
 | `test_rlp_compatibility` | ✅ | RLP encoding/decoding for Account, Receipt |
@@ -370,9 +394,9 @@ Phase 4 - Prague Preparation:
 
 | Phase | Components | LOC |
 |-------|------------|-----|
-| Current | All (with Mempool + Block Time + estimateGas + Tests) | ~1,800 |
-| Phase 3 | Improved compatibility | +~150 |
-| **Total** | | **~1,950** |
+| Current | All (with estimateGas + getTransactionByHash + Tests) | ~4,400 |
+| Phase 3 | Improved compatibility (eth_call, eth_getLogs) | +~80 |
+| **Total** | | **~4,500** |
 
 ## Architecture
 
@@ -407,15 +431,17 @@ py-ethclient/
     ├── test_block_time.py       # Block time tests (~65 LOC)
     ├── test_fee_history.py      # Fee history tests (~120 LOC)
     ├── test_integration.py      # Integration tests (~55 LOC)
+    ├── test_estimate_gas.py     # Gas estimation tests (~200 LOC)
+    ├── test_get_transaction.py  # Transaction lookup tests (~400 LOC)
     ├── test_crypto_compatibility.py    # Crypto compatibility (~75 LOC)
     ├── test_rlp_compatibility.py       # RLP compatibility (~65 LOC)
     ├── test_block_compatibility.py     # Block compatibility (~120 LOC)
-    ├── test_rpc_compatibility.py       # RPC compatibility (~165 LOC)
+    ├── test_rpc_compatibility.py       # RPC compatibility (~200 LOC)
     ├── test_transaction_compatibility.py # Transaction compatibility (~120 LOC)
-    └── test_state_compatibility.py     # State compatibility (~130 LOC)
+    └── test_state_compatibility.py     # State compatibility (~200 LOC)
 ```
 
-**Total: ~1,700 LOC (src) + ~1,200 LOC (tests) = ~2,900 LOC**
+**Total: ~1,800 LOC (src) + ~2,600 LOC (tests) = ~4,400 LOC**
 
 ## Dependencies
 

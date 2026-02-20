@@ -160,7 +160,7 @@ storage = chain.get_storage_at(address, 0)
 | `eth_estimateGas` | ✅ | Full binary search estimation |
 | `eth_gasPrice` | ✅ | Returns 1 Gwei |
 | `eth_feeHistory` | ✅ | Historical gas fee data with base fee |
-| `eth_call` | ⚠️ | **Partial** - returns code only |
+| `eth_call` | ✅ | Execute call without state change |
 | `net_version` | ✅ | Chain ID as string |
 | `eth_accounts` | ✅ | Returns empty list |
 | `eth_coinbase` | ✅ | Returns coinbase address |
@@ -179,7 +179,7 @@ storage = chain.get_storage_at(address, 0)
 | `test_chain_id` | ✅ | Chain ID query |
 | `test_get_block_by_number` | ✅ | Block query |
 | `test_send_transaction_deploy_contract` | ✅ | Contract deployment |
-| `test_eth_call_read_storage` | ✅ | eth_call (limited) |
+| `test_eth_call_read_storage` | ✅ | eth_call storage read |
 | `test_simple_transfer` | ✅ | ETH transfer |
 | **EIP-1559 Tests** | | |
 | `test_calc_base_fee_same_as_target` | ✅ | Base fee when gas = target |
@@ -240,6 +240,18 @@ storage = chain.get_storage_at(address, 0)
 | `test_rpc_compatibility` | ✅ | RPC response format (eth_* methods) |
 | `test_transaction_compatibility` | ✅ | Legacy (0x0) and EIP-1559 (0x2) tx types |
 | `test_state_compatibility` | ✅ | State queries, EVM execution |
+| **Contract Storage Tests** | | |
+| `test_deploy_simple_storage_contract` | ✅ | Contract deployment |
+| `test_deploy_multiple_contracts` | ✅ | Sequential contract deployments |
+| `test_call_view_method_initial_value` | ✅ | eth_call reads storage |
+| `test_call_view_method_via_rpc` | ✅ | eth_call RPC method |
+| `test_set_and_get_value` | ✅ | Write and read storage |
+| `test_set_multiple_values` | ✅ | Multiple storage updates |
+| `test_increment_counter` | ✅ | Counter increment |
+| `test_decrement_counter` | ✅ | Counter decrement |
+| `test_get_storage_at_slot_zero` | ✅ | eth_getStorageAt |
+| `test_get_code_returns_runtime_bytecode` | ✅ | eth_getCode returns runtime code |
+| `test_independent_storage` | ✅ | Multiple contracts, independent storage |
 
 ## Development Roadmap
 
@@ -321,14 +333,14 @@ class Sequencer:
 - **Transaction**: Legacy (0x0) and EIP-1559 (0x2) type support
 - **State**: Balance, nonce, code, storage queries; EVM execution
 
-### Phase 3: Improved Compatibility (~150 LOC)
+### Phase 3: Improved Compatibility (~50 LOC)
 
-| # | Feature | Description | LOC |
-|---|---------|-------------|-----|
-| 4 | `eth_call` full implementation | Execute call without state change | ~30 |
-| 5 | `eth_getTransactionByHash` | Query transaction by hash | ~20 |
-| 6 | `eth_getLogs` | Event log filtering with bloom filters | ~50 |
-| 7 | SQLite Persistence | Replace dict storage for data durability | ~100 |
+| # | Feature | Description | Status |
+|---|---------|-------------|--------|
+| 4 | `eth_call` full implementation | Execute call without state change | ✅ Done |
+| 5 | `eth_getTransactionByHash` | Query transaction by hash | ✅ Done |
+| 6 | `eth_getLogs` | Event log filtering with bloom filters | ❌ TODO |
+| 7 | SQLite Persistence | Replace dict storage for data durability | ❌ TODO |
 
 ### Phase 4: Future Compatibility (Prague/Osaka)
 
@@ -380,8 +392,9 @@ class Sequencer:
 └── [x] eth_estimateGas with binary search (chain.py, methods.py)
 
 Phase 3 - Compatibility:
-├── [ ] eth_call actual execution
-├── [ ] eth_getTransactionByHash
+├── [x] eth_call actual execution
+├── [x] eth_getTransactionByHash
+├── [x] contract_address in receipt for contract creation
 ├── [ ] eth_getLogs (logsBloom)
 └── [ ] SQLite store (optional)
 
@@ -433,15 +446,24 @@ py-ethclient/
     ├── test_integration.py      # Integration tests (~55 LOC)
     ├── test_estimate_gas.py     # Gas estimation tests (~200 LOC)
     ├── test_get_transaction.py  # Transaction lookup tests (~400 LOC)
+    ├── test_contract_storage.py # Contract storage tests (~750 LOC)
     ├── test_crypto_compatibility.py    # Crypto compatibility (~75 LOC)
     ├── test_rlp_compatibility.py       # RLP compatibility (~65 LOC)
     ├── test_block_compatibility.py     # Block compatibility (~120 LOC)
     ├── test_rpc_compatibility.py       # RPC compatibility (~200 LOC)
     ├── test_transaction_compatibility.py # Transaction compatibility (~120 LOC)
     └── test_state_compatibility.py     # State compatibility (~200 LOC)
+
+contracts/
+├── SimpleStorage.sol           # Simple storage contract example
+└── Counter.sol                 # Counter contract example
+
+scripts/
+├── deploy_contract.py          # Compile & deploy contracts (~350 LOC)
+└── interact_contract.py        # Interact with contracts (~200 LOC)
 ```
 
-**Total: ~1,800 LOC (src) + ~2,600 LOC (tests) = ~4,400 LOC**
+**Total: ~1,800 LOC (src) + ~3,350 LOC (tests) + ~550 LOC (scripts) = ~5,700 LOC**
 
 ## Dependencies
 
@@ -469,6 +491,57 @@ ruff check src/
 # Format
 ruff format src/
 ```
+
+## Contract Deployment
+
+py-ethclient provides scripts for compiling and deploying Solidity contracts.
+
+### Deploy Script
+
+```bash
+# Compile and deploy a contract
+python scripts/deploy_contract.py contracts/SimpleStorage.sol --name SimpleStorage
+
+# Deploy with constructor arguments
+python scripts/deploy_contract.py contracts/MyToken.sol --name MyToken --constructor-args "MyToken,MTK,1000000"
+
+# Deploy and call a view function
+python scripts/deploy_contract.py contracts/Counter.sol --name Counter --call getCount
+
+# Deploy and call a write function
+python scripts/deploy_contract.py contracts/SimpleStorage.sol --name SimpleStorage --send setValue --send-args 42
+
+# Save deployment info
+python scripts/deploy_contract.py contracts/Counter.sol --name Counter --output deployments/counter.json
+```
+
+### Interact Script
+
+Interact with an already deployed contract:
+
+```bash
+# Call a view function
+python scripts/interact_contract.py deployments/counter.json --call getCount
+
+# Call multiple view functions
+python scripts/interact_contract.py deployments/counter.json --call getCount --call getOwner
+
+# Call a state-changing function
+python scripts/interact_contract.py deployments/counter.json --send increment
+
+# Call with arguments
+python scripts/interact_contract.py deployments/counter.json --send setCount --args 100
+
+# Chain multiple calls
+python scripts/interact_contract.py deployments/counter.json --send increment --send increment --call getCount
+```
+
+### Example Contracts
+
+Sample contracts are provided in `contracts/`:
+
+- **SimpleStorage.sol**: Basic storage with getter/setter
+- **Counter.sol**: Simple counter with increment/decrement
 
 ## License
 

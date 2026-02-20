@@ -241,8 +241,30 @@ class Chain:
         data: bytes = b"",
         gas: int = 30_000_000,
     ) -> bytes:
+        """
+        Execute a call without modifying state (eth_call).
+        
+        Returns the output data from the execution.
+        """
         vm = self.evm.get_vm()
-        return vm.state.get_code(to)
+        
+        # Get the code at the target address
+        code = vm.state.get_code(to)
+        
+        # Execute the bytecode
+        computation = vm.execute_bytecode(
+            origin=from_address,
+            gas_price=0,
+            gas=gas,
+            to=to,
+            sender=from_address,
+            value=value,
+            data=data,
+            code=code,
+        )
+        
+        # Return the output (even if there was an error, return output for debugging)
+        return computation.output
 
     def estimate_gas(
         self,
@@ -367,11 +389,21 @@ class Chain:
             
             cumulative_gas += tx_gas
             
+            # Calculate contract address for contract creation
+            contract_address = None
+            if tx.to is None or tx.to == b"":
+                # Contract creation: address = keccak256(rlp([sender, nonce]))[12:]
+                import rlp
+                sender_nonce = tx.nonce  # Use the transaction's nonce
+                sender = tx.sender
+                encoded = rlp.encode([sender, sender_nonce])
+                contract_address = keccak256(encoded)[12:]
+            
             receipt = Receipt(
                 status=0 if computation.is_error else 1,
                 cumulative_gas_used=cumulative_gas,
                 logs=computation.get_log_entries() if hasattr(computation, "get_log_entries") else [],
-                contract_address=None,
+                contract_address=contract_address,
             )
             receipts.append(receipt)
         

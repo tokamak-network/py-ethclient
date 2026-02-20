@@ -27,6 +27,7 @@ from ethclient.networking.eth.messages import (
     HelloMessage,
     DisconnectMessage,
     StatusMessage,
+    BlockRangeUpdateMessage,
     GetBlockHeadersMessage,
     BlockHeadersMessage,
     GetBlockBodiesMessage,
@@ -57,10 +58,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 MAX_PEERS = 25
-PING_INTERVAL = 15.0   # seconds between pings
+PING_INTERVAL = 10.0   # seconds between pings
 DIAL_INTERVAL = 10.0   # seconds between dial attempts
 CLEANUP_INTERVAL = 30.0
 DIAL_COOLDOWN_SECONDS = 30.0
+DIAL_COOLDOWN_BOOTNODE = 5.0   # shorter cooldown for bootnodes
 DIAL_MAX_ATTEMPTS_PER_TICK = 6
 DIAL_PONG_FRESHNESS_SECONDS = 300.0
 
@@ -93,6 +95,7 @@ class PeerConnection:
     last_pong: float = 0.0
     snap_supported: bool = False
     capabilities: Optional[NegotiatedCapabilities] = field(default=None, repr=False)
+    disconnect_reason: Optional[str] = None
 
     async def send_p2p_message(self, msg_code: int, payload: bytes) -> None:
         await self.conn.send_message(msg_code, payload)
@@ -160,6 +163,9 @@ class P2PServer:
         self._dial_retry_after: dict[bytes, float] = {}
         self._boot_node_ids: set[bytes] = {node.id for node in self.boot_nodes if node.id}
         self._snap_bootstrap_attempts = 0
+        self._last_announced_block = 0  # track last BlockRangeUpdate we sent
+        self._best_known_head_number: int = 0  # track best head from peers
+        self._best_known_head_hash: bytes = genesis_hash
 
         # Local capabilities for Hello message
         self._local_caps = LOCAL_CAPS_WITH_SNAP if enable_snap else LOCAL_CAPS_ETH_ONLY
@@ -198,6 +204,7 @@ class P2PServer:
         asyncio.create_task(self._dial_loop())
         asyncio.create_task(self._ping_loop())
         asyncio.create_task(self._cleanup_loop())
+        asyncio.create_task(self._block_range_update_loop())
 
         # Bootstrap discovery
         if self._discovery:
@@ -254,6 +261,8 @@ class P2PServer:
         peer.connected = True
         logger.info("Incoming peer connected: %s (snap=%s)", peer.remote_client, peer.snap_supported)
 
+        await self._send_block_range_update(peer)
+
         await self._handle_peer(peer)
 
     async def connect_to_peer(self, node: Node) -> Optional[PeerConnection]:
@@ -305,6 +314,8 @@ class P2PServer:
         logger.info("Peer connected: %s (%s:%d, snap=%s)",
                      peer.remote_client, node.ip, node.tcp_port, peer.snap_supported)
 
+        await self._send_block_range_update(peer)
+
         asyncio.create_task(self._handle_peer(peer))
         return peer
 
@@ -330,9 +341,9 @@ class P2PServer:
         if msg_code == P2PMsg.DISCONNECT:
             try:
                 disc = DisconnectMessage.decode(payload)
-                logger.info("Peer sent Disconnect during Hello: reason=%d", disc.reason)
+                logger.info("Peer sent DISCONNECT during Hello: reason=%s (0x%02x)", disc.reason.name, disc.reason)
             except Exception:
-                logger.info("Peer sent Disconnect during Hello")
+                logger.info("Peer sent DISCONNECT during Hello: unknown reason")
             return False
         if msg_code != P2PMsg.HELLO:
             logger.debug("Expected Hello (0x00), got 0x%02x", msg_code)
@@ -363,6 +374,10 @@ class P2PServer:
         if peer.snap_supported:
             logger.info("Peer supports snap/1")
 
+        # Enable Snappy compression after Hello exchange (p2p v5+)
+        if remote_hello.p2p_version >= 5:
+            peer.conn.use_snappy = True
+
         # Send Status (wrapped in try/except to catch connection failures)
         try:
             return await self._exchange_status(peer)
@@ -382,6 +397,11 @@ class P2PServer:
                 header = self.store.get_block_header_by_number(head)
                 if header:
                     best_hash = header.block_hash()
+
+        # If we have no blocks yet (snap sync), use best known head from peers
+        if head_number == 0 and self._best_known_head_number > 0:
+            head_number = self._best_known_head_number
+            best_hash = self._best_known_head_hash
 
         status = StatusMessage(
             protocol_version=peer.eth_version or ETH_VERSION,
@@ -410,9 +430,9 @@ class P2PServer:
         if msg_code == P2PMsg.DISCONNECT:
             try:
                 disc = DisconnectMessage.decode(payload)
-                logger.info("Peer Disconnect during Status: reason=%d", disc.reason)
+                logger.info("Peer sent DISCONNECT during Status: reason=%s (0x%02x)", disc.reason.name, disc.reason)
             except Exception:
-                logger.info("Peer Disconnect during Status")
+                logger.info("Peer sent DISCONNECT during Status: unknown reason")
             return False
         if msg_code != EthMsg.STATUS:
             logger.info("Expected Status (0x10), got 0x%02x", msg_code)
@@ -446,6 +466,11 @@ class P2PServer:
         if remote_status.protocol_version >= 69:
             peer.best_hash = remote_status.latest_block_hash
             peer.best_block_number = remote_status.latest_block
+
+        # Update our best known head from peer's status
+        if remote_status.latest_block > self._best_known_head_number:
+            self._best_known_head_number = remote_status.latest_block
+            self._best_known_head_hash = remote_status.latest_block_hash
         else:
             peer.best_hash = remote_status.best_hash
         peer.genesis_hash = remote_status.genesis_hash
@@ -460,22 +485,36 @@ class P2PServer:
         """Main loop for handling messages from a peer."""
         try:
             while self._running and peer.connected:
-                result = await peer.conn.recv_message()
+                result = await peer.conn.recv_message(timeout=60.0)
                 if result is None:
+                    # recv_message returns None only on timeout
+                    if not peer.disconnect_reason:
+                        peer.disconnect_reason = "recv timeout"
                     break
 
                 msg_code, payload = result
                 await self._dispatch_message(peer, msg_code, payload)
 
+        except ConnectionResetError:
+            peer.disconnect_reason = "connection reset by peer (TCP RST)"
+        except asyncio.IncompleteReadError as e:
+            peer.disconnect_reason = f"connection closed mid-read ({e.partial!r:.20})"
+        except ConnectionError as e:
+            peer.disconnect_reason = f"connection error: {type(e).__name__}: {e}"
         except Exception as e:
-            logger.debug("Peer error: %s", e)
+            peer.disconnect_reason = f"unexpected error: {type(e).__name__}: {e}"
         finally:
             peer.connected = False
             self.peers.pop(peer.remote_id, None)
             if peer.remote_id:
-                self._dial_retry_after[peer.remote_id] = time.time() + DIAL_COOLDOWN_SECONDS
+                cooldown = DIAL_COOLDOWN_BOOTNODE if peer.remote_id in self._boot_node_ids else DIAL_COOLDOWN_SECONDS
+                self._dial_retry_after[peer.remote_id] = time.time() + cooldown
             peer.conn.close()
-            logger.info("Peer disconnected: %s", peer.remote_client)
+            reason = peer.disconnect_reason or "unknown"
+            logger.info("Peer disconnected: %s (reason: %s)", peer.remote_client, reason)
+            # Emergency reconnect when all peers lost
+            if not self.peers and self._running:
+                asyncio.create_task(self._emergency_dial())
 
     async def _dispatch_message(
         self, peer: PeerConnection, msg_code: int, payload: bytes,
@@ -491,9 +530,10 @@ class P2PServer:
         if msg_code == P2PMsg.DISCONNECT:
             try:
                 disc = DisconnectMessage.decode(payload)
-                logger.info("Peer disconnecting: reason=%s", disc.reason.name)
+                peer.disconnect_reason = f"remote disconnect: {disc.reason.name} (0x{disc.reason:02x})"
+                logger.info("Peer sent DISCONNECT: reason=%s (0x%02x)", disc.reason.name, disc.reason)
             except Exception:
-                pass
+                peer.disconnect_reason = "remote disconnect: unknown reason"
             peer.connected = False
             return
 
@@ -532,13 +572,13 @@ class P2PServer:
         elif msg_code == EthMsg.RECEIPTS:
             logger.debug("Received receipts response")
         elif msg_code == EthMsg.TRANSACTIONS:
-            self._handle_transactions(payload)
+            self._handle_transactions(peer, payload)
         elif msg_code == EthMsg.NEW_POOLED_TX_HASHES:
-            self._handle_new_pooled_tx_hashes(payload)
+            self._handle_new_pooled_tx_hashes(peer, msg_code, payload)
         elif msg_code == EthMsg.NEW_BLOCK_HASHES:
             self._handle_new_block_hashes(payload)
         elif msg_code == EthMsg.BLOCK_RANGE_UPDATE:
-            logger.debug("Received BlockRangeUpdate")
+            self._handle_block_range_update(peer, payload)
         else:
             logger.debug("Unhandled eth message code: 0x%02x", msg_code)
 
@@ -621,20 +661,93 @@ class P2PServer:
         )
         await peer.send_eth_message(EthMsg.RECEIPTS, response.encode())
 
-    def _handle_transactions(self, data: bytes) -> None:
-        """Handle broadcast transactions."""
-        msg = TransactionsMessage.decode(data)
-        logger.debug("Received %d transactions", len(msg.transactions))
+    def _handle_transactions(self, sender: PeerConnection, data: bytes) -> None:
+        """Handle broadcast transactions — relay to other peers."""
+        self._relay_to_peers(sender, EthMsg.TRANSACTIONS, data)
 
-    def _handle_new_pooled_tx_hashes(self, data: bytes) -> None:
-        """Handle new pooled transaction hash announcements."""
-        msg = NewPooledTransactionHashesMessage.decode(data)
-        logger.debug("Received %d new pooled tx hashes", len(msg.hashes))
+    def _handle_new_pooled_tx_hashes(
+        self, sender: PeerConnection, msg_code: int, data: bytes,
+    ) -> None:
+        """Handle new pooled transaction hash announcements — relay to other peers."""
+        self._relay_to_peers(sender, msg_code, data)
+
+    def _relay_to_peers(
+        self, sender: PeerConnection, msg_code: int, data: bytes,
+    ) -> None:
+        """Relay a message to all connected peers except the sender."""
+        for peer in list(self.peers.values()):
+            if peer is not sender and peer.connected:
+                asyncio.ensure_future(self._safe_send(peer, msg_code, data))
+
+    async def _safe_send(
+        self, peer: PeerConnection, msg_code: int, data: bytes,
+    ) -> None:
+        """Send a message to a peer, silently ignoring connection errors."""
+        try:
+            await peer.send_eth_message(msg_code, data)
+        except (ConnectionError, asyncio.IncompleteReadError, OSError):
+            pass
 
     def _handle_new_block_hashes(self, data: bytes) -> None:
         """Handle new block hash announcements."""
         msg = NewBlockHashesMessage.decode(data)
         logger.debug("Received %d new block hashes", len(msg.hashes))
+
+    # ------------------------------------------------------------------
+    # BlockRangeUpdate
+    # ------------------------------------------------------------------
+
+    def _handle_block_range_update(self, peer: PeerConnection, data: bytes) -> None:
+        """Handle received BlockRangeUpdate — update peer's block range."""
+        try:
+            msg = BlockRangeUpdateMessage.decode(data)
+            peer.best_block_number = msg.latest_block
+            peer.best_hash = msg.latest_block_hash
+            logger.debug("Peer %s block range: %d-%d",
+                         peer.remote_client[:30], msg.earliest_block, msg.latest_block)
+        except Exception as e:
+            logger.debug("Failed to decode BlockRangeUpdate: %s", e)
+
+    async def _send_block_range_update(self, peer: PeerConnection) -> None:
+        """Send BlockRangeUpdate to an eth/69 peer."""
+        if peer.eth_version < 69 or not peer.connected:
+            return
+        head_number = 0
+        head_hash = self.genesis_hash
+        if self.store:
+            head = self.store.get_latest_block_number()
+            if head is not None and head > 0:
+                head_number = head
+                header = self.store.get_block_header_by_number(head)
+                if header:
+                    head_hash = header.block_hash()
+
+        # If we have no blocks yet (snap sync), use best known head from peers
+        if head_number == 0 and self._best_known_head_number > 0:
+            head_number = self._best_known_head_number
+            head_hash = self._best_known_head_hash
+        msg = BlockRangeUpdateMessage(
+            earliest_block=0,
+            latest_block=head_number,
+            latest_block_hash=head_hash,
+        )
+        try:
+            await peer.send_eth_message(EthMsg.BLOCK_RANGE_UPDATE, msg.encode())
+        except Exception:
+            pass
+
+    async def _block_range_update_loop(self) -> None:
+        """Periodically broadcast BlockRangeUpdate to all eth/69 peers."""
+        while self._running:
+            await asyncio.sleep(30.0)
+            if not self.store or not self.peers:
+                continue
+            head = self.store.get_latest_block_number()
+            if head is None or head <= self._last_announced_block:
+                continue
+            self._last_announced_block = head
+            for peer in list(self.peers.values()):
+                await self._send_block_range_update(peer)
 
     # ------------------------------------------------------------------
     # TX broadcast
@@ -752,6 +865,23 @@ class P2PServer:
         peer.connected = False
         peer.conn.close()
         self.peers.pop(peer.remote_id, None)
+
+    async def _emergency_dial(self) -> None:
+        """Immediately attempt to reconnect when all peers are lost."""
+        if self.peers or not self._running:
+            return
+        logger.info("All peers lost — emergency dial to bootnodes")
+        # Clear bootnode cooldowns for immediate reconnection
+        for node in self.boot_nodes:
+            self._dial_retry_after.pop(node.id, None)
+        await asyncio.sleep(1.0)  # brief delay to avoid tight loop
+        for node in self.boot_nodes:
+            if not self._running or len(self.peers) >= self.max_peers:
+                break
+            try:
+                await self.connect_to_peer(node)
+            except Exception as e:
+                logger.debug("Emergency dial error: %s", e)
 
     # ------------------------------------------------------------------
     # Sync control

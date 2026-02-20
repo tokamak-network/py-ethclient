@@ -33,8 +33,9 @@ class RLPxConnection:
         self.handshake = Handshake(private_key)
         self.coder: Optional[FrameCoder] = None
         self.remote_pubkey: Optional[bytes] = None
-        self.use_snappy: bool = True
+        self.use_snappy: bool = False  # enabled after Hello exchange
         self.last_handshake_error: Optional[str] = None
+        self._send_lock = asyncio.Lock()
 
     async def initiate_handshake(self, remote_pubkey: bytes) -> bool:
         """Perform initiator-side handshake."""
@@ -42,7 +43,7 @@ class RLPxConnection:
         self.last_handshake_error = None
         try:
             # Send auth
-            auth_data = self.handshake.create_auth(remote_pubkey)
+            auth_data = await asyncio.to_thread(self.handshake.create_auth, remote_pubkey)
             self.writer.write(auth_data)
             await self.writer.drain()
             logger.debug("Sent auth message (%d bytes)", len(auth_data))
@@ -58,15 +59,16 @@ class RLPxConnection:
             ack_data = ack_size_bytes + ack_encrypted
             logger.debug("Received ack message (%d bytes)", len(ack_data))
 
-            ack_msg = self.handshake.handle_ack(ack_data)
+            ack_msg = await asyncio.to_thread(self.handshake.handle_ack, ack_data)
 
             # Derive session keys
-            keys = self.handshake.derive_secrets(
-                auth_msg=auth_data,
-                ack_msg=ack_data,
-                remote_nonce=ack_msg.nonce,
-                remote_ephemeral_pubkey=ack_msg.recipient_pubkey,
-                is_initiator=True,
+            keys = await asyncio.to_thread(
+                self.handshake.derive_secrets,
+                auth_data,
+                ack_data,
+                ack_msg.nonce,
+                ack_msg.recipient_pubkey,
+                True,
             )
             self.coder = FrameCoder(
                 keys.aes_secret, keys.mac_secret,
@@ -93,30 +95,34 @@ class RLPxConnection:
             )
             auth_data = auth_size_bytes + auth_encrypted
 
-            auth_msg = self.handshake.handle_auth(auth_data)
+            auth_msg = await asyncio.to_thread(self.handshake.handle_auth, auth_data)
             self.remote_pubkey = b"\x04" + auth_msg.initiator_pubkey
 
             # Recover remote ephemeral pubkey from signature
             # The signature is over: ecdh(initiator, recipient) XOR initiator_nonce
             shared = _ecdh_raw(self.private_key, self.remote_pubkey)
             xor_val = bytes(a ^ b for a, b in zip(shared[:32], auth_msg.nonce))
-            remote_eph_pub = PublicKey.from_signature_and_message(
-                auth_msg.signature, xor_val, hasher=None
+            remote_eph_pub = await asyncio.to_thread(
+                PublicKey.from_signature_and_message,
+                auth_msg.signature,
+                xor_val,
+                None,
             )
             remote_ephemeral_pubkey = remote_eph_pub.format(compressed=False)[1:]
 
             # Send ack
-            ack_data = self.handshake.create_ack(self.remote_pubkey)
+            ack_data = await asyncio.to_thread(self.handshake.create_ack, self.remote_pubkey)
             self.writer.write(ack_data)
             await self.writer.drain()
 
             # Derive session keys
-            keys = self.handshake.derive_secrets(
-                auth_msg=auth_data,
-                ack_msg=ack_data,
-                remote_nonce=auth_msg.nonce,
-                remote_ephemeral_pubkey=remote_ephemeral_pubkey,
-                is_initiator=False,
+            keys = await asyncio.to_thread(
+                self.handshake.derive_secrets,
+                auth_data,
+                ack_data,
+                auth_msg.nonce,
+                remote_ephemeral_pubkey,
+                False,
             )
             self.coder = FrameCoder(
                 keys.aes_secret, keys.mac_secret,
@@ -130,15 +136,25 @@ class RLPxConnection:
             return False
 
     async def send_message(self, msg_code: int, payload: bytes) -> None:
-        """Encrypt and send a framed message."""
+        """Encrypt and send a framed message.
+
+        Uses a lock to prevent concurrent encode_frame() calls from
+        corrupting the stateful AES-CTR cipher and MAC state.
+        """
         if self.coder is None:
             raise RuntimeError("Handshake not completed")
-        # Snappy only for sub-protocol messages (eth >= 0x10), NOT p2p base (Hello/Disconnect/Ping/Pong)
-        if self.use_snappy and msg_code >= 0x10:
-            payload = snappy_compress(payload)
-        frame = self.coder.encode_frame(msg_code, payload)
-        self.writer.write(frame)
-        await self.writer.drain()
+        async with self._send_lock:
+            if self.writer.is_closing():
+                raise ConnectionError("transport is closing")
+            # Snappy applies to all messages after Hello exchange
+            if self.use_snappy:
+                payload = snappy_compress(payload)
+            frame = self.coder.encode_frame(msg_code, payload)
+            try:
+                self.writer.write(frame)
+                await self.writer.drain()
+            except (OSError, ConnectionError, asyncio.IncompleteReadError) as exc:
+                raise ConnectionError(f"send failed: {type(exc).__name__}: {exc}") from exc
 
     async def recv_message(self, timeout: float = 30.0) -> Optional[tuple[int, bytes]]:
         """Receive and decrypt a framed message.
@@ -168,8 +184,8 @@ class RLPxConnection:
                 return None
 
             msg_code, payload = result
-            # Snappy only for sub-protocol messages (eth >= 0x10), NOT p2p base
-            if self.use_snappy and msg_code >= 0x10:
+            # Snappy applies to all messages after Hello exchange
+            if self.use_snappy:
                 payload = snappy_decompress(payload)
             return msg_code, payload
 
@@ -177,8 +193,8 @@ class RLPxConnection:
             logger.debug("recv_message timed out")
             return None
         except (asyncio.IncompleteReadError, ConnectionError) as e:
-            logger.debug("recv_message connection error: %s", e)
-            return None
+            # Propagate connection errors so caller can identify disconnect cause
+            raise
 
     def close(self) -> None:
         """Close the connection."""

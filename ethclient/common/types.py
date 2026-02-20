@@ -502,7 +502,6 @@ class BlockHeader:
     parent_beacon_block_root: Optional[bytes] = None
     # Post-Prague (EIP-7685)
     requests_hash: Optional[bytes] = None
-
     def to_rlp_list(self) -> list:
         items: list = [
             self.parent_hash,

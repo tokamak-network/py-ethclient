@@ -8,6 +8,7 @@ from ethclient.common.types import (
     Block,
     BlockHeader,
     Receipt,
+    Transaction,
     ZERO_HASH,
 )
 from ethclient.common.trie import EMPTY_ROOT
@@ -82,6 +83,19 @@ class TestPersistence:
         assert store2.get_latest_block_number() == 10
         store2.close()
 
+    def test_latest_block_meta_visible_across_instances(self, tmp_path):
+        writer = DiskBackend(tmp_path)
+        reader = DiskBackend(tmp_path)
+        header = BlockHeader(number=12, timestamp=1234, gas_limit=30_000_000)
+
+        writer.put_block_header(header)
+        writer.put_canonical_hash(12, header.block_hash())
+
+        # Reader should observe meta update even without reopening.
+        assert reader.get_latest_block_number() == 12
+        writer.close()
+        reader.close()
+
     def test_receipts_persist(self, tmp_path):
         block_hash = b"\xAB" * 32
         receipts = [
@@ -97,6 +111,40 @@ class TestPersistence:
         assert len(got) == 1
         assert got[0].cumulative_gas_used == 21000
         store2.close()
+
+    def test_block_batch_commit_and_head_snapshot(self, tmp_path):
+        store = DiskBackend(tmp_path)
+        h1 = BlockHeader(number=1, timestamp=1, gas_limit=30_000_000)
+        h2 = BlockHeader(number=2, parent_hash=h1.block_hash(), timestamp=2, gas_limit=30_000_000)
+
+        head_num, head_hash = store.get_chain_head_snapshot()
+        assert head_num == 0
+        assert head_hash is None
+
+        last = store.put_block_batch(
+            [
+                (h1, ([], [], None)),
+                (h2, ([], [], None)),
+            ]
+        )
+        assert last == 2
+        assert store.get_latest_block_number() == 2
+        assert store.get_canonical_hash(1) == h1.block_hash()
+        assert store.get_canonical_hash(2) == h2.block_hash()
+        store.close()
+
+    def test_block_batch_accepts_raw_rlp_body_items(self, tmp_path):
+        store = DiskBackend(tmp_path)
+        h1 = BlockHeader(number=1, timestamp=1, gas_limit=30_000_000)
+
+        # Raw RLP tx item and empty ommers list are valid for mp pipeline bodies.
+        raw_tx = Transaction(nonce=1, gas_limit=21_000, gas_price=1).encode_rlp()
+        store.put_block_batch([(h1, ([raw_tx], [], None))])
+
+        body = store.get_block_body(h1.block_hash())
+        assert body is not None
+        assert store.get_latest_block_number() == 1
+        store.close()
 
     def test_unflushed_state_lost_on_reopen(self, tmp_path):
         """Overlay data not flushed should be lost after close/reopen."""

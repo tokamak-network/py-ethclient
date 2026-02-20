@@ -14,7 +14,7 @@ import json
 import struct
 from enum import Enum
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Sequence
 
 import lmdb
 
@@ -379,15 +379,19 @@ class DiskBackend(Store):
 
     @staticmethod
     def _encode_body(
-        transactions: list[Transaction],
-        ommers: list[BlockHeader],
-        withdrawals: Optional[list[Withdrawal]],
+        transactions: list[Transaction | bytes],
+        ommers: list[BlockHeader | bytes],
+        withdrawals: Optional[list[Withdrawal | bytes]],
     ) -> bytes:
-        tx_rlps = [tx.encode_rlp() for tx in transactions]
-        ommer_rlps = [o.encode_rlp() for o in ommers]
+        # Accept both decoded objects and raw RLP bytes for pipeline compatibility.
+        tx_rlps = [tx.encode_rlp() if isinstance(tx, Transaction) else tx for tx in transactions]
+        ommer_rlps = [o.encode_rlp() if isinstance(o, BlockHeader) else o for o in ommers]
         parts: list = [tx_rlps, ommer_rlps]
         if withdrawals is not None:
-            w_rlps = [rlp.encode(w.to_rlp_list()) for w in withdrawals]
+            w_rlps = [
+                rlp.encode(w.to_rlp_list()) if isinstance(w, Withdrawal) else w
+                for w in withdrawals
+            ]
             parts.append(w_rlps)
         return rlp.encode(parts)
 
@@ -487,7 +491,62 @@ class DiskBackend(Store):
             self._save_meta_int("latest_block", number)
 
     def get_latest_block_number(self) -> int:
+        """Return latest canonical block, refreshing from LMDB meta.
+
+        In multi-process mode, another process may advance canonical head.
+        Always reconcile cached value with on-disk meta before returning.
+        """
+        latest_meta = self._load_meta_int("latest_block", -1)
+        if latest_meta > self._latest_block:
+            self._latest_block = latest_meta
         return max(self._latest_block, 0)
+
+    def get_chain_head_snapshot(self) -> tuple[int, Optional[bytes]]:
+        """Read-only snapshot of current canonical head."""
+        latest = max(self._latest_block, 0)
+        with self._env.begin(db=self._dbs[b"canonical"]) as txn:
+            head_hash = txn.get(_num_key(latest))
+            return latest, (bytes(head_hash) if head_hash is not None else None)
+
+    def put_block_batch(
+        self,
+        entries: Sequence[tuple[BlockHeader, tuple[list[Transaction], list[BlockHeader], Optional[list[Withdrawal]]]]],
+    ) -> int:
+        """Commit multiple blocks atomically in a single LMDB write transaction.
+
+        Returns the last committed block number, or current head if entries is empty.
+        """
+        if not entries:
+            return max(self._latest_block, 0)
+
+        latest = max(self._latest_block, 0)
+        with self._env.begin(write=True) as txn:
+            for header, body in entries:
+                block_hash = header.block_hash()
+                header_rlp = header.encode_rlp()
+
+                # Header + number index
+                txn.put(block_hash, header_rlp, db=self._dbs[b"headers"])
+                txn.put(_num_key(header.number), block_hash, db=self._dbs[b"header_numbers"])
+
+                # Body
+                txs, ommers, withdrawals = body
+                body_rlp = self._encode_body(txs, ommers, withdrawals)
+                txn.put(block_hash, body_rlp, db=self._dbs[b"bodies"])
+
+                # Canonical mapping
+                txn.put(_num_key(header.number), block_hash, db=self._dbs[b"canonical"])
+                if header.number > latest:
+                    latest = header.number
+
+            txn.put(
+                b"latest_block",
+                latest.to_bytes(8, "big", signed=True),
+                db=self._dbs[b"meta"],
+            )
+
+        self._latest_block = latest
+        return latest
 
     # -----------------------------------------------------------------
     # State root computation

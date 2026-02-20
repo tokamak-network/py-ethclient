@@ -233,6 +233,22 @@ class TestFraming:
         frame_size = receiver.decode_header(corrupted[:32])
         assert frame_size is None
 
+    @pytest.mark.asyncio
+    async def test_rlpx_send_message_raises_when_transport_closing(self):
+        from unittest.mock import MagicMock
+        from ethclient.networking.rlpx.connection import RLPxConnection
+
+        reader = MagicMock()
+        writer = MagicMock()
+        writer.is_closing.return_value = True
+
+        conn = RLPxConnection(PrivateKey().secret, reader, writer)
+        conn.coder = MagicMock()
+        conn.coder.encode_frame.return_value = b"frame"
+
+        with pytest.raises(ConnectionError, match="transport is closing"):
+            await conn.send_message(0x10, b"payload")
+
 
 # ===================================================================
 # Snappy compression tests
@@ -756,6 +772,25 @@ class TestDiscoveryPackets:
         assert decoded.udp_port == 30303
         assert decoded.tcp_port == 30304
 
+    def test_send_ping_does_not_track_pending_on_send_error(self):
+        from unittest.mock import MagicMock
+        from ethclient.networking.discv4.discovery import DiscoveryProtocol
+        from ethclient.networking.discv4.routing import Node, RoutingTable
+
+        local = Node(id=PrivateKey().public_key.format(compressed=False)[1:], ip="0.0.0.0", udp_port=30303, tcp_port=30303)
+        table = RoutingTable(local)
+        proto = DiscoveryProtocol(PrivateKey().secret, local, table, [])
+
+        mock_transport = MagicMock()
+        mock_transport.is_closing.return_value = False
+        mock_transport.sendto.side_effect = OSError("network unreachable")
+        proto.transport = mock_transport
+
+        target = Node(id=PrivateKey().public_key.format(compressed=False)[1:], ip="8.8.8.8", udp_port=30303, tcp_port=30303)
+        ping_hash = proto.send_ping(target)
+
+        assert ping_hash not in proto._pending_pings
+
 
 # ===================================================================
 # Full sync state tests
@@ -1005,6 +1040,210 @@ class TestFullSync:
         assert sync._fetch_headers.call_count == fs_mod.MAX_HEADER_FAILURES
         sync._failover_peer.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_select_best_peer_skips_timeout_penalized_peer(self):
+        from unittest.mock import MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+        import ethclient.networking.sync.full_sync as fs_mod
+
+        sync = FullSync()
+        penalized_peer = MagicMock()
+        penalized_peer.connected = True
+        penalized_peer.remote_id = b"\x11" * 64
+        penalized_peer.best_block_number = 1000
+
+        healthy_peer = MagicMock()
+        healthy_peer.connected = True
+        healthy_peer.remote_id = b"\x22" * 64
+        healthy_peer.best_block_number = 500
+
+        sync._peer_retry_after[penalized_peer.remote_id] = (
+            fs_mod.time.time() + fs_mod.PEER_TIMEOUT_PENALTY_SECONDS
+        )
+
+        best, head = await sync._select_best_peer([penalized_peer, healthy_peer])
+        assert best is healthy_peer
+        assert head == 500
+
+    def test_refresh_target_block_uses_live_peer_provider(self):
+        from unittest.mock import MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+
+        live_peer = MagicMock()
+        live_peer.connected = True
+        live_peer.best_block_number = 10_299_900
+
+        sync = FullSync(peer_provider=lambda: [live_peer])
+        sync.state.target_block = 9_707_885
+        sync._candidate_peers = []
+
+        sync._refresh_target_block()
+        assert sync.state.target_block == 10_299_900
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_yields_during_header_execution_for_rpc_responsiveness(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from ethclient.networking.sync.full_sync import FullSync
+        from ethclient.common.types import BlockHeader
+        import ethclient.networking.sync.full_sync as fs_mod
+
+        sync = FullSync()
+        peer = MagicMock()
+        peer.connected = True
+        peer.remote_id = b"\x33" * 64
+
+        start = 1
+        count = fs_mod.SYNC_EXECUTION_YIELD_INTERVAL
+        headers = [
+            BlockHeader(number=start + i, gas_limit=30_000_000, timestamp=1000 + i)
+            for i in range(count)
+        ]
+
+        sync.state.best_peer = peer
+        sync.state.current_block = 0
+        sync.state.target_block = headers[-1].number
+        sync.state.syncing = True
+        sync._candidate_peers = [peer]
+
+        sync._fetch_headers = AsyncMock(return_value=headers)
+        sync._fetch_bodies = AsyncMock(return_value=[])
+        sync._refresh_target_block = MagicMock()
+
+        sleep_calls: list[float] = []
+        real_sleep = fs_mod.asyncio.sleep
+
+        async def tracking_sleep(delay: float):
+            sleep_calls.append(delay)
+            await real_sleep(0)
+
+        with patch.object(fs_mod.asyncio, "sleep", side_effect=tracking_sleep):
+            await sync._sync_loop()
+
+        assert 0 in sleep_calls
+
+    def test_full_sync_peer_timeout_adapts_timeout_and_body_chunk(self):
+        from unittest.mock import MagicMock
+        from ethclient.networking.sync.full_sync import FullSync, SYNC_TIMEOUT, BODIES_PER_REQUEST
+
+        sync = FullSync()
+        peer = MagicMock()
+        peer.remote_id = b"\xaa" * 64
+
+        sync._record_peer_timeout(peer)
+
+        assert sync._timeout_for_peer(peer) > SYNC_TIMEOUT
+        assert sync._body_chunk_size_for_peer(peer) < BODIES_PER_REQUEST
+
+    def test_full_sync_peer_success_recovers_timeout_and_body_chunk(self):
+        from unittest.mock import MagicMock
+        from ethclient.networking.sync.full_sync import FullSync, SYNC_TIMEOUT
+
+        sync = FullSync()
+        peer = MagicMock()
+        peer.remote_id = b"\xbb" * 64
+
+        sync._record_peer_timeout(peer)
+        assert sync._timeout_for_peer(peer) > SYNC_TIMEOUT
+        degraded_chunk = sync._body_chunk_size_for_peer(peer)
+
+        sync._record_peer_success(peer)
+
+        assert sync._timeout_for_peer(peer) >= SYNC_TIMEOUT
+        assert sync._body_chunk_size_for_peer(peer) >= degraded_chunk
+
+    @pytest.mark.asyncio
+    async def test_fetch_headers_uses_hedge_peer_on_primary_failure(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+        from ethclient.common.types import BlockHeader
+
+        sync = FullSync()
+        primary = MagicMock()
+        backup = MagicMock()
+        primary.remote_id = b"\x11" * 64
+        backup.remote_id = b"\x22" * 64
+
+        expected = [BlockHeader(number=1, gas_limit=30_000_000, timestamp=1)]
+        sync._hedge_peers = MagicMock(return_value=[backup])
+        sync._fetch_headers_from_single_peer = AsyncMock(side_effect=[None, expected])
+
+        got = await sync._fetch_headers(primary, start=1, count=1)
+        assert got == expected
+        assert sync._fetch_headers_from_single_peer.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_bodies_uses_hedge_peer_on_primary_failure(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+
+        sync = FullSync()
+        primary = MagicMock()
+        backup = MagicMock()
+        primary.remote_id = b"\x33" * 64
+        backup.remote_id = b"\x44" * 64
+
+        expected = [([], [])]
+        sync._hedge_peers = MagicMock(return_value=[backup])
+        sync._fetch_bodies_from_single_peer = AsyncMock(side_effect=[None, expected])
+
+        got = await sync._fetch_bodies(primary, hashes=[b"\xaa" * 32])
+        assert got == expected
+        assert sync._fetch_bodies_from_single_peer.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_prefetches_next_batch(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.sync.full_sync import FullSync
+        from ethclient.common.types import BlockHeader
+
+        sync = FullSync()
+        peer = MagicMock()
+        peer.connected = True
+        peer.remote_id = b"\x44" * 64
+        peer.best_block_number = 10
+        sync.state.best_peer = peer
+        sync.state.current_block = 0
+        sync.state.target_block = 4
+        sync.state.syncing = True
+        sync._candidate_peers = [peer]
+
+        batch1 = [BlockHeader(number=1, gas_limit=30_000_000, timestamp=1001),
+                  BlockHeader(number=2, gas_limit=30_000_000, timestamp=1002)]
+        batch2 = [BlockHeader(number=3, gas_limit=30_000_000, timestamp=1003),
+                  BlockHeader(number=4, gas_limit=30_000_000, timestamp=1004)]
+
+        sync._fetch_sync_batch = AsyncMock(side_effect=[(batch1, []), (batch2, [])])
+
+        async def execute_and_advance(headers, _bodies):
+            sync.state.current_block = headers[-1].number
+
+        sync._execute_headers = AsyncMock(side_effect=execute_and_advance)
+        sync._refresh_target_block = MagicMock()
+
+        await sync._sync_loop()
+
+        assert sync._fetch_sync_batch.await_count == 2
+        assert sync._execute_headers.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_execute_headers_offloads_chain_execution_to_worker(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from ethclient.networking.sync.full_sync import FullSync
+        from ethclient.common.types import BlockHeader
+        import ethclient.networking.sync.full_sync as fs_mod
+
+        store = MagicMock()
+        chain = MagicMock()
+        sync = FullSync(store=store, chain=chain)
+        headers = [BlockHeader(number=1, gas_limit=30_000_000, timestamp=1001)]
+
+        to_thread_mock = AsyncMock(side_effect=lambda fn, *args: fn(*args))
+        with patch.object(fs_mod.asyncio, "to_thread", to_thread_mock):
+            await sync._execute_headers(headers, [([], [])])
+
+        assert to_thread_mock.await_count == 1
+        chain.execute_block.assert_called_once()
+        store.put_block_header.assert_called_once()
 
 # ===================================================================
 # P2P Server component tests
@@ -1020,6 +1259,76 @@ class TestServerComponents:
         assert peer.connected is False
         assert peer.total_difficulty == 0
         assert peer.remote_client == ""
+
+    def test_incoming_handshake_mac_fail_backoff_blocks_temporarily(self):
+        import ethclient.networking.server as srv_mod
+
+        key = PrivateKey()
+        server = srv_mod.P2PServer(private_key=key.secret)
+        ip = "1.2.3.4"
+
+        server._record_incoming_handshake_failure(ip, "ValueError: ECIES MAC verification failed")
+        assert server._allow_incoming_handshake(ip) is False
+
+    def test_incoming_handshake_log_is_rate_limited(self):
+        from unittest.mock import patch
+        import ethclient.networking.server as srv_mod
+
+        key = PrivateKey()
+        server = srv_mod.P2PServer(private_key=key.secret)
+
+        with patch.object(srv_mod.logger, "info") as info_mock:
+            for _ in range(srv_mod.INCOMING_FAILURE_LOG_BURST + 2):
+                server._log_incoming_handshake_failure("1.2.3.4", "ValueError: ECIES MAC verification failed")
+
+        assert info_mock.call_count == srv_mod.INCOMING_FAILURE_LOG_BURST
+
+    def test_incoming_handshake_log_summary_reports_suppressed(self):
+        from unittest.mock import patch
+        import ethclient.networking.server as srv_mod
+
+        key = PrivateKey()
+        server = srv_mod.P2PServer(private_key=key.secret)
+
+        for _ in range(srv_mod.INCOMING_FAILURE_LOG_BURST + 3):
+            server._log_incoming_handshake_failure("1.2.3.4", "ValueError: ECIES MAC verification failed")
+
+        with patch.object(srv_mod.logger, "info") as info_mock:
+            server._flush_incoming_failure_log_summary(force=True)
+
+        assert info_mock.call_count == 1
+        assert "suppressed" in info_mock.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_peer_send_failure_marks_disconnected(self):
+        from ethclient.networking.server import PeerConnection
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_conn = MagicMock()
+        mock_conn.send_message = AsyncMock(side_effect=OSError("broken pipe"))
+        mock_conn.close = MagicMock()
+
+        peer = PeerConnection(conn=mock_conn, connected=True)
+
+        with pytest.raises(OSError):
+            await peer.send_eth_message(0x10, b"payload")
+
+        assert peer.connected is False
+        assert peer.disconnect_reason is not None
+        mock_conn.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_peer_send_allowed_before_connected_handshake_phase(self):
+        from ethclient.networking.server import PeerConnection
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_conn = MagicMock()
+        mock_conn.send_message = AsyncMock(return_value=None)
+
+        peer = PeerConnection(conn=mock_conn, connected=False)
+        await peer.send_p2p_message(0x00, b"hello")
+
+        mock_conn.send_message.assert_awaited_once_with(0x00, b"hello")
 
     def test_server_init(self):
         from ethclient.networking.server import P2PServer
@@ -1098,3 +1407,218 @@ class TestServerComponents:
 
         server.start_snap_sync.assert_not_awaited()
         server.syncer.start.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_do_protocol_handshake_handles_incomplete_read(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.server import P2PServer
+
+        key = PrivateKey()
+        server = P2PServer(private_key=key.secret)
+
+        peer = MagicMock()
+        peer.send_p2p_message = AsyncMock()
+        peer.conn.recv_message = AsyncMock(
+            side_effect=asyncio.IncompleteReadError(partial=b"", expected=32)
+        )
+
+        ok = await server._do_protocol_handshake(peer)
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_handle_incoming_catches_protocol_handshake_read_error(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import ethclient.networking.server as srv_mod
+
+        key = PrivateKey()
+        server = srv_mod.P2PServer(private_key=key.secret)
+
+        reader = MagicMock()
+        writer = MagicMock()
+
+        mock_conn = MagicMock()
+        mock_conn.accept_handshake = AsyncMock(return_value=True)
+        mock_conn.remote_pubkey = b"\x04" + (b"\xaa" * 64)
+        mock_conn.close = MagicMock()
+
+        server._do_protocol_handshake = AsyncMock(
+            side_effect=asyncio.IncompleteReadError(partial=b"", expected=32)
+        )
+
+        with patch.object(srv_mod, "RLPxConnection", return_value=mock_conn):
+            await server._handle_incoming(reader, writer)
+
+        mock_conn.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handle_get_block_headers_uses_hash_origin_lookup(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from ethclient.networking.server import P2PServer
+        from ethclient.networking.eth.messages import GetBlockHeadersMessage
+        from ethclient.common.types import BlockHeader
+
+        key = PrivateKey()
+        server = P2PServer(private_key=key.secret)
+
+        header = BlockHeader(number=7, gas_limit=30_000_000, timestamp=1000)
+        block_hash = header.block_hash()
+        store = MagicMock()
+        store.get_block_header.return_value = header
+        server.store = store
+
+        peer = MagicMock()
+        peer.send_eth_message = AsyncMock()
+
+        req = GetBlockHeadersMessage(request_id=1, origin=block_hash, amount=1)
+        await server._handle_get_block_headers(peer, req.encode())
+
+        store.get_block_header.assert_called_once_with(block_hash)
+        peer.send_eth_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_connect_to_peer_avoids_duplicate_inflight_dials(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from ethclient.networking.discv4.routing import Node
+        import ethclient.networking.server as srv_mod
+
+        key = PrivateKey()
+        server = srv_mod.P2PServer(private_key=key.secret)
+        node = Node(id=b"\x34" * 64, ip="127.0.0.1", tcp_port=30303, udp_port=30303)
+
+        reader = MagicMock()
+        writer = MagicMock()
+        open_gate = asyncio.Event()
+
+        async def fake_open_connection(*_args, **_kwargs):
+            await open_gate.wait()
+            return reader, writer
+
+        mock_conn = MagicMock()
+        mock_conn.initiate_handshake = AsyncMock(return_value=True)
+        mock_conn.last_handshake_error = None
+        mock_conn.close = MagicMock()
+
+        server._do_protocol_handshake = AsyncMock(return_value=True)
+        server._send_block_range_update = AsyncMock()
+        server._handle_peer = AsyncMock()
+
+        with patch.object(srv_mod.asyncio, "open_connection", side_effect=fake_open_connection) as open_mock:
+            with patch.object(srv_mod, "RLPxConnection", return_value=mock_conn):
+                first_task = asyncio.create_task(server.connect_to_peer(node))
+                await asyncio.sleep(0)
+                second_task = asyncio.create_task(server.connect_to_peer(node))
+
+                open_gate.set()
+                first_result, second_result = await asyncio.gather(first_task, second_task)
+
+        assert first_result is not None
+        assert second_result is None
+        assert open_mock.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_dial_loop_dials_bootnodes_without_discovery_candidates(self):
+        from unittest.mock import AsyncMock
+        from ethclient.networking.discv4.routing import Node
+        import ethclient.networking.server as srv_mod
+
+        key = PrivateKey()
+        boot = Node(id=b"\x56" * 64, ip="127.0.0.1", udp_port=30303, tcp_port=30303)
+        server = srv_mod.P2PServer(private_key=key.secret, boot_nodes=[boot])
+        server._discovery = None
+        server._running = True
+
+        async def fake_connect(node):
+            server._running = False
+            return None
+
+        server.connect_to_peer = AsyncMock(side_effect=fake_connect)
+
+        original_interval = srv_mod.DIAL_INTERVAL
+        srv_mod.DIAL_INTERVAL = 0.01
+        try:
+            await server._dial_loop()
+        finally:
+            srv_mod.DIAL_INTERVAL = original_interval
+
+        server.connect_to_peer.assert_awaited_once()
+        assert server.connect_to_peer.await_args.args[0].id == boot.id
+
+    @pytest.mark.asyncio
+    async def test_connect_to_peer_applies_long_cooldown_on_genesis_mismatch(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from ethclient.networking.discv4.routing import Node
+        import ethclient.networking.server as srv_mod
+
+        key = PrivateKey()
+        server = srv_mod.P2PServer(private_key=key.secret)
+        node = Node(id=b"\x78" * 64, ip="127.0.0.1", tcp_port=30303, udp_port=30303)
+
+        reader = MagicMock()
+        writer = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.initiate_handshake = AsyncMock(return_value=True)
+        mock_conn.last_handshake_error = None
+        mock_conn.close = MagicMock()
+
+        async def fake_protocol_handshake(peer):
+            peer.disconnect_reason = "genesis mismatch"
+            return False
+
+        server._do_protocol_handshake = AsyncMock(side_effect=fake_protocol_handshake)
+
+        fixed_now = 1000.0
+        with patch.object(srv_mod.asyncio, "open_connection", AsyncMock(return_value=(reader, writer))):
+            with patch.object(srv_mod, "RLPxConnection", return_value=mock_conn):
+                with patch.object(srv_mod.time, "time", return_value=fixed_now):
+                    result = await server.connect_to_peer(node)
+
+        assert result is None
+        assert server._dial_retry_after[node.id] == fixed_now + srv_mod.DIAL_COOLDOWN_GENESIS_MISMATCH
+
+    @pytest.mark.asyncio
+    async def test_connect_to_peer_applies_remote_busy_cooldown_on_too_many_peers(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from ethclient.networking.discv4.routing import Node
+        import ethclient.networking.server as srv_mod
+
+        key = PrivateKey()
+        server = srv_mod.P2PServer(private_key=key.secret)
+        node = Node(id=b"\x79" * 64, ip="127.0.0.1", tcp_port=30303, udp_port=30303)
+
+        reader = MagicMock()
+        writer = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.initiate_handshake = AsyncMock(return_value=True)
+        mock_conn.last_handshake_error = None
+        mock_conn.close = MagicMock()
+
+        async def fake_protocol_handshake(peer):
+            peer.disconnect_reason = "peer disconnect during status: TOO_MANY_PEERS"
+            return False
+
+        server._do_protocol_handshake = AsyncMock(side_effect=fake_protocol_handshake)
+
+        fixed_now = 2000.0
+        with patch.object(srv_mod.asyncio, "open_connection", AsyncMock(return_value=(reader, writer))):
+            with patch.object(srv_mod, "RLPxConnection", return_value=mock_conn):
+                with patch.object(srv_mod.time, "time", return_value=fixed_now):
+                    result = await server.connect_to_peer(node)
+
+        assert result is None
+        assert server._dial_retry_after[node.id] == fixed_now + srv_mod.DIAL_COOLDOWN_REMOTE_BUSY
+
+    def test_record_dial_failure_uses_exponential_backoff(self):
+        from unittest.mock import patch
+        import ethclient.networking.server as srv_mod
+
+        key = PrivateKey()
+        server = srv_mod.P2PServer(private_key=key.secret)
+        node_id = b"\x90" * 64
+
+        with patch.object(srv_mod.time, "time", return_value=5000.0):
+            server._record_dial_failure(node_id, "tcp connect failed", is_bootnode=False)
+            first = server._dial_retry_after[node_id]
+            server._record_dial_failure(node_id, "tcp connect failed", is_bootnode=False)
+            second = server._dial_retry_after[node_id]
+
+        assert second > first

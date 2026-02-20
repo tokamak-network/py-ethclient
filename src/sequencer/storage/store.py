@@ -35,6 +35,19 @@ class InMemoryStore:
     def get_transaction_receipt(self, tx_hash: bytes) -> tuple[int, int, Receipt] | None:
         return self._tx_to_receipt.get(tx_hash)
 
+    def get_transaction_by_hash(self, tx_hash: bytes) -> tuple[Block, int] | None:
+        """Get transaction by hash. Returns (block, tx_index) or None."""
+        receipt_info = self._tx_to_receipt.get(tx_hash)
+        if not receipt_info:
+            return None
+        
+        block_number, tx_index, _ = receipt_info
+        block = self.get_block(block_number)
+        if not block:
+            return None
+        
+        return (block, tx_index)
+
     def get_latest_block(self) -> Optional[Block]:
         if self._latest_number < 0:
             return None

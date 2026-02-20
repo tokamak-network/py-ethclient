@@ -156,7 +156,7 @@ storage = chain.get_storage_at(address, 0)
 | `eth_sendTransaction` | ✅ | Sign and send (supports EIP-1559 and Legacy) |
 | `eth_sendRawTransaction` | ✅ | Send pre-signed transaction |
 | `eth_getTransactionReceipt` | ✅ | Transaction receipt with effectiveGasPrice |
-| `eth_estimateGas` | ⚠️ | Simple estimation (hardcoded) |
+| `eth_estimateGas` | ✅ | Full binary search estimation |
 | `eth_gasPrice` | ✅ | Returns 1 Gwei |
 | `eth_feeHistory` | ✅ | Historical gas fee data with base fee |
 | `eth_call` | ⚠️ | **Partial** - returns code only |
@@ -274,7 +274,7 @@ class Sequencer:
 |---|---------|--------|-------------|
 | 1 | Transaction Pool (Mempool) | ✅ Done | Priority-based with nonce tracking, replacement, eviction |
 | 2 | Periodic Block Production | ✅ Done | Timer-based block building with `block_time` parameter |
-| 3 | `estimateGas` | ⚠️ Partial | Simple estimation (hardcoded) |
+| 3 | `estimateGas` | ✅ Done | Binary search estimation with actual transaction execution |
 | 4 | Ethereum Compatibility Tests | ✅ Done | Comprehensive compatibility test suite |
 
 **Implemented Mempool Features:**
@@ -352,10 +352,8 @@ class Sequencer:
 ├── [x] Ethereum compatibility test suite (tests/test_*_compatibility.py)
 ├── [x] gas_used cumulative tracking fix (chain.py)
 ├── [x] Transaction type detection improvement (methods.py)
-└── [x] y_parity support for EIP-1559 transactions (methods.py)
-
-Phase 2 - Operations (Remaining):
-└── [ ] Real estimateGas implementation (rpc/methods.py)
+├── [x] y_parity support for EIP-1559 transactions (methods.py)
+└── [x] eth_estimateGas with binary search (chain.py, methods.py)
 
 Phase 3 - Compatibility:
 ├── [ ] eth_call actual execution
@@ -372,10 +370,9 @@ Phase 4 - Prague Preparation:
 
 | Phase | Components | LOC |
 |-------|------------|-----|
-| Current | All (with Mempool + Block Time + Tests) | ~1,700 |
-| Phase 2 | estimateGas | +~50 |
+| Current | All (with Mempool + Block Time + estimateGas + Tests) | ~1,800 |
 | Phase 3 | Improved compatibility | +~150 |
-| **Total** | | **~1,900** |
+| **Total** | | **~1,950** |
 
 ## Architecture
 

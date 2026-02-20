@@ -2,6 +2,7 @@
 
 import pytest
 from eth_utils.currency import to_wei
+from eth_utils.address import to_checksum_address
 
 from sequencer.sequencer.chain import Chain
 from sequencer.rpc.methods import create_methods
@@ -363,3 +364,88 @@ class TestEthCoinbase:
         result = methods["eth_coinbase"]([])
         assert result.startswith("0x")
         assert len(bytes.fromhex(result[2:])) == 20
+
+
+class TestEthGetTransactionByHash:
+    def test_returns_none_for_unknown_tx(self, chain):
+        methods = create_methods(chain)
+        unknown_hash = b"\x00" * 32
+        result = methods["eth_getTransactionByHash"](["0x" + unknown_hash.hex()])
+        assert result is None
+
+    def test_returns_transaction_details(self, pk, address):
+        genesis_state = {
+            address: {"balance": to_wei(100, "ether"), "nonce": 0, "code": b"", "storage": {}}
+        }
+        chain = Chain.from_genesis(genesis_state, chain_id=1337, block_time=0)
+        methods = create_methods(chain)
+        
+        recipient = b"\xde\xad\xbe\xef" * 5
+        tx = chain.create_transaction(
+            from_private_key=b"\x01" * 32,
+            to=recipient,
+            value=to_wei(1, "ether"),
+            gas=21000,
+            gas_price=1000000000,
+        )
+        tx_hash = chain.send_transaction(tx)
+        chain.build_block()
+        
+        result = methods["eth_getTransactionByHash"](["0x" + tx_hash.hex()])
+        
+        assert result is not None
+        assert result["hash"] == "0x" + tx_hash.hex()
+        assert result["blockNumber"] == "0x1"
+        assert result["from"] == to_checksum_address(address)
+        assert result["to"] == to_checksum_address(recipient)
+        assert result["value"] == "0x" + format(to_wei(1, "ether"), 'x')
+        assert result["gas"] == "0x5208"
+        assert result["nonce"] == "0x0"
+        assert result["type"] == "0x0"
+
+    def test_returns_legacy_transaction_format(self, pk, address):
+        genesis_state = {
+            address: {"balance": to_wei(100, "ether"), "nonce": 0, "code": b"", "storage": {}}
+        }
+        chain = Chain.from_genesis(genesis_state, chain_id=1337, block_time=0)
+        methods = create_methods(chain)
+        
+        tx = chain.create_transaction(
+            from_private_key=b"\x01" * 32,
+            to=b"\xde\xad\xbe\xef" * 5,
+            value=0,
+            gas=21000,
+        )
+        tx_hash = chain.send_transaction(tx)
+        chain.build_block()
+        
+        result = methods["eth_getTransactionByHash"](["0x" + tx_hash.hex()])
+        
+        assert result["type"] == "0x0"
+        assert "gasPrice" in result
+        assert "v" in result
+        assert "r" in result
+        assert "s" in result
+
+    def test_returns_eip1559_transaction_format(self, pk, address):
+        genesis_state = {
+            address: {"balance": to_wei(100, "ether"), "nonce": 0, "code": b"", "storage": {}}
+        }
+        chain = Chain.from_genesis(genesis_state, chain_id=1337, block_time=0)
+        methods = create_methods(chain)
+        
+        tx = chain.create_eip1559_transaction(
+            from_private_key=b"\x01" * 32,
+            to=b"\xde\xad\xbe\xef" * 5,
+            value=0,
+            gas=21000,
+        )
+        tx_hash = chain.send_transaction(tx)
+        chain.build_block()
+        
+        result = methods["eth_getTransactionByHash"](["0x" + tx_hash.hex()])
+        
+        assert result["type"] == "0x2"
+        assert "maxFeePerGas" in result
+        assert "maxPriorityFeePerGas" in result
+        assert "chainId" in result

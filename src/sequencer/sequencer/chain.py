@@ -132,6 +132,15 @@ class Chain:
     def get_transaction_receipt(self, tx_hash: bytes):
         return self.store.get_transaction_receipt(tx_hash)
 
+    def get_transaction_by_hash(self, tx_hash: bytes):
+        """Get transaction by hash. Returns (block, tx) or None."""
+        result = self.store.get_transaction_by_hash(tx_hash)
+        if not result:
+            return None
+        
+        block, tx_index = result
+        return (block, block.transactions[tx_index])
+
     def add_transaction_to_pool(self, tx) -> bool:
         sender = tx.sender
         current_nonce = self.get_nonce(sender)
@@ -234,6 +243,106 @@ class Chain:
     ) -> bytes:
         vm = self.evm.get_vm()
         return vm.state.get_code(to)
+
+    def estimate_gas(
+        self,
+        from_address: bytes,
+        to: bytes | None,
+        value: int = 0,
+        data: bytes = b"",
+        gas_limit: int | None = None,
+    ) -> int:
+        """
+        Estimate gas for a transaction using binary search.
+        
+        Returns the minimum gas required for the transaction to succeed.
+        """
+        if gas_limit is None:
+            gas_limit = self.gas_limit
+        
+        # Minimum gas for a transaction is 21,000
+        low = 21_000
+        high = gas_limit
+        
+        # Quick check: try with full gas limit first
+        success, _ = self._try_execution(from_address, to, value, data, high)
+        if not success:
+            # Transaction will fail even with max gas
+            # Return high value anyway (let caller handle the error)
+            return high
+        
+        # Binary search for minimum gas
+        result = high
+        
+        # Optimization: if it's a simple transfer (no data), return 21,000
+        if not data or len(data) == 0:
+            return 21_000
+        
+        # Binary search
+        while low < high:
+            mid = (low + high) // 2
+            success, gas_used = self._try_execution(from_address, to, value, data, mid)
+            
+            if success:
+                result = mid
+                high = mid
+            else:
+                low = mid + 1
+        
+        # Add a small buffer (10%) to account for potential variations
+        return int(result * 1.1)
+
+    def _try_execution(
+        self,
+        from_address: bytes,
+        to: bytes | None,
+        value: int,
+        data: bytes,
+        gas: int,
+    ) -> tuple[bool, int]:
+        """
+        Try executing a transaction with the given gas limit.
+        
+        Returns (success, gas_used).
+        """
+        vm = self.evm.get_vm()
+        
+        # Use execute_bytecode for stateless execution
+        try:
+            if to is None:
+                # Contract creation
+                computation = vm.execute_bytecode(
+                    origin=from_address,
+                    gas_price=0,
+                    gas=gas,
+                    to=b"",
+                    sender=from_address,
+                    value=value,
+                    data=data,
+                    code=data,
+                )
+            else:
+                # Contract call or transfer
+                computation = vm.execute_bytecode(
+                    origin=from_address,
+                    gas_price=0,
+                    gas=gas,
+                    to=to,
+                    sender=from_address,
+                    value=value,
+                    data=data,
+                    code=b"",
+                )
+            
+            if computation.is_error:
+                return (False, 0)
+            
+            # Return the gas used
+            gas_used = computation.get_gas_used()
+            return (True, gas_used)
+            
+        except Exception as e:
+            return (False, 0)
 
     def build_block(self, timestamp: int | None = None) -> Block:
         import time as time_module

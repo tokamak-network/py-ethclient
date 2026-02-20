@@ -157,13 +157,16 @@ def create_methods(chain) -> dict[str, Callable]:
 
     def eth_estimateGas(params: list) -> str:
         tx_params = params[0]
+        block = params[1] if len(params) > 1 else "latest"
+        
+        from_addr = _parse_address(tx_params.get("from", "0x0000000000000000000000000000000000000000"))
+        to = _parse_address(tx_params["to"]) if "to" in tx_params else None
+        value = _parse_int(tx_params.get("value", "0x0"))
         data = _parse_bytes(tx_params.get("data", "0x"))
-        to = tx_params.get("to")
+        gas_limit = _parse_int(tx_params.get("gas", "0x1c9c380"))  # Default 30M
         
-        if not data or len(data) == 0:
-            return hex(21_000)
-        
-        return hex(100_000)
+        gas_estimate = chain.estimate_gas(from_addr, to, value, data, gas_limit)
+        return hex(gas_estimate)
 
     def eth_gasPrice(params: list) -> str:
         return hex(1_000_000_000)
@@ -233,6 +236,15 @@ def create_methods(chain) -> dict[str, Callable]:
     def eth_coinbase(params: list) -> str:
         return to_checksum_address(chain.coinbase)
 
+    def eth_getTransactionByHash(params: list) -> dict | None:
+        tx_hash = _parse_bytes(params[0])
+        result = chain.get_transaction_by_hash(tx_hash)
+        if not result:
+            return None
+        
+        block, tx = result
+        return _serialize_tx(tx, block)
+
     def eth_getTransactionReceipt(params: list) -> dict | None:
         tx_hash = _parse_bytes(params[0])
         receipt = chain.get_transaction_receipt(tx_hash)
@@ -252,6 +264,7 @@ def create_methods(chain) -> dict[str, Callable]:
         "eth_call": eth_call,
         "eth_sendTransaction": eth_sendTransaction,
         "eth_sendRawTransaction": eth_sendRawTransaction,
+        "eth_getTransactionByHash": eth_getTransactionByHash,
         "eth_getTransactionReceipt": eth_getTransactionReceipt,
         "eth_estimateGas": eth_estimateGas,
         "eth_gasPrice": eth_gasPrice,

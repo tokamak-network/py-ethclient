@@ -179,6 +179,51 @@ class TestEthEstimateGas:
         gas = int(result, 16)
         assert gas > 0
 
+    def test_estimate_gas_for_contract_with_data(self, chain, address):
+        """Test estimateGas with calldata (simulating contract interaction)."""
+        methods = create_methods(chain)
+        
+        # Estimate gas for a call with data (more than simple transfer)
+        # This simulates calling a function on a contract
+        tx_params = {
+            "from": "0x" + address.hex(),
+            "to": "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            "data": "0xa9059cbb" + "00" * 64,  # ERC20 transfer function signature + padding
+        }
+        result = methods["eth_estimateGas"]([tx_params])
+        gas = int(result, 16)
+        # Should be more than simple transfer due to data processing
+        assert gas > SIMPLE_TRANSFER_GAS
+        # But should still be reasonable
+        assert gas < 100000
+
+    def test_estimate_gas_with_value_transfer(self, chain, address):
+        methods = create_methods(chain)
+        
+        # Transfer with value should still be 21,000 gas
+        tx_params = {
+            "from": "0x" + address.hex(),
+            "to": "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            "value": "0x0",
+        }
+        result = methods["eth_estimateGas"]([tx_params])
+        gas = int(result, 16)
+        assert gas == SIMPLE_TRANSFER_GAS
+
+    def test_estimate_gas_for_contract_creation_with_value(self, chain, address):
+        methods = create_methods(chain)
+        
+        # Contract creation with value
+        bytecode = "0x6080604052"
+        tx_params = {
+            "from": "0x" + address.hex(),
+            "value": "0xde0b6b3a7640000",
+            "data": bytecode,
+        }
+        result = methods["eth_estimateGas"]([tx_params])
+        gas = int(result, 16)
+        assert gas > SIMPLE_TRANSFER_GAS
+
 
 class TestTransferExecution:
     def test_simple_transfer_succeeds(self, pk, address):

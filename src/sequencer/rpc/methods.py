@@ -354,6 +354,14 @@ def _serialize_tx(tx, block) -> dict:
     tx_type = _get_tx_type(tx)
     is_eip1559 = tx_type == 2
     
+    # Find transaction index in block
+    tx_index = None
+    for i, block_tx in enumerate(block.transactions):
+        if _tx_hash(block_tx) == tx_hash:
+            tx_index = i
+            break
+    tx_index = tx_index if tx_index is not None else 0
+    
     if is_eip1559:
         y_parity = getattr(tx, 'y_parity', None)
         if y_parity is not None:
@@ -365,14 +373,15 @@ def _serialize_tx(tx, block) -> dict:
     
     result = {
         "hash": "0x" + tx_hash.hex(),
-        "blockNumber": hex(block.number),
-        "blockHash": "0x" + block.hash.hex(),
-        "from": to_checksum_address(tx.sender),
-        "gas": hex(tx.gas),
-        "input": "0x" + (tx.data.hex() if tx.data else ""),
         "nonce": hex(tx.nonce),
+        "blockHash": "0x" + block.hash.hex(),
+        "blockNumber": hex(block.number),
+        "transactionIndex": hex(tx_index),
+        "from": to_checksum_address(tx.sender),
         "to": to_checksum_address(tx.to) if tx.to else None,
         "value": hex(tx.value),
+        "gas": hex(tx.gas),
+        "input": "0x" + (tx.data.hex() if tx.data else ""),
         "v": v_hex,
         "r": hex(tx.r),
         "s": hex(tx.s),

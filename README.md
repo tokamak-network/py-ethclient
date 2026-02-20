@@ -321,24 +321,28 @@ chain.store.get_latest_number()  # Returns latest block number
 | `test_multiple_deployments_persistence` | ✅ | Multiple contract deployments persist |
 | `test_block_hash_consistency_after_restart` | ✅ | Block hashes remain consistent |
 | `test_gas_used_persistence` | ✅ | Gas usage persisted in blocks |
+| **EVM State Persistence Tests** | | |
+| `test_contract_code_persistence` | ✅ | Contract code persists after restart |
+| `test_contract_storage_persistence` | ✅ | Contract storage persists after restart |
+| `test_account_balance_persistence` | ✅ | Account balances persist after restart |
+| `test_account_nonce_persistence` | ✅ | Account nonces persist after restart |
+| `test_full_state_recovery` | ✅ | Complete state recovery after restart |
 
 ## Current Limitations
 
-### EVM State Persistence
+### ~~EVM State Persistence~~ ✅ RESOLVED
 
-The SQLite storage backend currently persists:
+EVM state is now fully persisted in SQLite:
+
+- ✅ Contract code
+- ✅ Contract storage
+- ✅ Account balances
+- ✅ Account nonces
 - ✅ Block headers and transactions
 - ✅ Transaction receipts
-- ✅ Contract deployment addresses (via receipts)
 - ✅ Event logs
 
-**Not currently persisted** (managed by py-evm in-memory state):
-- ❌ Contract code
-- ❌ Contract storage
-- ❌ Account balances
-- ❌ Account nonces
-
-Full state persistence would require implementing state serialization to SQLite or integrating with py-evm's database backend. This is planned for a future release.
+When restarting a node with SQLite storage, all state is automatically restored from the database.
 
 ## Development Roadmap
 

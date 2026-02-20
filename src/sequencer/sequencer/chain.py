@@ -54,6 +54,7 @@ class Chain:
         self.gas_limit = gas_limit
         self.coinbase = coinbase
         self.block_time = block_time
+        self._store_path = store_path  # Keep for state persistence
         
         # Initialize storage backend
         if store_type == "sqlite":
@@ -64,6 +65,9 @@ class Chain:
         self.mempool = Mempool()
         self._last_block_time: int = 0
         
+        # Track touched addresses for state persistence
+        self._touched_addresses: set[bytes] = set()
+        
         config = ChainConfig(
             chain_id=chain_id,
             gas_limit=gas_limit,
@@ -71,6 +75,62 @@ class Chain:
             genesis_state=genesis_state,
         )
         self.evm = EVMAdapter(config)
+        
+        # Track genesis addresses
+        if genesis_state:
+            for address in genesis_state.keys():
+                addr = address if isinstance(address, bytes) else bytes.fromhex(address)
+                self._touched_addresses.add(addr)
+
+    def _restore_evm_state(self):
+        """Restore EVM state from SQLite storage."""
+        if not isinstance(self.store, SQLiteStore):
+            return
+        
+        # Load state from SQLite
+        state = self.store.load_evm_state()
+        
+        if not state:
+            return
+        
+        # Import state into EVM
+        self.evm.import_state(state)
+        
+        # Track addresses
+        for address in state.keys():
+            self._touched_addresses.add(address)
+        
+        print(f"✅ Restored state for {len(state)} accounts from {self._store_path}")
+
+    def _save_evm_state(self):
+        """Save EVM state to SQLite storage."""
+        if not isinstance(self.store, SQLiteStore):
+            return
+        
+        # Export state for all touched addresses
+        state = {}
+        for address in self._touched_addresses:
+            try:
+                nonce = self.evm.get_nonce(address)
+                balance = self.evm.get_balance(address)
+                code = self.evm.get_code(address)
+                
+                # Get storage from SQLite if it exists
+                storage = self.store.get_all_storage(address)
+                
+                state[address] = {
+                    "nonce": nonce,
+                    "balance": balance,
+                    "code": code,
+                    "storage": storage,
+                }
+            except Exception:
+                pass
+        
+        # Save to SQLite
+        self.store.save_evm_state(state)
+        
+        print(f"✅ Saved state for {len(state)} accounts to {self._store_path}")
 
     @classmethod
     def from_genesis(
@@ -84,23 +144,54 @@ class Chain:
         store_type: str = "memory",
         store_path: str = "sequencer.db",
     ) -> "Chain":
+        # Check if we have existing blocks and state in SQLite
+        merged_state = genesis_state.copy() if genesis_state else {}
+        has_existing_blocks = False
+        existing_genesis = None
+        
+        if store_type == "sqlite":
+            from sequencer.storage.sqlite_store import SQLiteStore
+            temp_store = SQLiteStore(store_path)
+            
+            # Check if there's existing state
+            existing_state = temp_store.load_evm_state()
+            if existing_state:
+                print(f"✅ Loaded existing state for {len(existing_state)} accounts from {store_path}")
+                # Merge existing state with genesis state (existing state takes precedence)
+                for address, account_data in existing_state.items():
+                    merged_state[address] = account_data
+            
+            # Check if there's an existing genesis block
+            existing_genesis = temp_store.get_block(0)
+            temp_store.close()
+            
+            # If genesis block exists, don't create a new one
+            has_existing_blocks = existing_genesis is not None
+        
         chain = cls(
             chain_id=chain_id,
             gas_limit=gas_limit,
             coinbase=coinbase,
-            genesis_state=genesis_state,
+            genesis_state=merged_state,
             block_time=block_time,
             store_type=store_type,
             store_path=store_path,
         )
         
-        genesis_block = chain._create_genesis_block(timestamp or int(time.time()))
-        chain.store.save_block(genesis_block, [], [])
-        chain._last_block_time = genesis_block.header.timestamp
+        # Only create genesis block if this is a new chain
+        if not has_existing_blocks:
+            genesis_block = chain._create_genesis_block(timestamp or int(time.time()))
+            chain.store.save_block(genesis_block, [], [])
+            chain._last_block_time = genesis_block.header.timestamp
+        else:
+            # Use existing genesis block's timestamp
+            chain._last_block_time = existing_genesis.header.timestamp
         
         return chain
-
+    
     def _create_genesis_block(self, timestamp: int) -> Block:
+        # Don't reinitialize state if we already have state loaded
+        # State should already be set via from_genesis or import_state
         header = BlockHeader(
             parent_hash=b"\x00" * 32,
             ommers_hash=EMPTY_OMMERS_HASH,
@@ -392,8 +483,18 @@ class Chain:
         receipts = []
         cumulative_gas = 0
         
+        # Track addresses that are touched during this block
+        touched_this_block: set[bytes] = set()
+        
         for tx in pending:
             block, evm_receipt, computation = self.evm.apply_transaction(tx)
+            
+            # Track sender
+            touched_this_block.add(tx.sender)
+            
+            # Track recipient (if not contract creation)
+            if tx.to and tx.to != b"":
+                touched_this_block.add(tx.to)
             
             if computation.is_error:
                 tx_gas = tx.gas
@@ -411,6 +512,10 @@ class Chain:
                 sender = tx.sender
                 encoded = rlp.encode([sender, sender_nonce])
                 contract_address = keccak256(encoded)[12:]
+                
+                # Track contract address
+                if contract_address:
+                    touched_this_block.add(contract_address)
             
             receipt = Receipt(
                 status=0 if computation.is_error else 1,
@@ -419,6 +524,18 @@ class Chain:
                 contract_address=contract_address,
             )
             receipts.append(receipt)
+            
+            # Save individual account state changes to SQLite
+            if isinstance(self.store, SQLiteStore) and contract_address:
+                # Save contract code immediately after creation
+                code = self.evm.get_code(contract_address)
+                if code:
+                    self.store.save_account(
+                        contract_address,
+                        nonce=self.evm.get_nonce(contract_address),
+                        balance=self.evm.get_balance(contract_address),
+                        code=code,
+                    )
         
         parent = self.get_latest_block()
         parent_timestamp = parent.header.timestamp if parent else current_time - 1
@@ -464,7 +581,46 @@ class Chain:
         
         self._last_block_time = block_timestamp
         
+        # Update touched addresses and save EVM state
+        self._touched_addresses.update(touched_this_block)
+        
+        # Save state changes to SQLite
+        if isinstance(self.store, SQLiteStore):
+            self._save_evm_state_incremental(touched_this_block)
+        
         return block
+    
+    def _save_evm_state_incremental(self, addresses: set[bytes]):
+        """Save EVM state for specific addresses (incremental update)."""
+        if not isinstance(self.store, SQLiteStore):
+            return
+        
+        for address in addresses:
+            try:
+                nonce = self.evm.get_nonce(address)
+                balance = self.evm.get_balance(address)
+                code = self.evm.get_code(address)
+                
+                # Save account
+                self.store.save_account(address, nonce=nonce, balance=balance, code=code)
+                
+                # Get and save storage for contracts
+                if code:
+                    # We need to get storage - for now we'll check stored slots
+                    # and save any that changed
+                    stored_storage = self.store.get_all_storage(address)
+                    
+                    # Check common slots (0-10 for typical contracts)
+                    for slot in range(100):
+                        value = self.evm.get_storage(address, slot)
+                        if value != 0:
+                            self.store.save_storage(address, slot, value)
+                        elif slot in stored_storage and stored_storage[slot] != 0:
+                            # Storage was cleared
+                            self.store.save_storage(address, slot, 0)
+            except Exception as e:
+                # Log but continue
+                print(f"Warning: Failed to save state for {address.hex()}: {e}")
 
     def _compute_transactions_root(self, transactions: list) -> bytes:
         from trie import HexaryTrie

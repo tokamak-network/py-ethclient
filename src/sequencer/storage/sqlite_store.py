@@ -82,12 +82,46 @@ class SQLiteStore:
             )
         """)
         
+        # Accounts table (for EVM state persistence)
+        # Note: balance is stored as TEXT because wei values can exceed SQLite INTEGER range
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS accounts (
+                address BLOB PRIMARY KEY,
+                nonce INTEGER NOT NULL DEFAULT 0,
+                balance TEXT NOT NULL DEFAULT '0',
+                code_hash BLOB,
+                storage_root BLOB
+            )
+        """)
+        
+        # Contract code table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS contract_code (
+                code_hash BLOB PRIMARY KEY,
+                code BLOB NOT NULL
+            )
+        """)
+        
+        # Contract storage table
+        # Note: value is stored as TEXT because storage values can exceed SQLite INTEGER range
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS contract_storage (
+                address BLOB NOT NULL,
+                slot INTEGER NOT NULL,
+                value TEXT NOT NULL DEFAULT '0',
+                PRIMARY KEY (address, slot)
+            )
+        """)
+        
         # Create indexes for faster lookups
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_blocks_hash ON blocks(hash)
         """)
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_transactions_block ON transactions(block_number)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_storage_address ON contract_storage(address)
         """)
         
         conn.commit()
@@ -432,6 +466,254 @@ class SQLiteStore:
                 return False
         
         return True
+    
+    # ==================== EVM State Persistence ====================
+    
+    def save_account(self, address: bytes, nonce: int, balance: int, code: bytes = b""):
+        """
+        Save account state to database.
+        
+        Args:
+            address: Account address (20 bytes)
+            nonce: Account nonce
+            balance: Account balance in wei
+            code: Contract bytecode (empty for EOAs)
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        # Calculate code hash
+        from sequencer.core.crypto import keccak256
+        code_hash = keccak256(code) if code else b"\x00" * 32
+        
+        # Save account (balance as TEXT for large integers)
+        cursor.execute("""
+            INSERT OR REPLACE INTO accounts (address, nonce, balance, code_hash, storage_root)
+            VALUES (?, ?, ?, ?, ?)
+        """, (address, nonce, str(balance), code_hash, b"\x00" * 32))
+        
+        # Save code if not empty
+        if code:
+            cursor.execute("""
+                INSERT OR REPLACE INTO contract_code (code_hash, code)
+                VALUES (?, ?)
+            """, (code_hash, code))
+        
+        conn.commit()
+    
+    def get_account(self, address: bytes) -> dict | None:
+        """
+        Get account state from database.
+        
+        Args:
+            address: Account address (20 bytes)
+        
+        Returns:
+            dict with nonce, balance, code, or None if account doesn't exist
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM accounts WHERE address = ?", (address,))
+        row = cursor.fetchone()
+        
+        if row is None:
+            return None
+        
+        account = {
+            "nonce": row["nonce"],
+            "balance": int(row["balance"]),  # Convert TEXT back to int
+            "code": b"",
+        }
+        
+        # Get code if exists
+        code_hash = row["code_hash"]
+        if code_hash and code_hash != b"\x00" * 32:
+            cursor.execute("SELECT code FROM contract_code WHERE code_hash = ?", (code_hash,))
+            code_row = cursor.fetchone()
+            if code_row:
+                account["code"] = code_row["code"]
+        
+        return account
+    
+    def save_storage(self, address: bytes, slot: int, value: int):
+        """
+        Save a storage slot for a contract.
+        
+        Args:
+            address: Contract address
+            slot: Storage slot number
+            value: Storage value
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            INSERT OR REPLACE INTO contract_storage (address, slot, value)
+            VALUES (?, ?, ?)
+        """, (address, slot, str(value)))  # Store as TEXT
+        
+        conn.commit()
+    
+    def get_storage(self, address: bytes, slot: int) -> int:
+        """
+        Get a storage slot value for a contract.
+        
+        Args:
+            address: Contract address
+            slot: Storage slot number
+        
+        Returns:
+            Storage value (0 if not set)
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT value FROM contract_storage WHERE address = ? AND slot = ?",
+            (address, slot)
+        )
+        row = cursor.fetchone()
+        
+        return int(row["value"]) if row else 0  # Convert TEXT back to int
+    
+    def get_all_storage(self, address: bytes) -> dict[int, int]:
+        """
+        Get all storage slots for a contract.
+        
+        Args:
+            address: Contract address
+        
+        Returns:
+            Dict mapping slot -> value
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT slot, value FROM contract_storage WHERE address = ?",
+            (address,)
+        )
+        
+        return {row["slot"]: int(row["value"]) for row in cursor.fetchall()}
+    
+    def get_all_accounts(self) -> list[tuple[bytes, dict]]:
+        """
+        Get all accounts from database.
+        
+        Returns:
+            List of (address, account_dict) tuples
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT address FROM accounts")
+        addresses = [row["address"] for row in cursor.fetchall()]
+        
+        accounts = []
+        for address in addresses:
+            account = self.get_account(address)
+            if account:
+                accounts.append((address, account))
+        
+        return accounts
+    
+    def save_evm_state(self, accounts: dict[bytes, dict]):
+        """
+        Save complete EVM state.
+        
+        Args:
+            accounts: Dict mapping address -> {nonce, balance, code, storage}
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        for address, account_data in accounts.items():
+            nonce = account_data.get("nonce", 0)
+            balance = account_data.get("balance", 0)
+            code = account_data.get("code", b"")
+            
+            # Calculate code hash
+            from sequencer.core.crypto import keccak256
+            code_hash = keccak256(code) if code else b"\x00" * 32
+            
+            # Save account (balance as TEXT)
+            cursor.execute("""
+                INSERT OR REPLACE INTO accounts (address, nonce, balance, code_hash, storage_root)
+                VALUES (?, ?, ?, ?, ?)
+            """, (address, nonce, str(balance), code_hash, b"\x00" * 32))
+            
+            # Save code if not empty
+            if code:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO contract_code (code_hash, code)
+                    VALUES (?, ?)
+                """, (code_hash, code))
+            
+            # Save storage (values as TEXT)
+            storage = account_data.get("storage", {})
+            for slot, value in storage.items():
+                cursor.execute("""
+                    INSERT OR REPLACE INTO contract_storage (address, slot, value)
+                    VALUES (?, ?, ?)
+                """, (address, slot, str(value)))
+        
+        conn.commit()
+    
+    def load_evm_state(self) -> dict[bytes, dict]:
+        """
+        Load complete EVM state.
+        
+        Returns:
+            Dict mapping address -> {nonce, balance, code, storage}
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        # Get all accounts
+        cursor.execute("SELECT address, nonce, balance, code_hash FROM accounts")
+        rows = cursor.fetchall()
+        
+        state = {}
+        for row in rows:
+            address = row["address"]
+            account = {
+                "nonce": row["nonce"],
+                "balance": int(row["balance"]),  # Convert TEXT to int
+                "code": b"",
+                "storage": {},
+            }
+            
+            # Get code
+            code_hash = row["code_hash"]
+            if code_hash and code_hash != b"\x00" * 32:
+                cursor.execute("SELECT code FROM contract_code WHERE code_hash = ?", (code_hash,))
+                code_row = cursor.fetchone()
+                if code_row:
+                    account["code"] = code_row["code"]
+            
+            # Get storage
+            cursor.execute(
+                "SELECT slot, value FROM contract_storage WHERE address = ?",
+                (address,)
+            )
+            storage_rows = cursor.fetchall()
+            account["storage"] = {row["slot"]: int(row["value"]) for row in storage_rows}
+            
+            state[address] = account
+        
+        return state
+    
+    def clear_evm_state(self):
+        """Clear all EVM state from database."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM contract_storage")
+        cursor.execute("DELETE FROM accounts")
+        cursor.execute("DELETE FROM contract_code")
+        
+        conn.commit()
     
     def close(self):
         """Close the database connection."""

@@ -1,10 +1,9 @@
 """Integration tests for state persistence across node restarts.
 
-NOTE: Currently, these tests verify SQLite persistence of blocks and receipts.
-EVM state (contract code, storage, account balances) is managed by py-evm 
-and is NOT currently persisted across restarts. Full state persistence would 
-require implementing state serialization to SQLite or using py-evm's 
-database backend directly.
+These tests verify SQLite persistence of:
+- Blocks and transactions
+- Transaction receipts
+- EVM state (contract code, storage, account balances, nonces)
 """
 
 import os
@@ -15,6 +14,466 @@ from eth_keys import keys
 from eth_utils import to_wei
 
 from sequencer.sequencer.chain import Chain
+
+
+class TestEVMPersistence:
+    """Test EVM state persistence across node restarts."""
+
+    @pytest.fixture
+    def temp_db_path(self):
+        """Create a temporary database file path."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        yield db_path
+        # Cleanup
+        if os.path.exists(db_path):
+            os.unlink(db_path)
+
+    @pytest.fixture
+    def pk_and_address(self):
+        """Create private key and address."""
+        pk = keys.PrivateKey(bytes.fromhex("01" * 32))
+        address = pk.public_key.to_canonical_address()
+        return pk, address
+
+    def test_contract_code_persistence(self, temp_db_path, pk_and_address):
+        """
+        Test that contract code persists across restarts.
+        """
+        pk, address = pk_and_address
+        
+        genesis_state = {
+            address: {
+                "balance": to_wei(100, "ether"),
+                "nonce": 0,
+                "code": b"",
+                "storage": {},
+            }
+        }
+        
+        # SimpleStorage bytecode
+        SIMPLE_STORAGE_BYTECODE = bytes.fromhex(
+            "6080604052348015600e575f5ffd5b5060b780601a5f395ff3fe6080604052348015600e575f5ffd5b5060043610603a575f3560e01c80632096525514603e5780633fa4f2451460535780635524107714605a575b5f5ffd5b5f545b60405190815260200160405180910390f35b60415f5481565b60696065366004606b565b5f55565b005b5f60208284031215607a575f5ffd5b503591905056fea2646970667358221220f8e380cdbf230c90b815074c9d3e30359f89a7ebc26e356ecb4a53b30b84694564736f6c63430008220033"
+        )
+        
+        # ===== Phase 1: Deploy contract =====
+        node1 = Chain.from_genesis(
+            genesis_state,
+            chain_id=1337,
+            block_time=0,
+            store_type="sqlite",
+            store_path=temp_db_path,
+        )
+        
+        # Deploy contract
+        nonce = node1.get_nonce(address)
+        signed_tx = node1.create_transaction(
+            from_private_key=pk.to_bytes(),
+            to=None,
+            value=0,
+            data=SIMPLE_STORAGE_BYTECODE,
+            gas=500_000,
+            gas_price=1_000_000_000,
+            nonce=nonce,
+        )
+        node1.send_transaction(signed_tx)
+        node1.build_block()
+        
+        # Get contract address
+        receipts = node1.store.get_receipts(1)
+        contract_address = receipts[0].contract_address
+        assert contract_address is not None
+        print(f"✅ Contract deployed at: {contract_address.hex()}")
+        
+        # Verify contract code exists
+        code = node1.get_code(contract_address)
+        assert len(code) > 0
+        print(f"✅ Contract code length before restart: {len(code)} bytes")
+        
+        # Shutdown
+        node1.store.close()
+        print("✅ Node shutdown")
+        
+        # ===== Phase 2: Restart and verify code persists =====
+        node2 = Chain.from_genesis(
+            genesis_state,
+            chain_id=1337,
+            block_time=0,
+            store_type="sqlite",
+            store_path=temp_db_path,
+        )
+        print("✅ Node restarted")
+        
+        # Verify contract code persists
+        code = node2.get_code(contract_address)
+        assert len(code) > 0
+        print(f"✅ Contract code length after restart: {len(code)} bytes")
+        
+        node2.store.close()
+
+    def test_contract_storage_persistence(self, temp_db_path, pk_and_address):
+        """
+        Test that contract storage persists across restarts.
+        """
+        pk, address = pk_and_address
+        
+        genesis_state = {
+            address: {
+                "balance": to_wei(100, "ether"),
+                "nonce": 0,
+                "code": b"",
+                "storage": {},
+            }
+        }
+        
+        # SimpleStorage bytecode
+        SIMPLE_STORAGE_BYTECODE = bytes.fromhex(
+            "6080604052348015600e575f5ffd5b5060b780601a5f395ff3fe6080604052348015600e575f5ffd5b5060043610603a575f3560e01c80632096525514603e5780633fa4f2451460535780635524107714605a575b5f5ffd5b5f545b60405190815260200160405180910390f35b60415f5481565b60696065366004606b565b5f55565b005b5f60208284031215607a575f5ffd5b503591905056fea2646970667358221220f8e380cdbf230c90b815074c9d3e30359f89a7ebc26e356ecb4a53b30b84694564736f6c63430008220033"
+        )
+        
+        SET_VALUE_SELECTOR = bytes.fromhex("55241077")
+        
+        # ===== Phase 1: Deploy and set value =====
+        node1 = Chain.from_genesis(
+            genesis_state,
+            chain_id=1337,
+            block_time=0,
+            store_type="sqlite",
+            store_path=temp_db_path,
+        )
+        
+        # Deploy contract
+        nonce = node1.get_nonce(address)
+        signed_tx = node1.create_transaction(
+            from_private_key=pk.to_bytes(),
+            to=None,
+            value=0,
+            data=SIMPLE_STORAGE_BYTECODE,
+            gas=500_000,
+            gas_price=1_000_000_000,
+            nonce=nonce,
+        )
+        node1.send_transaction(signed_tx)
+        node1.build_block()
+        
+        contract_address = node1.store.get_receipts(1)[0].contract_address
+        
+        # Set value to 12345
+        calldata = SET_VALUE_SELECTOR + (12345).to_bytes(32, 'big')
+        nonce = node1.get_nonce(address)
+        signed_tx = node1.create_transaction(
+            from_private_key=pk.to_bytes(),
+            to=contract_address,
+            value=0,
+            data=calldata,
+            gas=100_000,
+            gas_price=1_000_000_000,
+            nonce=nonce,
+        )
+        node1.send_transaction(signed_tx)
+        node1.build_block()
+        
+        # Verify value was set
+        value = node1.get_storage_at(contract_address, 0)
+        assert value == 12345
+        print(f"✅ Storage value set to: {value}")
+        
+        node1.store.close()
+        
+        # ===== Phase 2: Restart and verify storage =====
+        node2 = Chain.from_genesis(
+            genesis_state,
+            chain_id=1337,
+            block_time=0,
+            store_type="sqlite",
+            store_path=temp_db_path,
+        )
+        
+        # Verify storage value persists
+        value = node2.get_storage_at(contract_address, 0)
+        assert value == 12345
+        print(f"✅ Storage value after restart: {value}")
+        
+        node2.store.close()
+
+    def test_account_balance_persistence(self, temp_db_path, pk_and_address):
+        """
+        Test that account balances persist across restarts.
+        """
+        pk, address = pk_and_address
+        
+        recipient = bytes.fromhex("deadbeef" * 5)
+        
+        genesis_state = {
+            address: {
+                "balance": to_wei(100, "ether"),
+                "nonce": 0,
+                "code": b"",
+                "storage": {},
+            }
+        }
+        
+        # ===== Phase 1: Make transfers =====
+        node1 = Chain.from_genesis(
+            genesis_state,
+            chain_id=1337,
+            block_time=0,
+            store_type="sqlite",
+            store_path=temp_db_path,
+        )
+        
+        initial_balance = node1.get_balance(address)
+        
+        # Transfer 10 ETH to recipient
+        nonce = node1.get_nonce(address)
+        signed_tx = node1.create_transaction(
+            from_private_key=pk.to_bytes(),
+            to=recipient,
+            value=to_wei(10, "ether"),
+            data=b"",
+            gas=21_000,
+            gas_price=1_000_000_000,
+            nonce=nonce,
+        )
+        node1.send_transaction(signed_tx)
+        node1.build_block()
+        
+        # Verify balances
+        sender_balance_after = node1.get_balance(address)
+        recipient_balance = node1.get_balance(recipient)
+        
+        assert sender_balance_after < initial_balance
+        assert recipient_balance == to_wei(10, "ether")
+        print(f"✅ Sender balance: {sender_balance_after / 1e18} ETH")
+        print(f"✅ Recipient balance: {recipient_balance / 1e18} ETH")
+        
+        node1.store.close()
+        
+        # ===== Phase 2: Restart and verify balances =====
+        node2 = Chain.from_genesis(
+            genesis_state,
+            chain_id=1337,
+            block_time=0,
+            store_type="sqlite",
+            store_path=temp_db_path,
+        )
+        
+        # Verify balances persist
+        sender_balance_restored = node2.get_balance(address)
+        recipient_balance_restored = node2.get_balance(recipient)
+        
+        assert sender_balance_restored == sender_balance_after
+        assert recipient_balance_restored == to_wei(10, "ether")
+        print(f"✅ Sender balance restored: {sender_balance_restored / 1e18} ETH")
+        print(f"✅ Recipient balance restored: {recipient_balance_restored / 1e18} ETH")
+        
+        node2.store.close()
+
+    def test_account_nonce_persistence(self, temp_db_path, pk_and_address):
+        """
+        Test that account nonces persist across restarts.
+        """
+        pk, address = pk_and_address
+        
+        genesis_state = {
+            address: {
+                "balance": to_wei(100, "ether"),
+                "nonce": 0,
+                "code": b"",
+                "storage": {},
+            }
+        }
+        
+        # ===== Phase 1: Make transactions =====
+        node1 = Chain.from_genesis(
+            genesis_state,
+            chain_id=1337,
+            block_time=0,
+            store_type="sqlite",
+            store_path=temp_db_path,
+        )
+        
+        # Make 3 transactions
+        for i in range(3):
+            nonce = node1.get_nonce(address)
+            signed_tx = node1.create_transaction(
+                from_private_key=pk.to_bytes(),
+                to=bytes.fromhex("deadbeef" * 5),
+                value=to_wei(1, "ether"),
+                data=b"",
+                gas=21_000,
+                gas_price=1_000_000_000,
+                nonce=nonce,
+            )
+            node1.send_transaction(signed_tx)
+            node1.build_block()
+        
+        expected_nonce = node1.get_nonce(address)
+        assert expected_nonce == 3
+        print(f"✅ Nonce after 3 transactions: {expected_nonce}")
+        
+        node1.store.close()
+        
+        # ===== Phase 2: Restart and verify nonce =====
+        node2 = Chain.from_genesis(
+            genesis_state,
+            chain_id=1337,
+            block_time=0,
+            store_type="sqlite",
+            store_path=temp_db_path,
+        )
+        
+        # Verify nonce persists
+        restored_nonce = node2.get_nonce(address)
+        assert restored_nonce == 3
+        print(f"✅ Nonce after restart: {restored_nonce}")
+        
+        # Can continue with next transaction
+        nonce = node2.get_nonce(address)
+        assert nonce == 3
+        
+        signed_tx = node2.create_transaction(
+            from_private_key=pk.to_bytes(),
+            to=bytes.fromhex("deadbeef" * 5),
+            value=to_wei(1, "ether"),
+            data=b"",
+            gas=21_000,
+            gas_price=1_000_000_000,
+            nonce=nonce,
+        )
+        node2.send_transaction(signed_tx)
+        node2.build_block()
+        
+        assert node2.get_nonce(address) == 4
+        print("✅ Can continue making transactions after restart")
+        
+        node2.store.close()
+
+    def test_full_state_recovery(self, temp_db_path, pk_and_address):
+        """
+        Test complete state recovery including contract and interactions.
+        """
+        pk, address = pk_and_address
+        
+        genesis_state = {
+            address: {
+                "balance": to_wei(100, "ether"),
+                "nonce": 0,
+                "code": b"",
+                "storage": {},
+            }
+        }
+        
+        # SimpleStorage bytecode
+        SIMPLE_STORAGE_BYTECODE = bytes.fromhex(
+            "6080604052348015600e575f5ffd5b5060b780601a5f395ff3fe6080604052348015600e575f5ffd5b5060043610603a575f3560e01c80632096525514603e5780633fa4f2451460535780635524107714605a575b5f5ffd5b5f545b60405190815260200160405180910390f35b60415f5481565b60696065366004606b565b5f55565b005b5f60208284031215607a575f5ffd5b503591905056fea2646970667358221220f8e380cdbf230c90b815074c9d3e30359f89a7ebc26e356ecb4a53b30b84694564736f6c63430008220033"
+        )
+        
+        SET_VALUE_SELECTOR = bytes.fromhex("55241077")
+        GET_VALUE_SELECTOR = bytes.fromhex("20965255")
+        
+        # ===== Phase 1: Deploy and interact =====
+        node1 = Chain.from_genesis(
+            genesis_state,
+            chain_id=1337,
+            block_time=0,
+            store_type="sqlite",
+            store_path=temp_db_path,
+        )
+        
+        # Deploy contract
+        nonce = node1.get_nonce(address)
+        signed_tx = node1.create_transaction(
+            from_private_key=pk.to_bytes(),
+            to=None,
+            value=0,
+            data=SIMPLE_STORAGE_BYTECODE,
+            gas=500_000,
+            gas_price=1_000_000_000,
+            nonce=nonce,
+        )
+        node1.send_transaction(signed_tx)
+        node1.build_block()
+        
+        contract_address = node1.store.get_receipts(1)[0].contract_address
+        
+        # Set value
+        calldata = SET_VALUE_SELECTOR + (42).to_bytes(32, 'big')
+        nonce = node1.get_nonce(address)
+        signed_tx = node1.create_transaction(
+            from_private_key=pk.to_bytes(),
+            to=contract_address,
+            value=0,
+            data=calldata,
+            gas=100_000,
+            gas_price=1_000_000_000,
+            nonce=nonce,
+        )
+        node1.send_transaction(signed_tx)
+        node1.build_block()
+        
+        # Get initial state
+        initial_code = node1.get_code(contract_address)
+        initial_storage = node1.get_storage_at(contract_address, 0)
+        initial_balance = node1.get_balance(address)
+        initial_nonce = node1.get_nonce(address)
+        
+        print(f"✅ Contract deployed and value set")
+        print(f"   Code length: {len(initial_code)} bytes")
+        print(f"   Storage at slot 0: {initial_storage}")
+        print(f"   Balance: {initial_balance / 1e18} ETH")
+        print(f"   Nonce: {initial_nonce}")
+        
+        node1.store.close()
+        
+        # ===== Phase 2: Restart and verify all state =====
+        node2 = Chain.from_genesis(
+            genesis_state,
+            chain_id=1337,
+            block_time=0,
+            store_type="sqlite",
+            store_path=temp_db_path,
+        )
+        
+        # Verify all state persisted
+        restored_code = node2.get_code(contract_address)
+        restored_storage = node2.get_storage_at(contract_address, 0)
+        restored_balance = node2.get_balance(address)
+        restored_nonce = node2.get_nonce(address)
+        
+        assert len(restored_code) == len(initial_code)
+        assert restored_storage == initial_storage == 42
+        assert restored_balance == initial_balance
+        assert restored_nonce == initial_nonce
+        
+        print(f"✅ All state restored correctly")
+        print(f"   Code length: {len(restored_code)} bytes")
+        print(f"   Storage at slot 0: {restored_storage}")
+        print(f"   Balance: {restored_balance / 1e18} ETH")
+        print(f"   Nonce: {restored_nonce}")
+        
+        # ===== Phase 3: Continue operations after restart =====
+        # Update value
+        calldata = SET_VALUE_SELECTOR + (100).to_bytes(32, 'big')
+        nonce = node2.get_nonce(address)
+        signed_tx = node2.create_transaction(
+            from_private_key=pk.to_bytes(),
+            to=contract_address,
+            value=0,
+            data=calldata,
+            gas=100_000,
+            gas_price=1_000_000_000,
+            nonce=nonce,
+        )
+        node2.send_transaction(signed_tx)
+        node2.build_block()
+        
+        # Verify new value
+        new_storage = node2.get_storage_at(contract_address, 0)
+        assert new_storage == 100
+        print(f"✅ Can update storage after restart: {new_storage}")
+        
+        node2.store.close()
 
 
 class TestSQLitePersistence:

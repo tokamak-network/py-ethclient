@@ -252,6 +252,70 @@ def create_methods(chain) -> dict[str, Callable]:
             return None
         return _serialize_receipt(receipt, chain)
 
+    def eth_getLogs(params: list) -> list:
+        """
+        Get logs matching the filter.
+        
+        Parameters:
+        - filter: object with optional fields:
+          - fromBlock: block number or "latest" (default: "latest")
+          - toBlock: block number or "latest" (default: "latest")
+          - address: contract address or list of addresses
+          - topics: list of topic filters
+        """
+        filter_obj = params[0] if params else {}
+        
+        # Parse block range
+        from_block = _parse_block_number(filter_obj.get("fromBlock", "latest"))
+        to_block = _parse_block_number(filter_obj.get("toBlock", "latest"))
+        
+        # Handle "latest" as current block
+        latest = chain.get_latest_block_number()
+        if from_block == -1:
+            from_block = latest
+        if to_block == -1:
+            to_block = latest
+        
+        # Parse address filter
+        address = None
+        if "address" in filter_obj:
+            addr = filter_obj["address"]
+            if isinstance(addr, list):
+                address = [_parse_address(a) for a in addr]
+            else:
+                address = _parse_address(addr)
+        
+        # Parse topics filter
+        topics = None
+        if "topics" in filter_obj:
+            topics = []
+            for topic in filter_obj["topics"]:
+                if topic is None:
+                    topics.append(None)
+                elif isinstance(topic, list):
+                    topics.append([_parse_bytes(t) for t in topic])
+                else:
+                    topics.append(_parse_bytes(topic))
+        
+        # Get logs from chain
+        logs = chain.store.get_logs(from_block, to_block, address, topics)
+        
+        # Serialize logs
+        serialized = []
+        for log in logs:
+            serialized.append({
+                "address": to_checksum_address(log["address"]),
+                "topics": ["0x" + t.hex() for t in log["topics"]],
+                "data": "0x" + log["data"].hex() if log["data"] else "0x",
+                "blockNumber": hex(log["block_number"]),
+                "blockHash": "0x" + log["block_hash"].hex(),
+                "transactionHash": "0x" + log["tx_hash"].hex(),
+                "transactionIndex": hex(log["tx_index"]),
+                "logIndex": hex(log["log_index"]),
+            })
+        
+        return serialized
+
     return {
         "eth_chainId": eth_chainId,
         "eth_blockNumber": eth_blockNumber,
@@ -266,6 +330,7 @@ def create_methods(chain) -> dict[str, Callable]:
         "eth_sendRawTransaction": eth_sendRawTransaction,
         "eth_getTransactionByHash": eth_getTransactionByHash,
         "eth_getTransactionReceipt": eth_getTransactionReceipt,
+        "eth_getLogs": eth_getLogs,
         "eth_estimateGas": eth_estimateGas,
         "eth_gasPrice": eth_gasPrice,
         "eth_feeHistory": eth_feeHistory,

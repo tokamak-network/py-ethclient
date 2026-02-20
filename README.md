@@ -83,6 +83,39 @@ code = chain.get_code(address)
 storage = chain.get_storage_at(address, 0)
 ```
 
+### Using SQLite Storage
+
+By default, the sequencer uses in-memory storage. For persistent storage across restarts, use SQLite:
+
+```python
+from eth_keys import keys
+from eth_utils import to_wei
+from sequencer.sequencer.chain import Chain
+
+pk = keys.PrivateKey(bytes.fromhex("01" * 32))
+address = pk.public_key.to_canonical_address()
+
+genesis_state = {
+    address: {
+        "balance": to_wei(100, "ether"),
+        "nonce": 0,
+        "code": b"",
+        "storage": {},
+    }
+}
+
+# Create chain with SQLite storage
+chain = Chain.from_genesis(
+    genesis_state,
+    chain_id=1337,
+    store_type="sqlite",
+    store_path="my_chain.db",  # SQLite database file
+)
+
+# Data persists across restarts
+chain.store.get_latest_number()  # Returns latest block number
+```
+
 ## Implemented Features
 
 ### Core Types (~100 LOC)
@@ -109,13 +142,15 @@ storage = chain.get_storage_at(address, 0)
 | Transaction Execution | ✅ | Apply and mine transactions |
 | State Queries | ✅ | nonce, balance, code, storage |
 
-### Storage (~53 LOC)
+### Storage (~500 LOC)
 | Feature | Status | Description |
 |---------|--------|-------------|
 | InMemoryStore | ✅ | dict-based block/receipt storage |
+| SQLiteStore | ✅ | Persistent SQLite storage backend |
 | Block by Number | ✅ | O(1) lookup |
 | Block by Hash | ✅ | O(1) lookup |
 | Transaction Receipt | ✅ | tx_hash → (block, index, receipt) |
+| Log Filtering | ✅ | Filter by block range, address, topics |
 
 ### Sequencer Chain (~270 LOC)
 | Feature | Status | Description |
@@ -161,6 +196,7 @@ storage = chain.get_storage_at(address, 0)
 | `eth_gasPrice` | ✅ | Returns 1 Gwei |
 | `eth_feeHistory` | ✅ | Historical gas fee data with base fee |
 | `eth_call` | ✅ | Execute call without state change |
+| `eth_getLogs` | ✅ | Filter logs by block range, address, topics |
 | `net_version` | ✅ | Chain ID as string |
 | `eth_accounts` | ✅ | Returns empty list |
 | `eth_coinbase` | ✅ | Returns coinbase address |
@@ -252,6 +288,30 @@ storage = chain.get_storage_at(address, 0)
 | `test_get_storage_at_slot_zero` | ✅ | eth_getStorageAt |
 | `test_get_code_returns_runtime_bytecode` | ✅ | eth_getCode returns runtime code |
 | `test_independent_storage` | ✅ | Multiple contracts, independent storage |
+| **Get Logs Tests** | | |
+| `test_get_logs_empty` | ✅ | getLogs returns empty when no events |
+| `test_get_logs_by_address` | ✅ | Filter logs by contract address |
+| `test_get_logs_by_topic` | ✅ | Filter logs by event topic |
+| `test_get_logs_by_block_range` | ✅ | Filter logs by block range |
+| `test_get_logs_no_match` | ✅ | No logs for non-existent topic |
+| `test_get_logs_log_entry_format` | ✅ | Log entry has correct fields |
+| `test_store_get_logs_basic` | ✅ | Basic log storage retrieval |
+| `test_store_get_logs_multiple_blocks` | ✅ | Logs across multiple blocks |
+| `test_store_get_logs_by_address_filter` | ✅ | Address filter in store |
+| `test_store_get_logs_by_topic_filter` | ✅ | Topic filter in store |
+| **SQLite Storage Tests** | | |
+| `test_sqlite_store_init` | ✅ | SQLite store initialization |
+| `test_save_and_get_block` | ✅ | Save and retrieve blocks |
+| `test_get_block_by_hash` | ✅ | Get block by hash |
+| `test_save_and_get_receipts` | ✅ | Save and retrieve receipts |
+| `test_receipts_with_logs` | ✅ | Receipt storage with event logs |
+| `test_get_latest_block` | ✅ | Latest block query |
+| `test_get_transaction_receipt` | ✅ | Transaction receipt by hash |
+| `test_get_logs` | ✅ | Log retrieval from SQLite |
+| `test_get_logs_by_address` | ✅ | Log filter by address |
+| `test_get_logs_by_topic` | ✅ | Log filter by topic |
+| `test_chain_with_sqlite_backend` | ✅ | Chain with SQLite backend |
+| `test_sqlite_persistence_across_restarts` | ✅ | Data persists across restarts |
 
 ## Development Roadmap
 

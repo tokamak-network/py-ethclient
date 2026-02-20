@@ -17,6 +17,7 @@ from sequencer.core.types import Block, BlockHeader, Receipt
 from sequencer.core.crypto import keccak256, private_key_to_address
 from sequencer.evm.adapter import EVMAdapter, ChainConfig, ExecutionResult
 from sequencer.storage.store import InMemoryStore
+from sequencer.storage.sqlite_store import SQLiteStore
 from sequencer.sequencer.mempool import Mempool
 
 
@@ -46,12 +47,20 @@ class Chain:
         coinbase: bytes = b"\x00" * 20,
         genesis_state: dict | None = None,
         block_time: int = DEFAULT_BLOCK_TIME,
+        store_type: str = "memory",
+        store_path: str = "sequencer.db",
     ):
         self.chain_id = chain_id
         self.gas_limit = gas_limit
         self.coinbase = coinbase
         self.block_time = block_time
-        self.store = InMemoryStore()
+        
+        # Initialize storage backend
+        if store_type == "sqlite":
+            self.store = SQLiteStore(store_path)
+        else:
+            self.store = InMemoryStore()
+        
         self.mempool = Mempool()
         self._last_block_time: int = 0
         
@@ -72,13 +81,17 @@ class Chain:
         coinbase: bytes = b"\x00" * 20,
         timestamp: int | None = None,
         block_time: int = DEFAULT_BLOCK_TIME,
+        store_type: str = "memory",
+        store_path: str = "sequencer.db",
     ) -> "Chain":
         chain = cls(
-            chain_id=chain_id, 
-            gas_limit=gas_limit, 
+            chain_id=chain_id,
+            gas_limit=gas_limit,
             coinbase=coinbase,
             genesis_state=genesis_state,
             block_time=block_time,
+            store_type=store_type,
+            store_path=store_path,
         )
         
         genesis_block = chain._create_genesis_block(timestamp or int(time.time()))

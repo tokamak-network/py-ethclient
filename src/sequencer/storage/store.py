@@ -64,3 +64,111 @@ class InMemoryStore:
 
     def get_latest_number(self) -> int:
         return self._latest_number
+
+    def get_logs(
+        self,
+        from_block: int,
+        to_block: int,
+        address: bytes | list[bytes] | None = None,
+        topics: list[bytes | list[bytes] | None] | None = None,
+    ) -> list[dict]:
+        """
+        Get logs matching the filter criteria.
+        
+        Args:
+            from_block: Starting block number (inclusive)
+            to_block: Ending block number (inclusive)
+            address: Contract address(es) to filter by
+            topics: Topic filters (each element can be a single topic or list of alternatives)
+        
+        Returns:
+            List of log entries matching the filter
+        """
+        logs = []
+        
+        for block_number in range(from_block, to_block + 1):
+            stored = self._blocks.get(block_number)
+            if not stored:
+                continue
+            
+            block = stored.block
+            receipts = stored.receipts
+            tx_hashes = stored.tx_hashes
+            
+            for tx_index, (receipt, tx_hash) in enumerate(zip(receipts, tx_hashes)):
+                if not receipt.logs:
+                    continue
+                
+                for log_index, log in enumerate(receipt.logs):
+                    # Parse log tuple: (address, topics, data)
+                    if isinstance(log, tuple) and len(log) == 3:
+                        log_address, log_topics, log_data = log
+                    else:
+                        continue
+                    
+                    # Convert topics to bytes format (py-evm may return int)
+                    normalized_topics = []
+                    for topic in log_topics:
+                        if isinstance(topic, int):
+                            normalized_topics.append(topic.to_bytes(32, 'big'))
+                        else:
+                            normalized_topics.append(topic)
+                    
+                    # Address filter
+                    if address is not None:
+                        if isinstance(address, list):
+                            if log_address not in address:
+                                continue
+                        elif log_address != address:
+                            continue
+                    
+                    # Topic filter
+                    if topics is not None:
+                        match = self._match_topics(normalized_topics, topics)
+                        if not match:
+                            continue
+                    
+                    # Build log entry
+                    log_entry = {
+                        "address": log_address,
+                        "topics": normalized_topics,
+                        "data": log_data,
+                        "block_number": block_number,
+                        "block_hash": block.hash,
+                        "tx_hash": tx_hash,
+                        "tx_index": tx_index,
+                        "log_index": log_index,
+                    }
+                    logs.append(log_entry)
+        
+        return logs
+
+    def _match_topics(
+        self,
+        log_topics: list[bytes],
+        filter_topics: list[bytes | list[bytes] | None],
+    ) -> bool:
+        """
+        Check if log topics match the filter.
+        
+        Each filter element can be:
+        - None: Match any topic at this position
+        - bytes: Match this exact topic
+        - list[bytes]: Match any topic in the list
+        """
+        for i, filter_topic in enumerate(filter_topics):
+            if i >= len(log_topics):
+                return False
+            
+            if filter_topic is None:
+                continue
+            
+            log_topic = log_topics[i]
+            
+            if isinstance(filter_topic, list):
+                if log_topic not in filter_topic:
+                    return False
+            elif log_topic != filter_topic:
+                return False
+        
+        return True

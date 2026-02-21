@@ -30,9 +30,14 @@ class SQLiteStore:
         return self._conn
     
     def _init_db(self):
-        """Initialize database tables."""
+        """Initialize database tables with optimal settings."""
         conn = self._get_conn()
         cursor = conn.cursor()
+        
+        # Enable optimal SQLite settings
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
         
         # Blocks table
         cursor.execute("""

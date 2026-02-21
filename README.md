@@ -559,15 +559,43 @@ py-ethclient/
 │   └── cli.py                   # Entry point (~55 LOC)
 │
 └── tests/
+    ├── conftest.py              # Shared pytest fixtures
+    │
+    ├── fixtures/                # Test fixtures & utilities
+    │   ├── addresses.py         # Named test addresses (Alice, Bob, Charlie)
+    │   ├── contracts.py         # Contract bytecodes for testing
+    │   └── keys.py              # Private keys and signing utilities
+    │
+    ├── unit/                    # Unit tests
+    │   ├── test_crypto.py       # Crypto operations
+    │   ├── test_types.py        # Core type tests
+    │   ├── test_builder.py      # Block builder tests
+    │   └── test_executor.py     # Execution layer tests
+    │
+    ├── integration/             # Integration tests
+    │   ├── test_transfer_flow.py     # ETH transfer flows
+    │   ├── test_contract_flow.py     # Contract deployment & interaction
+    │   └── test_eip7702_flow.py      # EIP-7702 end-to-end tests
+    │
+    ├── spec/                    # Specification tests
+    │   ├── test_blockchain.py   # Blockchain spec compliance
+    │   ├── test_eips.py         # EIP spec tests
+    │   └── test_transactions.py # Transaction spec tests
+    │
     ├── test_sequencer.py        # Integration tests (~650 LOC)
     ├── test_eip1559.py          # EIP-1559 tests (~110 LOC)
+    ├── test_eip7702.py          # EIP-7702 SetCode tests
     ├── test_mempool.py          # Mempool tests (~280 LOC)
     ├── test_block_time.py       # Block time tests (~65 LOC)
     ├── test_fee_history.py      # Fee history tests (~120 LOC)
-    ├── test_integration.py      # Integration tests (~55 LOC)
     ├── test_estimate_gas.py     # Gas estimation tests (~200 LOC)
     ├── test_get_transaction.py  # Transaction lookup tests (~400 LOC)
+    ├── test_get_logs.py         # Event log filtering tests
     ├── test_contract_storage.py # Contract storage tests (~750 LOC)
+    ├── test_integration.py      # Integration tests (~55 LOC)
+    ├── test_rpc.py              # RPC method tests
+    ├── test_sqlite_store.py     # SQLite storage tests
+    ├── test_persistence_integration.py  # Persistence tests
     ├── test_crypto_compatibility.py    # Crypto compatibility (~75 LOC)
     ├── test_rlp_compatibility.py       # RLP compatibility (~65 LOC)
     ├── test_block_compatibility.py     # Block compatibility (~120 LOC)
@@ -584,7 +612,32 @@ scripts/
 └── interact_contract.py        # Interact with contracts (~200 LOC)
 ```
 
-**Total: ~1,800 LOC (src) + ~3,350 LOC (tests) + ~550 LOC (scripts) = ~5,700 LOC**
+**Total: ~1,800 LOC (src) + ~3,600 LOC (tests) + ~550 LOC (scripts) = ~5,950 LOC**
+
+## Test Structure
+
+The test suite is organized into four categories:
+
+- **`fixtures/`**: Shared test fixtures including:
+  - Named test addresses (Alice, Bob, Charlie) with pre-computed keys
+  - Standard contract bytecodes for testing
+  - Key derivation and signing utilities
+
+- **`unit/`**: Unit tests for individual components:
+  - `test_crypto.py` - Core cryptographic operations
+  - `test_types.py` - Type encoding/decoding
+  - `test_builder.py` - Block builder logic
+  - `test_executor.py` - EVM execution
+
+- **`integration/`**: End-to-end integration tests:
+  - `test_transfer_flow.py` - ETH transfer scenarios
+  - `test_contract_flow.py` - Contract deployment & interaction
+  - `test_eip7702_flow.py` - EIP-7702 SetCode transactions
+
+- **`spec/`**: Ethereum specification compliance tests:
+  - `test_blockchain.py` - Blockchain spec validation
+  - `test_eips.py` - EIP-specific tests
+  - `test_transactions.py` - Transaction type tests
 
 ## Dependencies
 

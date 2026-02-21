@@ -518,7 +518,7 @@ class SQLiteStore:
     
     def save_account(self, address: bytes, nonce: int, balance: int, code: bytes = b""):
         """
-        Save account state to database.
+        Save account state to database atomically.
         
         Args:
             address: Account address (20 bytes)
@@ -529,24 +529,30 @@ class SQLiteStore:
         conn = self._get_conn()
         cursor = conn.cursor()
         
-        # Calculate code hash
-        from sequencer.core.crypto import keccak256
-        code_hash = keccak256(code) if code else b"\x00" * 32
-        
-        # Save account (balance as TEXT for large integers)
-        cursor.execute("""
-            INSERT OR REPLACE INTO accounts (address, nonce, balance, code_hash, storage_root)
-            VALUES (?, ?, ?, ?, ?)
-        """, (address, nonce, str(balance), code_hash, b"\x00" * 32))
-        
-        # Save code if not empty
-        if code:
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            
+            # Calculate code hash
+            from sequencer.core.crypto import keccak256
+            code_hash = keccak256(code) if code else b"\x00" * 32
+            
+            # Save account (balance as TEXT for large integers)
             cursor.execute("""
-                INSERT OR REPLACE INTO contract_code (code_hash, code)
-                VALUES (?, ?)
-            """, (code_hash, code))
-        
-        conn.commit()
+                INSERT OR REPLACE INTO accounts (address, nonce, balance, code_hash, storage_root)
+                VALUES (?, ?, ?, ?, ?)
+            """, (address, nonce, str(balance), code_hash, b"\x00" * 32))
+            
+            # Save code if not empty
+            if code:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO contract_code (code_hash, code)
+                    VALUES (?, ?)
+                """, (code_hash, code))
+            
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     
     def get_account(self, address: bytes) -> dict | None:
         """

@@ -98,6 +98,15 @@ class TestThreadSafety:
         """Test that concurrent send_transaction and build_block are thread-safe."""
         pk, address = pk_and_address
         
+        # Create multiple addresses for concurrent transactions
+        addresses = []
+        private_keys = []
+        for i in range(3):
+            # Each thread gets its own address to avoid nonce conflicts
+            test_pk = keys.PrivateKey(bytes.fromhex(f"{i+1:02d}" * 32))
+            addresses.append(test_pk.public_key.to_canonical_address())
+            private_keys.append(test_pk)
+        
         genesis_state = {
             address: {
                 "balance": to_wei(1000, "ether"),
@@ -106,6 +115,14 @@ class TestThreadSafety:
                 "storage": {},
             }
         }
+        # Give each test address some balance
+        for addr in addresses:
+            genesis_state[addr] = {
+                "balance": to_wei(100, "ether"),
+                "nonce": 0,
+                "code": b"",
+                "storage": {},
+            }
         
         chain = Chain.from_genesis(
             genesis_state,
@@ -115,17 +132,21 @@ class TestThreadSafety:
             store_path=temp_db_path,
         )
         
-        num_sender_threads = 5
-        txs_per_thread = 3
         errors = []
         stop_flag = threading.Event()
+        tx_sent_count = 0
+        tx_sent_lock = threading.Lock()
         
         def send_transactions(thread_id):
+            nonlocal tx_sent_count
             try:
-                for i in range(txs_per_thread):
+                pk = private_keys[thread_id]
+                addr = addresses[thread_id]
+                for i in range(3):  # Only 3 transactions per thread
                     if stop_flag.is_set():
                         break
-                    nonce = chain.get_nonce(address)
+                    # Send transactions and wait for them to be included
+                    nonce = chain.get_nonce(addr)
                     signed_tx = chain.create_transaction(
                         from_private_key=pk.to_bytes(),
                         to=bytes.fromhex("deadbeef" * 5),
@@ -136,24 +157,28 @@ class TestThreadSafety:
                         nonce=nonce,
                     )
                     chain.send_transaction(signed_tx)
-                    time.sleep(0.01)  # Small delay to allow interleaving
+                    with tx_sent_lock:
+                        tx_sent_count += 1
+                    # Build block after each send to avoid nonce conflicts
+                    chain.build_block()
+                    time.sleep(0.02)
             except Exception as e:
                 errors.append(("sender", thread_id, str(e)))
         
         def build_blocks():
             try:
-                for _ in range(10):
+                for _ in range(20):
                     if stop_flag.is_set():
                         break
                     if len(chain.mempool) > 0:
                         chain.build_block()
-                    time.sleep(0.02)  # Small delay
+                    time.sleep(0.02)
             except Exception as e:
-                errors.append(("builder", 0, str(e)))
+                errors.append(("builder", str(e)))
         
-        # Start sender threads
+        # Start sender threads (each with its own address)
         sender_threads = []
-        for i in range(num_sender_threads):
+        for i in range(3):
             t = threading.Thread(target=send_transactions, args=(i,))
             sender_threads.append(t)
             t.start()
@@ -166,15 +191,17 @@ class TestThreadSafety:
         for t in sender_threads:
             t.join()
         
-        # Stop builder after senders are done
-        time.sleep(0.1)
+        # Build remaining blocks
+        while len(chain.mempool) > 0:
+            chain.build_block()
+        
         stop_flag.set()
         builder_thread.join()
         
         # Verify no errors
         assert len(errors) == 0, f"Errors occurred: {errors}"
         
-        # Verify all transactions were processed
+        # Count total transactions in blocks
         blocks = []
         for i in range(20):
             block = chain.store.get_block(i)
@@ -182,54 +209,83 @@ class TestThreadSafety:
                 blocks.append(block)
         
         total_txs = sum(len(block.transactions) for block in blocks)
-        print(f"✅ Built {len(blocks)} blocks with {total_txs} total transactions")
+        print(f"✅ Built {len(blocks)} blocks with {total_txs} total transactions, sent {tx_sent_count}")
         
-        # All transactions should be in blocks or mempool
-        remaining_in_mempool = len(chain.mempool)
-        assert total_txs + remaining_in_mempool <= num_sender_threads * txs_per_thread
+        # All sent transactions should be in blocks
+        assert total_txs == tx_sent_count
         
         chain.store.close()
 
     def test_concurrent_block_building(self, pk_and_address):
-        """Test that only one build_block can run at a time."""
+        """Test that concurrent build_block calls are serialized correctly."""
         pk, address = pk_and_address
         
+        # Use fresh state for this test to avoid conflicts
+        pk1 = keys.PrivateKey(bytes.fromhex("aa" * 32))
+        addr1 = pk1.public_key.to_canonical_address()
+        pk2 = keys.PrivateKey(bytes.fromhex("bb" * 32))
+        addr2 = pk2.public_key.to_canonical_address()
+        
         genesis_state = {
-            address: {
-                "balance": to_wei(1000, "ether"),
+            addr1: {
+                "balance": to_wei(100, "ether"),
                 "nonce": 0,
                 "code": b"",
                 "storage": {},
-            }
+            },
+            addr2: {
+                "balance": to_wei(100, "ether"),
+                "nonce": 0,
+                "code": b"",
+                "storage": {},
+            },
         }
         
         chain = Chain.from_genesis(genesis_state, chain_id=1337, block_time=0)
         
-        # Add some transactions first
-        for _ in range(5):
-            nonce = chain.get_nonce(address)
-            signed_tx = chain.create_transaction(
-                from_private_key=pk.to_bytes(),
+        # Add transactions from different addresses (use sequential nonces)
+        for i in range(3):
+            # From addr1 - nonce is 0, 1, 2
+            signed_tx1 = chain.create_transaction(
+                from_private_key=pk1.to_bytes(),
                 to=bytes.fromhex("deadbeef" * 5),
                 value=to_wei(1, "ether"),
                 data=b"",
                 gas=21_000,
                 gas_price=1_000_000_000,
-                nonce=nonce,
+                nonce=i,
             )
-            chain.send_transaction(signed_tx)
+            chain.send_transaction(signed_tx1)
+            
+            # From addr2 - nonce is 0, 1, 2
+            signed_tx2 = chain.create_transaction(
+                from_private_key=pk2.to_bytes(),
+                to=bytes.fromhex("deadbeef" * 5),
+                value=to_wei(1, "ether"),
+                data=b"",
+                gas=21_000,
+                gas_price=1_000_000_000,
+                nonce=i,
+            )
+            chain.send_transaction(signed_tx2)
+        
+        # Now we have 6 transactions in the mempool
+        assert len(chain.mempool) == 6
         
         errors = []
-        block_numbers = []
+        results = []
         
         def build_block_thread(thread_id):
             try:
-                block = chain.build_block()
-                block_numbers.append(block.number)
+                # Try to build blocks concurrently
+                if len(chain.mempool) > 0:
+                    block = chain.build_block()
+                    if block:
+                        results.append((thread_id, block.number))
             except Exception as e:
                 errors.append((thread_id, str(e)))
         
-        # Start multiple build_block calls concurrently
+        # Start threads
         threads = []
         for i in range(3):
             t = threading.Thread(target=build_block_thread, args=(i,))
@@ -242,6 +298,20 @@ class TestThreadSafety:
         # All build_block calls should succeed without errors
         assert len(errors) == 0, f"Errors occurred: {errors}"
         
-        # Each thread should have built a block with different block numbers
-        # (except if some threads raced and got empty mempool)
-        print(f"✅ Built {len(block_numbers)} blocks: {sorted(block_numbers)}")
+        # Verify blocks were built correctly
+        block_numbers = sorted([r[1] for r in results])
+        print(f"✅ Built {len(block_numbers)} blocks: {block_numbers}")
+        
+        # Build remaining blocks
+        while len(chain.mempool) > 0:
+            chain.build_block()
+        
+        # Verify all transactions were included
+        total_txs = 0
+        for i in range(10):
+            block = chain.store.get_block(i + 1)  # Start from block 1
+            if block:
+                total_txs += len(block.transactions)
+        
+        print(f"✅ Total transactions in blocks: {total_txs}")
+        assert total_txs == 6  # 3 from addr1 + 3 from addr2

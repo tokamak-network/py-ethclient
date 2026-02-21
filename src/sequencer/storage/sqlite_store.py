@@ -502,10 +502,6 @@ class SQLiteStore:
                     })
             
             return logs
-                    "log_index": log_index,
-                })
-        
-        return logs
     
     def _match_topics(
         self,

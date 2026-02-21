@@ -415,9 +415,10 @@ class Chain:
         )
 
     def send_transaction(self, signed_tx) -> bytes:
-        tx_hash = keccak256(signed_tx.encode())
-        self.add_transaction_to_pool(signed_tx)
-        return tx_hash
+        with self._lock:
+            tx_hash = keccak256(signed_tx.encode())
+            self.add_transaction_to_pool(signed_tx)
+            return tx_hash
     
     def should_build_block(self) -> bool:
         if len(self.mempool) == 0:

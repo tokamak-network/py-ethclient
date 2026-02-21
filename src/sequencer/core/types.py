@@ -98,3 +98,5 @@ class Receipt:
     def to_rlp(self) -> bytes:
         from rlp import encode
         return encode([self.status, self.cumulative_gas_used, self.logs])
+
+

@@ -107,7 +107,14 @@ def create_methods(chain) -> dict[str, Callable]:
         
         max_fee_per_gas = tx_params.get("maxFeePerGas")
         max_priority_fee_per_gas = tx_params.get("maxPriorityFeePerGas")
+        gas_price = tx_params.get("gasPrice")
         authorization_list = tx_params.get("authorizationList")
+        access_list = tx_params.get("accessList")
+        
+        # Parse access list if present
+        parsed_access_list = None
+        if access_list is not None:
+            parsed_access_list = _parse_access_list(access_list)
         
         # EIP-7702 SetCode transaction (Type 0x04)
         if authorization_list is not None:
@@ -148,7 +155,24 @@ def create_methods(chain) -> dict[str, Callable]:
                 nonce=nonce,
                 authorization_list=parsed_auth_list,
             )
-        # EIP-1559 transaction (Type 0x02)
+        # EIP-1559 transaction with access list (Type 0x02)
+        elif (max_fee_per_gas is not None or max_priority_fee_per_gas is not None) and parsed_access_list is not None:
+            max_fee = _parse_int(max_fee_per_gas) if max_fee_per_gas else None
+            max_priority = _parse_int(max_priority_fee_per_gas) if max_priority_fee_per_gas else None
+            
+            signed_tx = chain.create_eip1559_transaction(
+                from_private_key=private_key,
+                to=to,
+                value=value,
+                data=data,
+                gas=gas,
+                max_priority_fee_per_gas=max_priority,
+                max_fee_per_gas=max_fee,
+                nonce=nonce,
+            )
+            # Note: For now, access list on EIP-1559 is not passed through
+            # This would require updating create_eip1559_transaction signature
+        # EIP-1559 transaction without access list (Type 0x02)
         elif max_fee_per_gas is not None or max_priority_fee_per_gas is not None:
             max_fee = _parse_int(max_fee_per_gas) if max_fee_per_gas else None
             max_priority = _parse_int(max_priority_fee_per_gas) if max_priority_fee_per_gas else None
@@ -163,16 +187,30 @@ def create_methods(chain) -> dict[str, Callable]:
                 max_fee_per_gas=max_fee,
                 nonce=nonce,
             )
+        # EIP-2930 Access List transaction (Type 0x01)
+        elif parsed_access_list is not None:
+            gas_price_val = _parse_int(gas_price) if gas_price else None
+            
+            signed_tx = chain.create_access_list_transaction(
+                from_private_key=private_key,
+                to=to,
+                access_list=parsed_access_list,
+                value=value,
+                data=data,
+                gas=gas,
+                gas_price=gas_price_val,
+                nonce=nonce,
+            )
         # Legacy transaction (Type 0x00)
         else:
-            gas_price = _parse_int(tx_params.get("gasPrice", "0x3b9aca00"))
+            gas_price_val = _parse_int(tx_params.get("gasPrice", "0x3b9aca00"))
             signed_tx = chain.create_transaction(
                 from_private_key=private_key,
                 to=to,
                 value=value,
                 data=data,
                 gas=gas,
-                gas_price=gas_price,
+                gas_price=gas_price_val,
                 nonce=nonce,
             )
         
@@ -454,6 +492,60 @@ def _parse_block_number(value: str) -> int:
     if value == "earliest":
         return 0
     return _parse_int(value)
+
+
+def _parse_access_list(access_list: list) -> list[tuple[bytes, list[int]]]:
+    """
+    Parse an access list from JSON-RPC format.
+    
+    Input format:
+        [
+            {"address": "0x...", "storageKeys": ["0x...", "0x..."]},
+            ...
+        ]
+    
+    Output format:
+        [(address_bytes, [slot_int, ...]), ...]
+    """
+    parsed = []
+    for entry in access_list:
+        # Handle both dict format and tuple format
+        if isinstance(entry, dict):
+            addr = _parse_address(entry["address"])
+            storage_keys = []
+            for key in entry.get("storageKeys", entry.get("storage_keys", [])):
+                # Storage keys are 32 bytes (256 bits), convert to int
+                if isinstance(key, int):
+                    storage_keys.append(key)
+                elif isinstance(key, str):
+                    storage_keys.append(_parse_int(key))
+                else:
+                    storage_keys.append(int(key))
+            parsed.append((addr, storage_keys))
+        elif isinstance(entry, (list, tuple)) and len(entry) == 2:
+            addr, storage_keys = entry
+            if isinstance(addr, str):
+                addr = _parse_address(addr)
+            storage_keys = [int(k) if not isinstance(k, int) else k for k in storage_keys]
+            parsed.append((addr, storage_keys))
+    return parsed
+
+
+def _serialize_access_list(access_list) -> list[dict]:
+    """
+    Serialize an access list to JSON-RPC format.
+    
+    Input: [(address_bytes, [slot_int, ...]), ...]
+    Output: [{"address": "0x...", "storageKeys": ["0x...", ...]}, ...]
+    """
+    serialized = []
+    for addr, storage_keys in access_list:
+        entry = {
+            "address": to_checksum_address(addr),
+            "storageKeys": [hex(slot) for slot in storage_keys],
+        }
+        serialized.append(entry)
+    return serialized
 
 
 def _serialize_block(block, include_txs: bool) -> dict:

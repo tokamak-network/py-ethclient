@@ -327,6 +327,113 @@ class Chain:
         pk = keys.PrivateKey(from_private_key)
         return unsigned_tx.as_signed_transaction(pk)
 
+    def create_access_list_transaction(
+        self,
+        from_private_key: bytes,
+        to: bytes | None,
+        access_list: list[tuple[bytes, Sequence[int]]],
+        value: int = 0,
+        data: bytes = b"",
+        gas: int = 100_000,
+        gas_price: int | None = None,
+        nonce: int | None = None,
+    ) -> Any:
+        """
+        Create a signed EIP-2930 access list transaction (Type 0x01).
+        
+        Access list transactions allow pre-declaring addresses and storage slots
+        that will be accessed during execution, providing:
+        - Lower gas costs for cold accesses (pre-warming)
+        - More predictable gas estimation
+        - Better compatibility with L2 protocols
+        
+        Args:
+            from_private_key: Private key of the sender
+            to: Recipient address (None for contract creation)
+            access_list: List of (address, [storage_keys]) tuples
+            value: Value to transfer in wei
+            data: Transaction data
+            gas: Gas limit
+            gas_price: Gas price in wei (auto-filled if None)
+            nonce: Sender's nonce (auto-filled if None)
+        
+        Returns:
+            Signed AccessListTransaction
+        
+        Example:
+            >>> # Pre-declare addresses and storage slots to access
+            >>> access_list = [
+            ...     (token_address, [0, 1]),  # Token contract: slots 0, 1
+            ...     (router_address, []),      # Router contract: no slots
+            ... ]
+            >>> tx = chain.create_access_list_transaction(
+            ...     from_private_key=private_key,
+            ...     to=router_address,
+            ...     access_list=access_list,
+            ...     data=swap_calldata,
+            ...     gas=500_000,
+            ... )
+        """
+        from typing import Sequence as TypingSequence
+        
+        sender = private_key_to_address(from_private_key)
+        
+        if nonce is None:
+            nonce = self.get_nonce(sender)
+        
+        if gas_price is None:
+            latest_block = self.get_latest_block()
+            base_fee = latest_block.header.base_fee_per_gas if latest_block and latest_block.header.base_fee_per_gas else INITIAL_BASE_FEE
+            gas_price = base_fee
+        
+        to_address = b"" if to is None else to
+        
+        # Convert access_list to the format expected by py-evm
+        # py-evm expects: Sequence[Tuple[Address, Sequence[int]]]
+        formatted_access_list = []
+        for item in access_list:
+            if isinstance(item, dict):
+                # Handle dict format: {"address": ..., "storageKeys": [...]}
+                addr = item["address"] if isinstance(item["address"], bytes) else bytes.fromhex(item["address"].replace("0x", ""))
+                storage_keys = []
+                for k in item.get("storageKeys", []):
+                    if isinstance(k, int):
+                        storage_keys.append(k)
+                    elif isinstance(k, str):
+                        # Handle hex strings like "0x0" or "0x123"
+                        storage_keys.append(int(k, 16) if k.startswith("0x") else int(k))
+                    else:
+                        storage_keys.append(int(k))
+                formatted_access_list.append((addr, storage_keys))
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                # Handle tuple format: (address, [storage_keys])
+                addr, storage_keys = item
+                if isinstance(addr, str):
+                    addr = bytes.fromhex(addr.replace("0x", ""))
+                parsed_keys = []
+                for k in storage_keys:
+                    if isinstance(k, int):
+                        parsed_keys.append(k)
+                    elif isinstance(k, str):
+                        parsed_keys.append(int(k, 16) if k.startswith("0x") else int(k))
+                    else:
+                        parsed_keys.append(int(k))
+                formatted_access_list.append((addr, parsed_keys))
+        
+        unsigned_tx = self.evm.create_unsigned_access_list_transaction(
+            nonce=nonce,
+            gas_price=gas_price,
+            gas=gas,
+            to=to_address,
+            value=value,
+            data=data,
+            access_list=formatted_access_list,
+            chain_id=self.chain_id,
+        )
+        
+        pk = keys.PrivateKey(from_private_key)
+        return unsigned_tx.as_signed_transaction(pk)
+
     def create_setcode_transaction(
         self,
         from_private_key: bytes,

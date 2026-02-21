@@ -235,6 +235,67 @@ class EVMAdapter:
             data=data,
         )
 
+    def create_unsigned_access_list_transaction(
+        self,
+        nonce: int,
+        gas_price: int,
+        gas: int,
+        to: bytes | None,
+        value: int,
+        data: bytes,
+        access_list: Sequence[tuple[bytes, Sequence[int]]],
+        chain_id: int | None = None,
+    ) -> Any:
+        """
+        Create an unsigned EIP-2930 access list transaction (Type 0x01).
+        
+        Access list transactions allow pre-declaring addresses and storage slots
+        that will be accessed during execution, reducing gas costs for cold accesses.
+        
+        Args:
+            nonce: Sender's nonce
+            gas_price: Gas price in wei
+            gas: Gas limit
+            to: Recipient address (None for contract creation)
+            value: Value to transfer in wei
+            data: Transaction data (calldata or initcode)
+            access_list: List of (address, [storage_keys]) tuples
+            chain_id: Chain ID (defaults to configured chain_id)
+        
+        Returns:
+            UnsignedAccessListTransaction
+        
+        Example:
+            >>> access_list = [
+            ...     (b'\\x12' * 20, [0, 1]),  # Address with slots 0 and 1
+            ...     (b'\\xab' * 20, []),        # Address only, no storage keys
+            ... ]
+            >>> tx = adapter.create_unsigned_access_list_transaction(
+            ...     nonce=0,
+            ...     gas_price=30_000_000_000,
+            ...     gas=200_000,
+            ...     to=b'\\x12' * 20,
+            ...     value=0,
+            ...     data=b'\\x00',
+            ...     access_list=access_list,
+            ... )
+        """
+        from eth.vm.forks.berlin.transactions import BerlinTransactionBuilder
+        
+        tx_chain_id = chain_id if chain_id is not None else self.config.chain_id
+        to_address = to if to else b""
+        
+        return BerlinTransactionBuilder.new_unsigned_access_list_transaction(
+            chain_id=tx_chain_id,
+            nonce=nonce,
+            gas_price=gas_price,
+            gas=gas,
+            to=to_address,
+            value=value,
+            data=data,
+            access_list=access_list,
+        )
+
     def create_unsigned_eip1559_transaction(
         self,
         nonce: int,
@@ -245,12 +306,32 @@ class EVMAdapter:
         value: int,
         data: bytes,
         chain_id: int | None = None,
+        access_list: Sequence[tuple[bytes, Sequence[int]]] | None = None,
     ) -> Any:
+        """
+        Create an unsigned EIP-1559 dynamic fee transaction (Type 0x02).
+        
+        Note: EIP-1559 transactions can optionally include an access list.
+        
+        Args:
+            nonce: Sender's nonce
+            max_priority_fee_per_gas: Priority fee per gas (tip to miner)
+            max_fee_per_gas: Maximum total fee per gas
+            gas: Gas limit
+            to: Recipient address (None for contract creation)
+            value: Value to transfer in wei
+            data: Transaction data
+            chain_id: Chain ID (defaults to configured chain_id)
+            access_list: Optional list of (address, [storage_keys]) tuples
+        
+        Returns:
+            UnsignedDynamicFeeTransaction
+        """
         from eth.vm.forks.london.transactions import LondonTransactionBuilder
         
         tx_chain_id = chain_id if chain_id is not None else self.config.chain_id
         to_address = to if to else b""
-        access_list = ()
+        tx_access_list = access_list if access_list is not None else ()
         
         return LondonTransactionBuilder.new_unsigned_dynamic_fee_transaction(
             chain_id=tx_chain_id,
@@ -261,7 +342,7 @@ class EVMAdapter:
             to=to_address,
             value=value,
             data=data,
-            access_list=access_list,
+            access_list=tx_access_list,
         )
 
     def create_unsigned_setcode_transaction(

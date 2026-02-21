@@ -520,7 +520,7 @@ Phase 4 - Prague (EIP-7702):
 
 Phase 5 - Future:
 ├── [x] CREATE2 Support (EIP-1014) - Address computation, tracking, persistence
-├── [ ] EIP-2930 (Access List transactions, Type 0x01)
+├── [x] EIP-2930 (Access List transactions, Type 0x01)
 ├── [ ] EIP-2537 (BLS12-381 Precompiles)
 └── [ ] EIP-2935 (Block Hash History)
 ```

@@ -1148,3 +1148,79 @@ class TestBlockAndReceiptIntegrity:
             print(f"✅ Block {i+1} gas_used persisted: {block.header.gas_used}")
         
         node2.store.close()
+
+    def test_transactions_persist_in_blocks_after_restart(self, temp_db_path, pk_and_address):
+        """
+        Test that block.transactions contains actual transaction objects after restart.
+        This was a critical bug: blocks returned empty transaction lists after restart.
+        """
+        pk, address = pk_and_address
+        
+        genesis_state = {
+            address: {
+                "balance": to_wei(100, "ether"),
+                "nonce": 0,
+                "code": b"",
+                "storage": {},
+            }
+        }
+        
+        # Phase 1: Create blocks with transactions
+        node1 = Chain.from_genesis(
+            genesis_state,
+            chain_id=1337,
+            block_time=0,
+            store_type="sqlite",
+            store_path=temp_db_path,
+        )
+        
+        tx_hashes = []
+        for i in range(3):
+            nonce = node1.get_nonce(address)
+            signed_tx = node1.create_transaction(
+                from_private_key=pk.to_bytes(),
+                to=bytes.fromhex("deadbeef" * 5),
+                value=to_wei(1, "ether"),
+                data=b"",
+                gas=21_000,
+                gas_price=1_000_000_000,
+                nonce=nonce,
+            )
+            tx_hash = node1.send_transaction(signed_tx)
+            tx_hashes.append(tx_hash)
+            node1.build_block()
+            print(f"✅ Block {i+1} created with 1 transaction")
+        
+        # Verify transactions exist before restart
+        for i in range(3):
+            block = node1.store.get_block(i + 1)
+            assert len(block.transactions) == 1, f"Block {i+1} should have 1 transaction before restart"
+            print(f"   Block {i+1} has {len(block.transactions)} transaction(s) before restart")
+        
+        node1.store.close()
+        print("✅ Node shutdown")
+        
+        # Phase 2: Restart and verify transactions persisted
+        node2 = Chain.from_genesis(
+            genesis_state,
+            chain_id=1337,
+            block_time=0,
+            store_type="sqlite",
+            store_path=temp_db_path,
+        )
+        print("✅ Node restarted")
+        
+        # Verify transactions exist after restart
+        for i in range(3):
+            block = node2.store.get_block(i + 1)
+            assert len(block.transactions) == 1, f"Block {i+1} should have 1 transaction after restart"
+            print(f"✅ Block {i+1} has {len(block.transactions)} transaction(s) after restart")
+            
+            # Verify transaction hash matches
+            tx = block.transactions[0]
+            from sequencer.core.crypto import keccak256
+            stored_tx_hash = keccak256(tx.encode() if hasattr(tx, 'encode') else tx)
+            assert stored_tx_hash == tx_hashes[i], f"Transaction hash mismatch for block {i+1}"
+        
+        node2.store.close()
+        print("✅ All transactions persisted correctly in blocks")

@@ -8,7 +8,7 @@ Python Ethereum L1 execution client. Fully independent port referencing ethrex (
 # Install
 pip install -e ".[dev]"
 
-# Unit tests (562 tests, ~7s)
+# Unit tests (593 tests, ~7s)
 pytest
 
 # Test a specific module
@@ -71,7 +71,7 @@ Useful log signals:
 ## Project Structure
 
 ```
-py-ethclient/                    # ~20,600+ LOC (source + tests)
+py-ethclient/                    # ~22,100+ LOC (source + tests)
 ├── ethclient/
 │   ├── main.py                  # CLI entry point (argparse, asyncio event loop)
 │   ├── common/                  # Foundation modules (no internal dependencies)
@@ -120,7 +120,7 @@ py-ethclient/                    # ~20,600+ LOC (source + tests)
 │       ├── eth_api.py           # eth_ namespace handlers
 │       ├── engine_api.py        # Engine API V1/V2/V3 handlers
 │       └── engine_types.py      # Engine API request/response types
-├── tests/                       # pytest unit tests (562 tests)
+├── tests/                       # pytest unit tests (593 tests)
 │   ├── test_rlp.py              # RLP encoding/decoding
 │   ├── test_trie.py             # MPT + Ethereum official test vectors
 │   ├── test_trie_proofs.py      # Trie Merkle proofs & range verification
@@ -169,7 +169,7 @@ Lower modules never depend on higher modules. `common` can be safely imported fr
 ### Unit Tests (offline)
 
 ```bash
-pytest                           # All tests (562, ~7s)
+pytest                           # All tests (593, ~7s)
 pytest tests/test_rlp.py         # RLP only
 pytest tests/test_evm.py -k "test_add"  # Specific test
 pytest -v                        # Verbose output
@@ -187,13 +187,13 @@ Test coverage by file:
 | test_evm.py | 88 | Stack, memory, all opcodes, precompiles (BN128, KZG) |
 | test_storage.py | 65 | Store CRUD, state root, snap storage (both backends parametrized) |
 | test_blockchain.py | 37 | Header validation, base fee, block execution, mempool, fork choice |
-| test_p2p.py | 66 | RLPx, handshake, eth messages, head discovery |
+| test_p2p.py | 90 | RLPx, handshake, eth messages, head discovery |
 | test_protocol_registry.py | 17 | Capability negotiation, offset calculation |
 | test_snap_messages.py | 21 | snap/1 message encode/decode roundtrip |
-| test_snap_sync.py | 27 | Snap sync state machine, response handlers |
+| test_snap_sync.py | 29 | Snap sync state machine, response handlers |
 | test_rpc.py | 76 | JSON-RPC, eth_call/estimateGas EVM, Engine API, tx/receipt lookup |
-| test_integration.py | 12 | Cross-module integration |
-| test_disk_backend.py | 28 | LMDB persistence, flush, overlay, state root |
+| test_integration.py | 14 | Cross-module integration |
+| test_disk_backend.py | 31 | LMDB persistence, flush, overlay, state root |
 | integration/ | 6 | Archive mode, chaindata, Fusaka compliance |
 
 ### Live Network Test

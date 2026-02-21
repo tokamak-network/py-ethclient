@@ -8,7 +8,7 @@ Python으로 구현한 이더리움 L1 실행 클라이언트. ethrex (Rust)를 
 # 설치
 pip install -e ".[dev]"
 
-# 단위 테스트 (562개, ~7초)
+# 단위 테스트 (593개, ~7초)
 pytest
 
 # 특정 모듈 테스트
@@ -37,7 +37,7 @@ docker compose down                         # 종료
 ## 프로젝트 구조
 
 ```
-py-ethclient/                    # ~20,600+ LOC (소스 + 테스트)
+py-ethclient/                    # ~22,100+ LOC (소스 + 테스트)
 ├── ethclient/
 │   ├── main.py                  # CLI 진입점 (argparse, asyncio 이벤트 루프)
 │   ├── common/                  # 기초 모듈 (의존성 없음)
@@ -86,7 +86,7 @@ py-ethclient/                    # ~20,600+ LOC (소스 + 테스트)
 │       ├── eth_api.py           # eth_ 네임스페이스 핸들러
 │       ├── engine_api.py        # Engine API V1/V2/V3 핸들러
 │       └── engine_types.py      # Engine API 요청/응답 타입
-├── tests/                       # pytest 단위 테스트 (562개)
+├── tests/                       # pytest 단위 테스트 (593개)
 │   ├── test_rlp.py              # RLP 인코딩/디코딩
 │   ├── test_trie.py             # MPT + 이더리움 공식 테스트 벡터
 │   ├── test_trie_proofs.py      # 트라이 머클 증명 & 범위 검증
@@ -135,7 +135,7 @@ main.py (통합 진입점)
 ### 단위 테스트 (오프라인)
 
 ```bash
-pytest                           # 전체 (562개, ~7초)
+pytest                           # 전체 (593개, ~7초)
 pytest tests/test_rlp.py         # RLP만
 pytest tests/test_evm.py -k "test_add"  # 특정 테스트
 pytest -v                        # 상세 출력
@@ -153,13 +153,13 @@ pytest --tb=short                # 짧은 트레이스백
 | test_evm.py | 88 | 스택, 메모리, 모든 옵코드, 프리컴파일 (BN128, KZG) |
 | test_storage.py | 65 | Store CRUD, 상태 루트, snap 저장소 (양 백엔드 parametrize) |
 | test_blockchain.py | 37 | 헤더 검증, base fee, 블록 실행, mempool, fork choice |
-| test_p2p.py | 66 | RLPx, 핸드셰이크, eth 메시지, head discovery |
+| test_p2p.py | 90 | RLPx, 핸드셰이크, eth 메시지, head discovery |
 | test_protocol_registry.py | 17 | Capability 협상, 오프셋 계산 |
 | test_snap_messages.py | 21 | snap/1 메시지 encode/decode 라운드트립 |
-| test_snap_sync.py | 27 | Snap sync 상태 머신, 응답 핸들러 |
+| test_snap_sync.py | 29 | Snap sync 상태 머신, 응답 핸들러 |
 | test_rpc.py | 76 | JSON-RPC, eth_call/estimateGas EVM, Engine API, tx/receipt 조회 |
-| test_integration.py | 12 | 모듈 간 통합 |
-| test_disk_backend.py | 28 | LMDB 영속성, flush, 오버레이, 상태 루트 |
+| test_integration.py | 14 | 모듈 간 통합 |
+| test_disk_backend.py | 31 | LMDB 영속성, flush, 오버레이, 상태 루트 |
 | integration/ | 6 | 아카이브 모드, 체인데이터, Fusaka 호환 |
 
 ### 라이브 네트워크 테스트

@@ -102,6 +102,7 @@ ethclient --genesis ./genesis.json --port 30303
 | `--metrics-port` | `6060` | Prometheus 메트릭 리슨 포트 |
 | `--bootnode-only` | off | 설정된 부트노드에만 다이얼 |
 | `--archive` | off | 히스토리컬 상태 조회를 위한 아카이브 모드 활성화 |
+| `--rpc-process` | off | `eth_` JSON-RPC를 별도 서브프로세스로 실행 (`--data-dir` 필요) |
 | `--jwt-secret` | - | Engine API 인증용 JWT 시크릿 또는 파일 경로 |
 
 ## JSON-RPC API
@@ -327,14 +328,14 @@ class L2Hook(ExecutionHook):
 
 | 모듈 | 파일 | LOC | 설명 |
 |---|---:|---:|---|
-| `common/` | 6 | 2,375 | RLP, types, trie (+ 증명), crypto, config |
+| `common/` | 6 | 2,374 | RLP, types, trie (+ 증명), crypto, config |
 | `vm/` | 8 | 2,703 | EVM, opcodes, precompiles, gas |
-| `storage/` | 4 | 1,372 | Store 인터페이스, 인메모리 & LMDB 백엔드 |
+| `storage/` | 4 | 1,431 | Store 인터페이스, 인메모리 & LMDB 백엔드 |
 | `blockchain/` | 4 | 1,353 | 블록 검증, mempool, fork choice, simulate_call |
-| `networking/` | 19 | 4,339 | RLPx, discovery, eth/68, snap/1, 프로토콜 레지스트리, sync, server |
+| `networking/` | 19 | 5,117 | RLPx, discovery, eth/68, snap/1, 프로토콜 레지스트리, sync, server |
 | `rpc/` | 5 | 1,660 | JSON-RPC 서버, eth API, Engine API |
-| `main.py` | 1 | 529 | CLI 진입점 |
-| **합계** | **48** | **14,331** | |
+| `main.py` | 1 | 633 | CLI 진입점 |
+| **합계** | **47** | **15,271** | |
 
 ### 테스트 코드
 
@@ -347,15 +348,15 @@ class L2Hook(ExecutionHook):
 | `test_evm.py` | 821 | 88 | 스택, 메모리, 옵코드, 프리컴파일 |
 | `test_storage.py` | 387 | 65 | Store CRUD, 상태 루트 (양 백엔드 parametrize) |
 | `test_blockchain.py` | 617 | 37 | 헤더 검증, 블록 실행, mempool, fork choice |
-| `test_p2p.py` | 1,100 | 66 | RLPx, 핸드셰이크, eth 메시지, head discovery |
+| `test_p2p.py` | 1,624 | 90 | RLPx, 핸드셰이크, eth 메시지, head discovery |
 | `test_rpc.py` | 909 | 76 | JSON-RPC 엔드포인트, eth_call/estimateGas, Engine API, tx/receipt 조회 |
 | `test_protocol_registry.py` | 177 | 17 | 멀티 프로토콜 capability 협상 |
 | `test_snap_messages.py` | 267 | 21 | snap/1 메시지 encode/decode 라운드트립 |
-| `test_snap_sync.py` | 413 | 27 | Snap sync 상태 머신, 응답 핸들러 |
-| `test_integration.py` | 250 | 12 | 모듈 간 통합 |
-| `test_disk_backend.py` | 495 | 28 | LMDB 영속성, flush, 오버레이, 상태 루트 일치 |
+| `test_snap_sync.py` | 446 | 29 | Snap sync 상태 머신, 응답 핸들러 |
+| `test_integration.py` | 272 | 14 | 모듈 간 통합 |
+| `test_disk_backend.py` | 543 | 31 | LMDB 영속성, flush, 오버레이, 상태 루트 일치 |
 | `integration/` | 68 | 6 | 아카이브 모드, 체인데이터, Fusaka 호환 |
-| **합계** | **6,290** | **562** | |
+| **합계** | **6,917** | **593** | |
 
 ## Current Limitations
 

@@ -1,0 +1,62 @@
+# py-ethclient
+
+> A Python Ethereum Layer 1 execution client built from scratch. Implements EVM, RLPx transport, eth/68 and snap/1 wire protocols, Discovery v4, full sync, snap sync, Engine API, and JSON-RPC — all in pure Python with only cryptographic primitives as external dependencies.
+
+py-ethclient is a fully independent Python implementation of an Ethereum execution client, inspired by ethrex (Rust). It connects directly to the Ethereum peer-to-peer network, executes blocks with a 140+ opcode EVM, and supports Mainnet, Sepolia, and Holesky networks. The project contains 15,271 lines of source code across 47 files with 593 tests.
+
+## Core Modules
+
+- [README](https://github.com/tokamak-network/py-ethclient/blob/main/README.md): Project overview, installation, CLI options, API reference, architecture diagram
+- [RLP Encoding](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/common/rlp.py): Recursive Length Prefix encoding/decoding for Ethereum serialization
+- [Types](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/common/types.py): Block, BlockHeader, Transaction (Legacy/EIP-2930/EIP-1559/EIP-4844/EIP-7702), Account, Receipt
+- [Merkle Patricia Trie](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/common/trie.py): Trie implementation with proof generation, verification, and range proofs
+- [Crypto](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/common/crypto.py): Keccak-256, secp256k1 ECDSA sign/recover, address derivation
+- [Chain Config](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/common/config.py): Network configurations, hardfork parameters, genesis handling
+
+## EVM (Ethereum Virtual Machine)
+
+- [EVM Core](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/vm/evm.py): Main execution loop, transaction execution, contract creation
+- [Opcodes](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/vm/opcodes.py): 140+ opcode handlers (arithmetic, stack, memory, storage, control flow, logging, system)
+- [Precompiles](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/vm/precompiles.py): ecrecover, SHA-256, RIPEMD-160, modexp, BN128, BLAKE2f, KZG point evaluation
+- [Gas Calculation](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/vm/gas.py): EIP-2929 cold/warm access tracking, EIP-2200/3529 SSTORE refunds
+- [Execution Hooks](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/vm/hooks.py): L2 extensibility hook system for custom execution logic
+
+## Blockchain Engine
+
+- [Chain](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/blockchain/chain.py): Block validation, transaction/block execution, simulate_call for eth_call/eth_estimateGas
+- [Mempool](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/blockchain/mempool.py): Transaction pool with nonce ordering and replacement policy
+- [Fork Choice](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/blockchain/fork_choice.py): Canonical chain management, reorganizations
+
+## Storage
+
+- [Store Interface](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/storage/store.py): Abstract storage interface with snap sync support
+- [Memory Backend](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/storage/memory_backend.py): In-memory implementation with state root computation
+- [Disk Backend](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/storage/disk_backend.py): LMDB-backed persistent storage with hybrid overlay pattern
+
+## P2P Networking
+
+- [P2P Server](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/server.py): Multi-protocol dispatch server
+- [RLPx Handshake](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/rlpx/handshake.py): ECIES encrypted handshake (EIP-8)
+- [RLPx Framing](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/rlpx/framing.py): AES-256-CTR frame encryption with SHA3 MAC
+- [eth/68 Messages](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/eth/messages.py): eth/68 wire protocol message encoding/decoding
+- [snap/1 Messages](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/snap/messages.py): snap/1 wire protocol (8 message types)
+- [Protocol Registry](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/protocol_registry.py): Dynamic capability negotiation and message ID offset calculation
+- [Discovery v4](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/discv4/discovery.py): UDP discovery with Kademlia routing
+- [Full Sync](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/sync/full_sync.py): Header/body download and block execution pipeline
+- [Snap Sync](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/sync/snap_sync.py): 4-phase state machine (accounts, storage, bytecode, trie healing)
+
+## JSON-RPC & Engine API
+
+- [RPC Server](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/rpc/server.py): FastAPI-based JSON-RPC 2.0 dispatcher with batch support
+- [eth/net/web3 API](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/rpc/eth_api.py): 20+ RPC methods (eth_call, eth_estimateGas, transaction/receipt lookups, etc.)
+- [Engine API](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/rpc/engine_api.py): V1/V2/V3 forkchoiceUpdated, getPayload, newPayload with JWT authentication
+
+## Supported EIPs
+
+EIP-155 (replay protection), EIP-1559 (dynamic fees), EIP-2718 (typed transactions), EIP-2929 (cold/warm access), EIP-2930 (access lists), EIP-2200/3529 (SSTORE refunds), EIP-2565 (modexp gas), EIP-152 (BLAKE2f), EIP-196/197 (BN128 curves), EIP-4844 (blob transactions, KZG), EIP-7702 (set EOA code, Prague).
+
+## Optional
+
+- [Korean README](https://github.com/tokamak-network/py-ethclient/blob/main/README_ko.md): Korean language documentation
+- [Dockerfile](https://github.com/tokamak-network/py-ethclient/blob/main/Dockerfile): Docker container build configuration
+- [CLI Entry Point](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/main.py): Command-line interface with network, sync, and RPC options

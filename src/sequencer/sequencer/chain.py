@@ -585,8 +585,22 @@ class Chain:
         # Track addresses that are touched during this block
         touched_this_block: set[bytes] = set()
         
+        # Track which transactions are actually included (gas limit may cut some off)
+        included_txs = []
+        included_tx_hashes = []
+        
         for tx in pending:
+            # Check gas limit BEFORE execution using declared gas
+            tx_gas_limit = tx.gas
+            if cumulative_gas + tx_gas_limit > self.gas_limit:
+                break  # Block full, stop adding transactions
+            
             block, evm_receipt, computation = self.evm.apply_transaction(tx)
+            
+            # Track this transaction as included
+            included_txs.append(tx)
+            tx_hash = keccak256(tx.encode())
+            included_tx_hashes.append(tx_hash)
             
             # Track sender
             touched_this_block.add(tx.sender)
@@ -595,12 +609,14 @@ class Chain:
             if tx.to and tx.to != b"":
                 touched_this_block.add(tx.to)
             
+            # IMPORTANT: receipt.gas_used is cumulative (Ethereum spec)
+            # So we use it directly rather than adding
             if computation.is_error:
-                tx_gas = tx.gas
+                # On error, add the full gas
+                cumulative_gas += tx.gas
             else:
-                tx_gas = evm_receipt.gas_used if hasattr(evm_receipt, 'gas_used') else tx.gas
-            
-            cumulative_gas += tx_gas
+                # Use receipt's cumulative gas used
+                cumulative_gas = evm_receipt.gas_used if hasattr(evm_receipt, 'gas_used') else cumulative_gas + tx.gas
             
             # Calculate contract address for contract creation
             contract_address = None
@@ -654,14 +670,12 @@ class Chain:
         else:
             new_base_fee = INITIAL_BASE_FEE
         
-        tx_hashes = [keccak256(tx.encode()) for tx in pending]
-        
         header = BlockHeader(
             parent_hash=parent_hash,
             ommers_hash=EMPTY_OMMERS_HASH,
             coinbase=self.coinbase,
             state_root=mined_block.header.state_root,
-            transactions_root=self._compute_transactions_root(pending),
+            transactions_root=self._compute_transactions_root(included_txs),
             receipts_root=self._compute_receipts_root(receipts),
             logs_bloom=b"\x00" * 256,
             difficulty=0,
@@ -672,10 +686,10 @@ class Chain:
             base_fee_per_gas=new_base_fee,
         )
         
-        block = Block(header=header, transactions=pending)
-        self.store.save_block(block, receipts, tx_hashes)
+        block = Block(header=header, transactions=included_txs)
+        self.store.save_block(block, receipts, included_tx_hashes)
         
-        for tx_hash in tx_hashes:
+        for tx_hash in included_tx_hashes:
             self.mempool.remove(tx_hash)
         
         self._last_block_time = block_timestamp
@@ -690,7 +704,13 @@ class Chain:
         return block
     
     def _save_evm_state_incremental(self, addresses: set[bytes]):
-        """Save EVM state for specific addresses (incremental update)."""
+        """Save EVM state for specific addresses (incremental update).
+        
+        Known Limitation: This uses a heuristic to discover storage slots by checking
+        slots 0-99 and any previously stored slots. Contracts using slots >= 100 for
+        the first time may lose state on restart. For proper storage tracking, the EVM
+        state journal would need to be hooked.
+        """
         if not isinstance(self.store, SQLiteStore):
             return
         
@@ -708,9 +728,13 @@ class Chain:
                     # Get previously stored slots
                     stored_storage = self.store.get_all_storage(address)
                     
-                    # Check all slots that were previously stored or are likely to be used
-                    # Slots 0-9 are common for simple contracts, but we also check stored slots
-                    slots_to_check = set(range(20)) | set(stored_storage.keys())
+                    # Heuristic: Check slots 0-99 (covers most simple contracts) plus
+                    # any slots that were previously stored. This is NOT comprehensive -
+                    # contracts using high slot numbers (>99) may lose state on restart.
+                    # 
+                    # Proper fix: Hook into EVM's state journal to capture all writes.
+                    # See: https://github.com/ethereum/py-evm/issues/172
+                    slots_to_check = set(range(100)) | set(stored_storage.keys())
                     
                     for slot in slots_to_check:
                         value = self.evm.get_storage(address, slot)

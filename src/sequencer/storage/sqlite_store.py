@@ -796,12 +796,35 @@ class SQLiteStore:
             conn.commit()
     
     def close(self):
-        """Close the database connection."""
+        """Close the database connection with proper cleanup.
+        
+        Runs PRAGMA optimize before closing to optimize database structure.
+        """
         with self._lock:
             if self._conn:
-                self._conn.close()
-                self._conn = None
+                try:
+                    # Optimize database before closing
+                    self._conn.execute("PRAGMA optimize")
+                    self._conn.commit()
+                    self._conn.close()
+                except Exception as e:
+                    print(f"Warning: Error closing database: {e}")
+                finally:
+                    self._conn = None
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures proper cleanup."""
+        self.close()
+        return False
     
     def __del__(self):
-        """Clean up database connection on object destruction."""
+        """Clean up database connection on object destruction.
+        
+        Note: Relying on __del__ is unreliable. Use context manager or
+        explicit close() for guaranteed cleanup.
+        """
         self.close()

@@ -10,6 +10,8 @@ Key behavior:
 """
 
 import json
+import signal
+import sys
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -180,13 +182,35 @@ def create_server(chain, host: str = "127.0.0.1", port: int = 8545) -> HTTPServe
 
 
 def _block_producer(chain):
+    """Background thread that produces blocks at regular intervals.
+    
+    Includes error handling to prevent silent crashes. After 10 consecutive
+    errors, the thread stops to allow for recovery mechanisms.
+    """
+    consecutive_errors = 0
+    max_consecutive_errors = 10
+    
     while True:
-        time.sleep(1)
-        if chain.should_build_block():
-            chain.build_block()
+        try:
+            time.sleep(1)
+            if chain.should_build_block():
+                chain.build_block()
+                consecutive_errors = 0  # Reset on success
+        except Exception as e:
+            consecutive_errors += 1
+            print(f"[CRITICAL] Block producer error ({consecutive_errors}/{max_consecutive_errors}): {e}")
+            if consecutive_errors >= max_consecutive_errors:
+                print(f"[FATAL] Too many consecutive errors, stopping block production")
+                break  # Stop thread, let main process handle recovery
+            time.sleep(5)  # Backoff on error
 
 
 def serve(chain, host: str = "127.0.0.1", port: int = 8545):
+    """Start the JSON-RPC server with graceful shutdown support.
+    
+    Handles SIGINT and SIGTERM to properly close database connections
+    and shutdown the server.
+    """
     server = create_server(chain, host, port)
     
     block_thread = threading.Thread(target=_block_producer, args=(chain,), daemon=True)
@@ -194,4 +218,24 @@ def serve(chain, host: str = "127.0.0.1", port: int = 8545):
     
     print(f"JSON-RPC server listening on {host}:{port}")
     print(f"Block production interval: {chain.block_time}s")
-    server.serve_forever()
+    
+    # Setup graceful shutdown
+    def shutdown_handler(signum, frame):
+        print("\nShutting down gracefully...")
+        server.shutdown()
+        # Close database connection if available
+        if hasattr(chain, 'store') and hasattr(chain.store, 'close'):
+            chain.store.close()
+            print("Database connection closed")
+        print("Shutdown complete")
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    
+    try:
+        server.serve_forever()
+    finally:
+        # Ensure cleanup even if serve_forever raises
+        if hasattr(chain, 'store') and hasattr(chain.store, 'close'):
+            chain.store.close()

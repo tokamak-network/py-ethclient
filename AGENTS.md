@@ -378,8 +378,112 @@ When porting from Rust `ethrex`, map components as follows:
 | **Functions > Classes** | No unnecessary OOP |
 | **Test Our Code** | Don't test libraries |
 | **Dumb > Smart** | Easier to fix, easier to replace |
+| **Document Limitations** | Be honest about what doesn't work |
 
 **Target**: ~1,450 LOC total (76% reduction from ~6,150 LOC)
+
+---
+
+## Known Limitations (Critical for Agents)
+
+When contributing code, be aware of these **documented limitations**:
+
+### 1. Storage Slot Discovery is Heuristic-Based
+
+The `_save_evm_state_incremental` method checks slots 0-99 plus previously stored slots. This is a **heuristic**, not a guarantee.
+
+```python
+# Current implementation (chain.py)
+slots_to_check = set(range(100)) | set(stored_storage.keys())
+```
+
+**What this means for agents:**
+- ❌ DON'T promise "full state persistence" in comments
+- ✅ DO document the limitation when modifying storage code
+- 📝 Reference: README.md "Known Limitations" section
+
+**If you need proper storage tracking:**
+- Hook into EVM's state journal (advanced, ~1-2 days)
+- Track all storage writes during execution
+- See: https://github.com/ethereum/py-evm/issues/172
+
+---
+
+### 2. CREATE2 Contract Addresses Not Tracked
+
+Only `CREATE` (nonce-based) contract deployment is tracked. `CREATE2` (salt-based) contracts may lose state.
+
+```python
+# Current implementation only handles CREATE
+if tx.to is None or tx.to == b"":
+    # CREATE detection works
+else:
+    # CREATE2 contracts created during execution are NOT tracked
+```
+
+**What this means for agents:**
+- ❌ DON'T assume all contract addresses are persisted
+- ✅ DO note CREATE2 limitation in related code
+- 📝 Consider adding CREATE2 tracking if user requests it
+
+---
+
+### 3. Block Producer Stops After 10 Consecutive Errors
+
+The block producer thread has error handling but will **stop** after 10 consecutive errors.
+
+```python
+# server.py - block producer
+if consecutive_errors >= max_consecutive_errors:
+    print(f"[FATAL] Too many consecutive errors, stopping block production")
+    break  # Thread stops, manual restart needed
+```
+
+**What this means for agents:**
+- ❌ DON'T assume automatic recovery
+- ✅ DO log errors clearly for debugging
+- 📝 Document that manual restart may be needed
+
+---
+
+### 4. py-evm is Archived
+
+The EVM library (`py-evm`) is no longer actively maintained.
+
+**What this means for agents:**
+- ❌ DON'T rely on new EVM features
+- ✅ DO monitor for security issues
+- 📝 When suggesting EVM changes, note the dependency status
+
+---
+
+## Testing Guidelines (Updated)
+
+### Test What Matters
+
+```python
+# GOOD: Test actual persistence
+def test_state_survives_restart():
+    # Deploy contract, set storage, restart, verify
+    pass
+
+# GOOD: Test gas limit enforcement
+def test_block_gas_limit_respected():
+    # Fill block to limit, verify no overflow
+    pass
+
+# BAD: Test library internals
+def test_rlp_encoding():
+    # ethereum-rlp is already tested
+    pass
+```
+
+### Critical Tests to Maintain
+
+1. **Thread safety under concurrent load**
+2. **Transaction persistence across restarts**
+3. **Gas limit enforcement**
+4. **State recovery (with documented limitations)**
 
 ---
 

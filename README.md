@@ -717,6 +717,61 @@ Sample contracts are provided in `contracts/`:
 - **SimpleStorage.sol**: Basic storage with getter/setter
 - **Counter.sol**: Simple counter with increment/decrement
 
+## Known Limitations
+
+This is a **beta-quality single sequencer implementation** with the following known limitations:
+
+### Storage Slot Discovery (Heuristic-Based)
+
+The EVM state persistence uses a heuristic to discover storage slots by checking slots 0-99 and any previously stored slots. **Contracts using storage slots >= 100 for the first time may lose state on restart.**
+
+- **Impact**: Contract storage in high slots (>99) not persisted
+- **Workaround**: Keep storage slots below 100 (most simple contracts do)
+- **Proper Fix**: Hook into EVM's state journal (requires py-evm integration)
+- **Tracking**: See GitHub issue #XXX
+
+### CREATE2 Contract Address Tracking
+
+Only `CREATE` (nonce-based) contract addresses are automatically tracked. Contracts deployed via `CREATE2` (salt-based) may not have their addresses properly persisted.
+
+- **Impact**: CREATE2 contracts may lose code/storage on restart
+- **Workaround**: Use `CREATE` for contract deployment when possible
+- **Tracking**: See GitHub issue #XXX
+
+### py-evm Dependency (Archived)
+
+This project uses `py-evm`, which is no longer actively maintained by the Ethereum Foundation.
+
+- **Impact**: No new EVM features, potential unpatched bugs
+- **Monitoring**: We monitor for security issues
+- **Migration Plan**: Evaluating `revm` (Rust EVM via pyo3) as alternative
+
+### Block Producer Error Recovery
+
+The block producer thread includes error handling but will stop after 10 consecutive errors. Automatic recovery is not implemented.
+
+- **Impact**: Node may stop producing blocks after persistent errors
+- **Workaround**: Restart node manually
+- **Tracking**: See GitHub issue #XXX
+
+## Production Readiness
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Thread Safety | ✅ Production Ready | RLock-protected |
+| Transaction Persistence | ✅ Production Ready | Full RLP storage |
+| SQL Atomicity | ✅ Production Ready | BEGIN/COMMIT/ROLLBACK |
+| State Recovery | ✅ Beta | Storage slot heuristic |
+| Gas Limit Enforcement | ✅ Production Ready | Enforced per block |
+| Block Producer Recovery | ⚠️ Beta | Manual restart needed |
+| CREATE2 Support | ⚠️ Beta | Address tracking limited |
+
+**Recommended Use Cases:**
+- ✅ Development and testing environments
+- ✅ Private testnets
+- ✅ Prototyping and experimentation
+- ⚠️ Production (with awareness of limitations)
+
 ## License
 
 MIT

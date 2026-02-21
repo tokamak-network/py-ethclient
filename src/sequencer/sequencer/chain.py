@@ -422,13 +422,14 @@ class Chain:
             return tx_hash
     
     def should_build_block(self) -> bool:
-        if len(self.mempool) == 0:
-            return False
-        
-        current_time = int(time.time())
-        time_elapsed = current_time - self._last_block_time
-        
-        return time_elapsed >= self.block_time
+        with self._lock:
+            if len(self.mempool) == 0:
+                return False
+            
+            current_time = int(time.time())
+            time_elapsed = current_time - self._last_block_time
+            
+            return time_elapsed >= self.block_time
 
     def call(
         self,

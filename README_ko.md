@@ -1,10 +1,30 @@
 # py-ethclient
 
-Python Ethereum L1 execution client — [ethrex](https://github.com/lambdaclass/ethrex) (Rust) 기반 완전 독립 포팅.
+**순수 Python으로 처음부터 구현한 이더리움 실행 클라이언트**
 
-devp2p를 통해 이더리움 네트워크에 직접 참여할 수 있는 노드를 목표로 하며, 암호화 프리미티브와 웹 프레임워크를 제외한 모든 로직을 직접 구현합니다.
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+[![Tests](https://img.shields.io/badge/tests-593%20passing-brightgreen)](#testing)
+[![LOC](https://img.shields.io/badge/LOC-15%2C271-blue)](#project-stats)
+
+py-ethclient는 [ethrex](https://github.com/lambdaclass/ethrex) (Rust)에서 영감을 받아 완전히 독립적으로 구현한 Python 이더리움 Layer 1 실행 클라이언트입니다. devp2p/RLPx를 통해 이더리움 P2P 네트워크에 직접 연결하며, 140개 이상의 옵코드를 지원하는 EVM(Ethereum Virtual Machine)과 full sync/snap sync를 통한 메인넷·Sepolia 동기화를 지원합니다.
+
+RLP 인코딩, 머클 패트리시아 트라이, EVM 실행, RLPx 전송 암호화, eth/68·snap/1 와이어 프로토콜, Discovery v4, Engine API 등 모든 핵심 프로토콜 로직을 순수 Python으로 직접 구현했습니다. 외부 의존성은 암호화 프리미티브와 웹 프레임워크만 사용합니다.
 
 > **[English README](./README.md)**
+
+## 주요 기능
+
+- **Full EVM** — 140+ 옵코드, 프리컴파일 (ecrecover, SHA-256, RIPEMD-160, modexp, BN128, BLAKE2f, KZG), EIP-1559/2929/2930/4844/7702 지원
+- **이더리움 P2P 네트워킹** — RLPx 암호화 전송, eth/68·snap/1 와이어 프로토콜, Discovery v4 Kademlia 라우팅
+- **동기화 모드** — Full sync (순차 블록 실행) 및 snap sync (4단계 병렬 상태 다운로드)
+- **JSON-RPC 2.0** — `eth_call`, `eth_estimateGas`, 트랜잭션/영수증 조회, 로그 쿼리 등 20개 이상 메서드
+- **Engine API V1/V2/V3** — `forkchoiceUpdated`, `getPayload`, `newPayload` + JWT 인증으로 합의 레이어 연동
+- **영속 스토리지** — LMDB 기반 디스크 백엔드, 하이브리드 오버레이 패턴으로 원자적 상태 커밋
+- **멀티 네트워크** — 메인넷, Sepolia, Holesky 지원 (네트워크별 genesis 및 하드포크 설정)
+- **593개 테스트** — RLP부터 통합 테스트까지 전 프로토콜 레이어를 커버하는 포괄적 테스트 스위트
+- **Docker 지원** — Docker Compose로 간편 배포
+- **L2 확장성** — EVM 코어 수정 없이 Layer 2를 커스터마이징할 수 있는 실행 훅 시스템 내장
 
 ## Requirements
 

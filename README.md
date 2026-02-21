@@ -26,6 +26,28 @@ All core protocol logic — RLP encoding, Merkle Patricia Trie, EVM execution, R
 - **Docker Support** — Ready-to-use Docker Compose setup for quick deployment
 - **L2 Extensibility** — Built-in execution hook system for Layer 2 customization without modifying EVM core
 
+## Why py-ethclient?
+
+Ethereum client diversity is critical for network resilience. py-ethclient is the only Ethereum execution client written in Python, making it uniquely valuable for:
+
+- **Education & Research** — Python's readability makes it the best codebase for understanding how Ethereum actually works at the protocol level. Every component (EVM, RLPx, Merkle tries, sync) is implemented in clear, readable Python
+- **Rapid Prototyping** — Test new EIPs, custom opcodes, or consensus changes in hours instead of days. Python's dynamic nature enables fast iteration on protocol experiments
+- **L2 Development** — The built-in execution hook system lets you build a Layer 2 execution environment without modifying any core EVM code
+- **Client Diversity** — Adding a Python client to the Ethereum ecosystem (alongside Go, Rust, C#, Java) strengthens the network against implementation-specific bugs
+
+### Comparison with Other Execution Clients
+
+| | py-ethclient | [geth](https://github.com/ethereum/go-ethereum) | [reth](https://github.com/paradigmxyz/reth) | [nethermind](https://github.com/NethermindEth/nethermind) |
+|---|---|---|---|---|
+| **Language** | Python | Go | Rust | C# |
+| **Purpose** | Education, Research, L2 | Production | Production | Production |
+| **EVM** | 140+ opcodes | Full | Full | Full |
+| **Sync modes** | Full + Snap | Full + Snap + Light | Full + Snap | Full + Snap + Fast |
+| **Engine API** | V1/V2/V3 | V1/V2/V3 | V1/V2/V3 | V1/V2/V3 |
+| **P2P protocols** | eth/68, snap/1 | eth/68, snap/1 | eth/68, snap/1 | eth/68, snap/1 |
+| **Code readability** | Very High | High | Medium | Medium |
+| **Extensibility** | Hook system | Plugin | Modular | Plugin |
+
 ## Requirements
 
 - Python 3.12+
@@ -376,6 +398,23 @@ class L2Hook(ExecutionHook):
 | `test_disk_backend.py` | 543 | 31 | LMDB persistence, flush, overlay, state root consistency |
 | `integration/` | 68 | 6 | Archive mode, chaindata, Fusaka compliance |
 | **Total** | **6,917** | **593** | |
+
+## FAQ
+
+**Is there a Python Ethereum execution client?**
+Yes — py-ethclient is a fully functional Ethereum execution client written entirely in Python. It implements the EVM with 140+ opcodes, connects to the Ethereum P2P network via RLPx (eth/68, snap/1), and supports both full sync and snap sync for Mainnet and Sepolia.
+
+**Can py-ethclient sync with Ethereum mainnet?**
+Yes. py-ethclient connects to Ethereum mainnet and Sepolia testnet peers, performs peer discovery via Discovery v4, and synchronizes using either full sync (sequential block execution) or snap sync (parallel state download). It has been live-tested against Geth nodes on both networks.
+
+**How does py-ethclient compare to geth?**
+geth (Go Ethereum) is the most widely used production execution client. py-ethclient implements the same core protocols (EVM, eth/68, snap/1, Engine API) but is written in Python for readability and research purposes. While geth is optimized for production performance, py-ethclient prioritizes code clarity, making it ideal for learning how Ethereum works at the protocol level.
+
+**Can I use py-ethclient to build an L2?**
+Yes. py-ethclient includes a built-in execution hook system (`ExecutionHook`) that lets you customize EVM behavior — including pre/post-execution hooks, call interception, and state change tracking — without modifying any core code. This makes it a practical foundation for L2 execution layer development.
+
+**What EIPs does py-ethclient support?**
+py-ethclient supports EIP-155 (replay protection), EIP-1559 (dynamic fees), EIP-2718 (typed transactions), EIP-2929/2930 (access lists), EIP-4844 (blob transactions with KZG), and EIP-7702 (Prague EOA code). See the [Supported EIPs](#supported-eips) section for the full list.
 
 ## Current Limitations
 

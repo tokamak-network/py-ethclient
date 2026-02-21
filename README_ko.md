@@ -26,6 +26,28 @@ RLP 인코딩, 머클 패트리시아 트라이, EVM 실행, RLPx 전송 암호�
 - **Docker 지원** — Docker Compose로 간편 배포
 - **L2 확장성** — EVM 코어 수정 없이 Layer 2를 커스터마이징할 수 있는 실행 훅 시스템 내장
 
+## 왜 py-ethclient인가?
+
+이더리움 네트워크의 건강성을 위해 클라이언트 다양성은 매우 중요합니다. py-ethclient는 Python으로 작성된 유일한 이더리움 실행 클라이언트로, 다음과 같은 고유한 가치를 제공합니다:
+
+- **교육 & 연구** — Python의 높은 가독성 덕분에 이더리움이 프로토콜 수준에서 어떻게 동작하는지 이해하기 위한 최적의 코드베이스입니다. EVM, RLPx, 머클 트라이, 동기화 등 모든 컴포넌트가 명확하고 읽기 쉬운 Python으로 구현되어 있습니다
+- **빠른 프로토타이핑** — 새로운 EIP, 커스텀 옵코드, 합의 변경 사항을 며칠이 아닌 몇 시간 만에 테스트할 수 있습니다. Python의 동적 특성이 프로토콜 실험의 빠른 반복을 가능하게 합니다
+- **L2 개발** — 내장된 실행 훅 시스템을 통해 EVM 코어 코드를 수정하지 않고도 Layer 2 실행 환경을 구축할 수 있습니다
+- **클라이언트 다양성** — Go, Rust, C#, Java에 이어 Python 클라이언트를 추가함으로써 구현 특화 버그에 대한 네트워크의 복원력을 강화합니다
+
+### 다른 실행 클라이언트와의 비교
+
+| | py-ethclient | [geth](https://github.com/ethereum/go-ethereum) | [reth](https://github.com/paradigmxyz/reth) | [nethermind](https://github.com/NethermindEth/nethermind) |
+|---|---|---|---|---|
+| **언어** | Python | Go | Rust | C# |
+| **목적** | 교육, 연구, L2 | 프로덕션 | 프로덕션 | 프로덕션 |
+| **EVM** | 140+ 옵코드 | 전체 | 전체 | 전체 |
+| **동기화 모드** | Full + Snap | Full + Snap + Light | Full + Snap | Full + Snap + Fast |
+| **Engine API** | V1/V2/V3 | V1/V2/V3 | V1/V2/V3 | V1/V2/V3 |
+| **P2P 프로토콜** | eth/68, snap/1 | eth/68, snap/1 | eth/68, snap/1 | eth/68, snap/1 |
+| **코드 가독성** | 매우 높음 | 높음 | 보통 | 보통 |
+| **확장성** | 훅 시스템 | 플러그인 | 모듈러 | 플러그인 |
+
 ## Requirements
 
 - Python 3.12+
@@ -377,7 +399,24 @@ class L2Hook(ExecutionHook):
 | `integration/` | 68 | 6 | 아카이브 모드, 체인데이터, Fusaka 호환 |
 | **합계** | **6,917** | **593** | |
 
-## Current Limitations
+## FAQ
+
+**Python으로 만든 이더리움 실행 클라이언트가 있나요?**
+네 — py-ethclient는 순수 Python으로 작성된 완전한 이더리움 실행 클라이언트입니다. 140개 이상의 옵코드를 지원하는 EVM을 구현하고, RLPx(eth/68, snap/1)를 통해 이더리움 P2P 네트워크에 연결하며, 메인넷과 Sepolia에서 full sync와 snap sync를 모두 지원합니다.
+
+**py-ethclient로 이더리움 메인넷 동기화가 가능한가요?**
+네. py-ethclient는 이더리움 메인넷과 Sepolia 테스트넷 피어에 연결하고, Discovery v4를 통해 피어를 발견하며, full sync(순차 블록 실행) 또는 snap sync(병렬 상태 다운로드)로 동기화합니다. 양쪽 네트워크의 Geth 노드에 대해 라이브 테스트를 완료했습니다.
+
+**py-ethclient와 geth의 차이점은 무엇인가요?**
+geth(Go Ethereum)는 가장 널리 사용되는 프로덕션 실행 클라이언트입니다. py-ethclient는 동일한 핵심 프로토콜(EVM, eth/68, snap/1, Engine API)을 구현하지만 가독성과 연구 목적으로 Python으로 작성되었습니다. geth가 프로덕션 성능에 최적화된 반면, py-ethclient는 코드 명확성을 우선시하여 이더리움이 프로토콜 수준에서 어떻게 동작하는지 학습하기에 이상적입니다.
+
+**py-ethclient로 L2를 만들 수 있나요?**
+네. py-ethclient에는 내장된 실행 훅 시스템(`ExecutionHook`)이 있어 EVM 동작을 커스터마이징할 수 있습니다. 실행 전/후 훅, 호출 인터셉트, 상태 변경 추적 등이 가능하며, 코어 코드를 수정할 필요가 없습니다. 이를 통해 L2 실행 레이어 개발의 실질적인 기반으로 활용할 수 있습니다.
+
+**py-ethclient는 어떤 EIP를 지원하나요?**
+EIP-155(리플레이 보호), EIP-1559(동적 수수료), EIP-2718(typed 트랜잭션), EIP-2929/2930(access list), EIP-4844(blob 트랜잭션 + KZG), EIP-7702(Prague EOA 코드 설정)을 지원합니다. 전체 목록은 [지원 EIP](#지원-eip) 섹션을 참고하세요.
+
+## 현재 제한사항
 
 - **Engine API** — V1/V2/V3 구현 완료; 블록 생산 흐름 동작 중이나 최적화 진행 중
 - **eth_getLogs** — 스텁 구현; 로그 필터링 미구현

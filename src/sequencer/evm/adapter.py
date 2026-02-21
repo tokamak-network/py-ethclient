@@ -1,14 +1,20 @@
 """py-evm adapter for transaction execution."""
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 from eth import constants
 from eth.chains.base import MiningChain
 from eth.consensus.noproof import NoProofConsensus
 from eth.db.atomic import AtomicDB
 from eth.db.backends.memory import MemoryDB
-from eth.vm.forks.cancun import CancunVM
+from eth.vm.forks.prague import PragueVM
+from eth.vm.forks.prague.transactions import (
+    Authorization,
+    SetCodeTransaction,
+    UnsignedSetCodeTransaction,
+    SET_CODE_TRANSACTION_TYPE,
+)
 from eth_keys import keys
 from eth_utils import to_wei
 
@@ -39,11 +45,12 @@ class EVMAdapter:
         self._setup_chain()
 
     def _setup_chain(self):
-        CancunNoProof = CancunVM.configure(consensus_class=NoProofConsensus)
+        """Initialize the blockchain with PragueVM (supports EIP-7702)."""
+        PragueNoProof = PragueVM.configure(consensus_class=NoProofConsensus)
         
         chain_class = MiningChain.configure(
             __name__="SequencerChain",
-            vm_configuration=((constants.GENESIS_BLOCK_NUMBER, CancunNoProof),),
+            vm_configuration=((constants.GENESIS_BLOCK_NUMBER, PragueNoProof),),
             chain_id=self.config.chain_id,
         )
         
@@ -255,6 +262,104 @@ class EVMAdapter:
             value=value,
             data=data,
             access_list=access_list,
+        )
+
+    def create_unsigned_setcode_transaction(
+        self,
+        nonce: int,
+        max_priority_fee_per_gas: int,
+        max_fee_per_gas: int,
+        gas: int,
+        to: bytes | None,
+        value: int,
+        data: bytes,
+        authorization_list: Sequence[Authorization],
+        chain_id: int | None = None,
+        access_list: Sequence[tuple[bytes, Sequence[int]]] | None = None,
+    ) -> UnsignedSetCodeTransaction:
+        """
+        Create an unsigned EIP-7702 SetCode transaction (Type 0x04).
+        
+        Args:
+            nonce: Sender's nonce
+            max_priority_fee_per_gas: Priority fee per gas
+            max_fee_per_gas: Maximum fee per gas
+            gas: Gas limit
+            to: Recipient address (cannot be None for SetCode transactions)
+            value: Value to transfer
+            data: Transaction data
+            authorization_list: List of EIP-7702 authorizations
+            chain_id: Chain ID (defaults to configured chain_id)
+            access_list: Optional access list for EIP-2930
+        
+        Returns:
+            UnsignedSetCodeTransaction
+        """
+        tx_chain_id = chain_id if chain_id is not None else self.config.chain_id
+        to_address = to if to else b""
+        tx_access_list = access_list if access_list else ()
+        
+        return UnsignedSetCodeTransaction(
+            chain_id=tx_chain_id,
+            nonce=nonce,
+            max_priority_fee_per_gas=max_priority_fee_per_gas,
+            max_fee_per_gas=max_fee_per_gas,
+            gas=gas,
+            to=to_address,
+            value=value,
+            data=data,
+            access_list=tx_access_list,
+            authorization_list=authorization_list,
+        )
+
+    @staticmethod
+    def create_authorization(
+        chain_id: int,
+        address: bytes,
+        nonce: int,
+        private_key: bytes,
+    ) -> Authorization:
+        """
+        Create a signed EIP-7702 authorization.
+        
+        An authorization allows an EOA to temporarily set its code to
+        the code of the contract at `address`.
+        
+        Args:
+            chain_id: Chain ID (0 = all chains, specific chain ID = that chain only)
+            address: Address of the contract to delegate to
+            nonce: The account nonce after authorization
+            private_key: Private key to sign the authorization
+        
+        Returns:
+            Signed Authorization object
+        """
+        from eth_keys import keys as eth_keys
+        
+        # Create unsigned authorization for signing
+        # The signature is over: chain_id, address, nonce
+        pk = eth_keys.PrivateKey(private_key)
+        
+        # Build the message for signing
+        # Message format: 0x05 || rlp([chain_id, address, nonce])
+        import rlp
+        from eth_utils import to_bytes
+        
+        unsigned_auth_payload = rlp.encode([chain_id, address, nonce])
+        type_byte = to_bytes(SET_CODE_TRANSACTION_TYPE)
+        message = type_byte + unsigned_auth_payload
+        
+        # Sign the message
+        signature = pk.sign_msg(message)
+        y_parity, r, s = signature.vrs
+        
+        return Authorization(
+            chain_id=chain_id,
+            address=address,
+            nonce=nonce,
+            y_parity=y_parity,
+            r=r,
+            s=s,
         )
 
     def apply_transaction(self, signed_tx) -> tuple[Any, Any, Any]:

@@ -177,7 +177,7 @@ chain.store.get_latest_number()  # Returns latest block number
 | Size Limit | ✅ | Evict lowest fee when full |
 | Nonce Validation | ✅ | Reject nonce < current_nonce |
 
-### RPC Server (~420 LOC total)
+### RPC Server (~450 LOC total)
 | Method | Status | Notes |
 |--------|--------|-------|
 | `eth_chainId` | ✅ | Returns chain ID |
@@ -188,8 +188,8 @@ chain.store.get_latest_number()  # Returns latest block number
 | `eth_getStorageAt` | ✅ | Storage slot value |
 | `eth_getBlockByNumber` | ✅ | Block by number |
 | `eth_getBlockByHash` | ✅ | Block by hash |
-| `eth_sendTransaction` | ✅ | Sign and send (supports EIP-1559 and Legacy) |
-| `eth_sendRawTransaction` | ✅ | Send pre-signed transaction |
+| `eth_sendTransaction` | ✅ | Sign and send (supports Legacy, EIP-1559, EIP-7702) |
+| `eth_sendRawTransaction` | ✅ | Send pre-signed transaction (Type 0x0, 0x1, 0x2, 0x4) |
 | `eth_getTransactionByHash` | ✅ | Query transaction by hash |
 | `eth_getTransactionReceipt` | ✅ | Transaction receipt with effectiveGasPrice |
 | `eth_estimateGas` | ✅ | Full binary search estimation |
@@ -197,6 +197,7 @@ chain.store.get_latest_number()  # Returns latest block number
 | `eth_feeHistory` | ✅ | Historical gas fee data with base fee |
 | `eth_call` | ✅ | Execute call without state change |
 | `eth_getLogs` | ✅ | Filter logs by block range, address, topics |
+| `eth_signAuthorization` | ✅ | Sign EIP-7702 authorization |
 | `net_version` | ✅ | Chain ID as string |
 | `eth_accounts` | ✅ | Returns empty list |
 | `eth_coinbase` | ✅ | Returns coinbase address |
@@ -327,6 +328,18 @@ chain.store.get_latest_number()  # Returns latest block number
 | `test_account_balance_persistence` | ✅ | Account balances persist after restart |
 | `test_account_nonce_persistence` | ✅ | Account nonces persist after restart |
 | `test_full_state_recovery` | ✅ | Complete state recovery after restart |
+| **EIP-7702 Tests** | | |
+| `test_setcode_transaction_type` | ✅ | Type 0x04 constant |
+| `test_create_authorization` | ✅ | Create EIP-7702 authorization |
+| `test_create_authorization_for_all_chains` | ✅ | Authorization with chain_id=0 |
+| `test_create_unsigned_setcode_transaction` | ✅ | Unsigned SetCode transaction |
+| `test_create_setcode_transaction_with_chain` | ✅ | Create signed SetCode via Chain |
+| `test_setcode_transaction_rpc_serialization` | ✅ | RPC format for Type 0x04 |
+| `test_eth_sign_authorization_rpc` | ✅ | eth_signAuthorization RPC |
+| `test_eth_send_transaction_with_authorization` | ✅ | Send with authorizationList |
+| `test_decode_raw_setcode_transaction` | ✅ | Decode raw Type 0x04 tx |
+| `test_setcode_transaction_in_receipt` | ✅ | Receipt type is 0x4 |
+| `test_access_list_serialization` | ✅ | Access list in SetCode tx |
 
 ## Current Limitations
 
@@ -430,10 +443,18 @@ class Sequencer:
 |---|---------|-------------|--------|
 | 4 | `eth_call` full implementation | Execute call without state change | ✅ Done |
 | 5 | `eth_getTransactionByHash` | Query transaction by hash | ✅ Done |
-| 6 | `eth_getLogs` | Event log filtering with bloom filters | ❌ TODO |
-| 7 | SQLite Persistence | Replace dict storage for data durability | ❌ TODO |
+| 6 | `eth_getLogs` | Event log filtering | ✅ Done |
+| 7 | SQLite Persistence | Replace dict storage for data durability | ✅ Done |
 
-### Phase 4: Future Compatibility (Prague/Osaka)
+### Phase 4: Prague Compatibility (EIP-7702)
+
+| # | Feature | Description | Status |
+|---|---------|-------------|--------|
+| 8 | Transaction Type 0x04 | EIP-7702 SetCode Transaction | ✅ Done |
+| 9 | `eth_signAuthorization` | Sign EIP-7702 authorization | ✅ Done |
+| 10 | EOA Code Delegation | Allow EOAs to act as contracts | ✅ Done |
+
+### Phase 5: Future Compatibility
 
 #### Transaction Types (EIP-2718)
 
@@ -442,29 +463,29 @@ class Sequencer:
 | `0x00` | Legacy | Legacy Transaction | ✅ Yes | - |
 | `0x01` | EIP-2930 | Access List | ❌ No | Recommended |
 | `0x02` | EIP-1559 | Dynamic Fee | ✅ Yes | - |
-| `0x04` | EIP-7702 | Set Code (Prague) | ❌ No | **Required** |
+| `0x04` | EIP-7702 | Set Code (Prague) | ✅ Yes | - |
 
 > **Note**: Blob transactions (EIP-4844, Type `0x03`) are not required for single sequencer use cases.
 
 #### Prague EIPs (Pectra - May 2025)
 
-| EIP | Description | Impact |
+| EIP | Description | Status |
 |-----|-------------|--------|
-| EIP-7702 | EOA Code Delegation (Tx Type 0x04) | Allow EOAs to temporarily act as smart contracts |
-| EIP-7623 | Increased Calldata Cost | Gas calculation update |
-| EIP-2537 | BLS12-381 Precompiles | Efficient SNARK verification |
-| EIP-2935 | Block Hash History | Store recent block hashes in state |
+| EIP-7702 | EOA Code Delegation (Tx Type 0x04) | ✅ Done |
+| EIP-7623 | Increased Calldata Cost | ❌ TODO |
+| EIP-2537 | BLS12-381 Precompiles | ❌ TODO |
+| EIP-2935 | Block Hash History | ❌ TODO |
 
 #### Osaka EIPs (Fusaka - 2026)
 
 > **Note**: These must be implemented manually since `py-evm` is archived.
 
-| EIP | Description | Impact |
+| EIP | Description | Status |
 |-----|-------------|--------|
-| EIP-7951 | secp256r1 Precompile | Hardware wallet/passkey support |
-| EIP-7939 | CLZ Opcode | Count Leading Zeros opcode |
-| EIP-7825 | Transaction Gas Limit Cap | Gas limit validation |
-| EIP-7883 | ModExp Gas Cost Increase | Precompile gas update |
+| EIP-7951 | secp256r1 Precompile | ❌ TODO |
+| EIP-7939 | CLZ Opcode | ❌ TODO |
+| EIP-7825 | Transaction Gas Limit Cap | ❌ TODO |
+| EIP-7883 | ModExp Gas Cost Increase | ❌ TODO |
 
 ### Execution Timeline
 
@@ -486,21 +507,30 @@ Phase 3 - Compatibility:
 ├── [x] eth_call actual execution
 ├── [x] eth_getTransactionByHash
 ├── [x] contract_address in receipt for contract creation
-├── [ ] eth_getLogs (logsBloom)
-└── [ ] SQLite store (optional)
+├── [x] eth_getLogs (filtering by block range, address, topics)
+└── [x] SQLite persistence (blocks, receipts, EVM state)
 
-Phase 4 - Prague Preparation:
-├── [ ] EIP-7702 (Tx Type 0x04) support
-└── [ ] Upgrade to PragueVM in py-evm
+Phase 4 - Prague (EIP-7702):
+├── [x] Transaction Type 0x04 (SetCodeTransaction)
+├── [x] eth_signAuthorization RPC method
+├── [x] Authorization creation and signing
+├── [x] eth_sendTransaction with authorizationList support
+├── [x] Transaction serialization for Type 0x04
+└── [x] Receipt serialization for Type 0x04
+
+Phase 5 - Future:
+├── [ ] EIP-2930 (Access List transactions, Type 0x01)
+├── [ ] EIP-2537 (BLS12-381 Precompiles)
+└── [ ] EIP-2935 (Block Hash History)
 ```
 
 ### Projected LOC
 
 | Phase | Components | LOC |
 |-------|------------|-----|
-| Current | All (with estimateGas + getTransactionByHash + Tests) | ~4,400 |
-| Phase 3 | Improved compatibility (eth_call, eth_getLogs) | +~80 |
-| **Total** | | **~4,500** |
+| Current | All (with estimateGas + getTransactionByHash + SQLite + EVM State + EIP-7702 + Tests) | ~6,200 |
+| Phase 5 | Future EIPs | +~100 |
+| **Total** | | **~6,300** |
 
 ## Architecture
 

@@ -323,6 +323,95 @@ class Chain:
         pk = keys.PrivateKey(from_private_key)
         return unsigned_tx.as_signed_transaction(pk)
 
+    def create_setcode_transaction(
+        self,
+        from_private_key: bytes,
+        to: bytes,
+        value: int = 0,
+        data: bytes = b"",
+        gas: int = 100_000,
+        max_priority_fee_per_gas: int | None = None,
+        max_fee_per_gas: int | None = None,
+        nonce: int | None = None,
+        authorization_list: list | None = None,
+    ) -> Any:
+        """
+        Create a signed EIP-7702 SetCode transaction (Type 0x04).
+        
+        This allows an EOA to temporarily set its code to a contract's code.
+        
+        Args:
+            from_private_key: Private key of the sender
+            to: Recipient address (required for SetCode transactions)
+            value: Value to transfer
+            data: Transaction data
+            gas: Gas limit
+            max_priority_fee_per_gas: Priority fee per gas
+            max_fee_per_gas: Maximum fee per gas
+            nonce: Sender's nonce (auto-filled if None)
+            authorization_list: List of Authorization objects
+        
+        Returns:
+            Signed SetCodeTransaction
+        """
+        sender = private_key_to_address(from_private_key)
+        
+        if nonce is None:
+            nonce = self.get_nonce(sender)
+        
+        latest_block = self.get_latest_block()
+        base_fee = latest_block.header.base_fee_per_gas if latest_block and latest_block.header.base_fee_per_gas else INITIAL_BASE_FEE
+        
+        if max_fee_per_gas is None:
+            max_fee_per_gas = base_fee * 2
+        
+        if max_priority_fee_per_gas is None:
+            max_priority_fee_per_gas = base_fee // 10
+        
+        if authorization_list is None:
+            authorization_list = []
+        
+        unsigned_tx = self.evm.create_unsigned_setcode_transaction(
+            nonce=nonce,
+            max_priority_fee_per_gas=max_priority_fee_per_gas,
+            max_fee_per_gas=max_fee_per_gas,
+            gas=gas,
+            to=to,
+            value=value,
+            data=data,
+            authorization_list=authorization_list,
+            chain_id=self.chain_id,
+        )
+        
+        pk = keys.PrivateKey(from_private_key)
+        return unsigned_tx.as_signed_transaction(pk)
+
+    def create_authorization(
+        self,
+        chain_id: int,
+        address: bytes,
+        nonce: int,
+        private_key: bytes,
+    ):
+        """
+        Create a signed EIP-7702 authorization.
+        
+        Args:
+            chain_id: Chain ID (0 = all chains, or specific chain ID)
+            address: Contract address to delegate to
+            nonce: Account nonce after authorization
+            private_key: Private key to sign the authorization
+        
+        Returns:
+            Signed Authorization object
+        """
+        return self.evm.create_authorization(
+            chain_id=chain_id,
+            address=address,
+            nonce=nonce,
+            private_key=private_key,
+        )
+
     def send_transaction(self, signed_tx) -> bytes:
         tx_hash = keccak256(signed_tx.encode())
         self.add_transaction_to_pool(signed_tx)

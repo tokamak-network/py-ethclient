@@ -107,8 +107,49 @@ def create_methods(chain) -> dict[str, Callable]:
         
         max_fee_per_gas = tx_params.get("maxFeePerGas")
         max_priority_fee_per_gas = tx_params.get("maxPriorityFeePerGas")
+        authorization_list = tx_params.get("authorizationList")
         
-        if max_fee_per_gas is not None or max_priority_fee_per_gas is not None:
+        # EIP-7702 SetCode transaction (Type 0x04)
+        if authorization_list is not None:
+            if to is None:
+                raise ValueError("SetCode transaction must have a 'to' address")
+            
+            # Parse authorization list
+            from eth.vm.forks.prague.transactions import Authorization
+            parsed_auth_list = []
+            for auth in authorization_list:
+                auth_chain_id = _parse_int(auth["chainId"]) if "chainId" in auth else 0
+                auth_address = _parse_address(auth["address"])
+                auth_nonce = _parse_int(auth["nonce"])
+                auth_y_parity = _parse_int(auth["yParity"])
+                auth_r = _parse_int(auth["r"])
+                auth_s = _parse_int(auth["s"])
+                
+                parsed_auth_list.append(Authorization(
+                    chain_id=auth_chain_id,
+                    address=auth_address,
+                    nonce=auth_nonce,
+                    y_parity=auth_y_parity,
+                    r=auth_r,
+                    s=auth_s,
+                ))
+            
+            max_fee = _parse_int(max_fee_per_gas) if max_fee_per_gas else None
+            max_priority = _parse_int(max_priority_fee_per_gas) if max_priority_fee_per_gas else None
+            
+            signed_tx = chain.create_setcode_transaction(
+                from_private_key=private_key,
+                to=to,
+                value=value,
+                data=data,
+                gas=gas,
+                max_priority_fee_per_gas=max_priority,
+                max_fee_per_gas=max_fee,
+                nonce=nonce,
+                authorization_list=parsed_auth_list,
+            )
+        # EIP-1559 transaction (Type 0x02)
+        elif max_fee_per_gas is not None or max_priority_fee_per_gas is not None:
             max_fee = _parse_int(max_fee_per_gas) if max_fee_per_gas else None
             max_priority = _parse_int(max_priority_fee_per_gas) if max_priority_fee_per_gas else None
             
@@ -122,6 +163,7 @@ def create_methods(chain) -> dict[str, Callable]:
                 max_fee_per_gas=max_fee,
                 nonce=nonce,
             )
+        # Legacy transaction (Type 0x00)
         else:
             gas_price = _parse_int(tx_params.get("gasPrice", "0x3b9aca00"))
             signed_tx = chain.create_transaction(
@@ -142,6 +184,47 @@ def create_methods(chain) -> dict[str, Callable]:
             if "nonce too low" in error_msg.lower():
                 raise ValueError(f"nonce too low")
             raise
+
+    def eth_signAuthorization(params: list) -> dict:
+        """
+        Sign an EIP-7702 authorization.
+        
+        Parameters:
+        - chainId: Chain ID (0 for all chains, or specific chain ID)
+        - address: Contract address to set code from
+        - nonce: Account nonce
+        - _private_key: Private key to sign with
+        
+        Returns:
+        - Authorization object with chainId, address, nonce, yParity, r, s
+        """
+        auth_params = params[0]
+        
+        chain_id = _parse_int(auth_params.get("chainId", "0x0"))
+        address = _parse_address(auth_params["address"])
+        nonce = _parse_int(auth_params.get("nonce", "0x0"))
+        
+        private_key = auth_params.get("_private_key")
+        if not private_key:
+            raise ValueError("Missing '_private_key' - required for signing")
+        
+        private_key_bytes = _parse_bytes(private_key)
+        
+        auth = chain.create_authorization(
+            chain_id=chain_id,
+            address=address,
+            nonce=nonce,
+            private_key=private_key_bytes,
+        )
+        
+        return {
+            "chainId": hex(auth.chain_id),
+            "address": to_checksum_address(auth.address),
+            "nonce": hex(auth.nonce),
+            "yParity": hex(auth.y_parity),
+            "r": hex(auth.r),
+            "s": hex(auth.s),
+        }
 
     def eth_sendRawTransaction(params: list) -> str:
         raw_tx = _parse_bytes(params[0])
@@ -334,6 +417,7 @@ def create_methods(chain) -> dict[str, Callable]:
         "eth_estimateGas": eth_estimateGas,
         "eth_gasPrice": eth_gasPrice,
         "eth_feeHistory": eth_feeHistory,
+        "eth_signAuthorization": eth_signAuthorization,
         "net_version": net_version,
         "eth_accounts": eth_accounts,
         "eth_coinbase": eth_coinbase,
@@ -404,12 +488,30 @@ def _serialize_block(block, include_txs: bool) -> dict:
 
 
 def _get_tx_type(tx) -> int:
+    """Get transaction type: 0=Legacy, 1=AccessList, 2=EIP-1559, 4=SetCode"""
     tx_type = getattr(tx, 'type_id', None)
     if tx_type is not None:
         return tx_type
+    # Check for EIP-7702 SetCodeTransaction by checking type_id first
+    # Then check if authorization_list exists and is accessible
+    try:
+        auth_list = getattr(tx, 'authorization_list', None)
+        if auth_list is not None:
+            return 4
+    except NotImplementedError:
+        # authorization_list raises NotImplementedError for pre-Prague transactions
+        pass
+    # Check for EIP-1559
     if hasattr(tx, 'max_priority_fee_per_gas'):
-        if tx.max_priority_fee_per_gas is not None and tx.max_priority_fee_per_gas != tx.gas_price:
-            return 2
+        max_priority = getattr(tx, 'max_priority_fee_per_gas', None)
+        if max_priority is not None:
+            gas_price = getattr(tx, 'gas_price', None)
+            if gas_price is None or max_priority != gas_price:
+                return 2
+    # Check for EIP-2930 AccessList
+    access_list = getattr(tx, 'access_list', None)
+    if access_list is not None and len(access_list) > 0:
+        return 1
     return 0
 
 
@@ -418,6 +520,8 @@ def _serialize_tx(tx, block) -> dict:
     
     tx_type = _get_tx_type(tx)
     is_eip1559 = tx_type == 2
+    is_setcode = tx_type == 4
+    is_access_list = tx_type == 1
     
     # Find transaction index in block
     tx_index = None
@@ -427,7 +531,8 @@ def _serialize_tx(tx, block) -> dict:
             break
     tx_index = tx_index if tx_index is not None else 0
     
-    if is_eip1559:
+    # Get y_parity for EIP-1559 and SetCode transactions
+    if is_eip1559 or is_setcode:
         y_parity = getattr(tx, 'y_parity', None)
         if y_parity is not None:
             v_hex = hex(y_parity)
@@ -452,13 +557,69 @@ def _serialize_tx(tx, block) -> dict:
         "s": hex(tx.s),
     }
     
-    if is_eip1559:
+    if is_setcode:
+        result["type"] = "0x4"
+        result["maxFeePerGas"] = hex(tx.max_fee_per_gas)
+        result["maxPriorityFeePerGas"] = hex(tx.max_priority_fee_per_gas)
+        result["gasPrice"] = hex(tx.max_fee_per_gas)
+        result["chainId"] = hex(tx.chain_id)
+        
+        # Serialize access list
+        access_list = []
+        for addr, slots in getattr(tx, 'access_list', []):
+            access_list.append({
+                "address": to_checksum_address(addr),
+                "storageKeys": [hex(slot) if isinstance(slot, int) else "0x" + slot.hex() for slot in slots]
+            })
+        result["accessList"] = access_list
+        
+        # Serialize authorization list
+        auth_list = []
+        for auth in getattr(tx, 'authorization_list', []):
+            auth_list.append({
+                "chainId": hex(auth.chain_id),
+                "address": to_checksum_address(auth.address),
+                "nonce": hex(auth.nonce),
+                "yParity": hex(auth.y_parity),
+                "r": hex(auth.r),
+                "s": hex(auth.s),
+            })
+        result["authorizationList"] = auth_list
+        
+    elif is_eip1559:
         result["type"] = "0x2"
         result["maxFeePerGas"] = hex(tx.max_fee_per_gas)
         result["maxPriorityFeePerGas"] = hex(tx.max_priority_fee_per_gas)
         result["gasPrice"] = hex(tx.max_fee_per_gas)
         chain_id = getattr(tx, 'chain_id', None)
         result["chainId"] = hex(chain_id) if chain_id is not None else "0x0"
+        
+        # Serialize access list if present
+        if hasattr(tx, 'access_list') and tx.access_list:
+            access_list = []
+            for addr, slots in tx.access_list:
+                access_list.append({
+                    "address": to_checksum_address(addr),
+                    "storageKeys": [hex(slot) if isinstance(slot, int) else "0x" + slot.hex() for slot in slots]
+                })
+            result["accessList"] = access_list
+        else:
+            result["accessList"] = []
+            
+    elif is_access_list:
+        result["type"] = "0x1"
+        result["gasPrice"] = hex(tx.gas_price)
+        result["chainId"] = hex(tx.chain_id) if hasattr(tx, 'chain_id') else "0x0"
+        
+        # Serialize access list
+        access_list = []
+        for addr, slots in getattr(tx, 'access_list', []):
+            access_list.append({
+                "address": to_checksum_address(addr),
+                "storageKeys": [hex(slot) if isinstance(slot, int) else "0x" + slot.hex() for slot in slots]
+            })
+        result["accessList"] = access_list
+        
     else:
         result["type"] = "0x0"
         result["gasPrice"] = hex(tx.gas_price)
@@ -473,8 +634,9 @@ def _tx_hash(tx) -> bytes:
 
 
 def _decode_raw_transaction(raw_tx: bytes):
-    from eth.vm.forks.cancun import CancunVM
-    return CancunVM.get_transaction_builder().decode(raw_tx)
+    """Decode a raw transaction. Supports Legacy (0x0), AccessList (0x1), EIP-1559 (0x2), and SetCode (0x4)."""
+    from eth.vm.forks.prague import PragueVM
+    return PragueVM.get_transaction_builder().decode(raw_tx)
 
 
 def _serialize_receipt(receipt_data, chain) -> dict:
@@ -486,8 +648,24 @@ def _serialize_receipt(receipt_data, chain) -> dict:
     
     tx_type = _get_tx_type(tx)
     is_eip1559 = tx_type == 2
-    tx_type_hex = "0x2" if is_eip1559 else "0x0"
-    effective_gas_price = tx.max_fee_per_gas if is_eip1559 else tx.gas_price
+    is_setcode = tx_type == 4
+    is_access_list = tx_type == 1
+    
+    # Determine transaction type hex
+    if is_setcode:
+        tx_type_hex = "0x4"
+    elif is_eip1559:
+        tx_type_hex = "0x2"
+    elif is_access_list:
+        tx_type_hex = "0x1"
+    else:
+        tx_type_hex = "0x0"
+    
+    # Get effective gas price
+    if is_eip1559 or is_setcode:
+        effective_gas_price = tx.max_fee_per_gas
+    else:
+        effective_gas_price = tx.gas_price
     
     logs = []
     for i, log in enumerate(receipt.logs):

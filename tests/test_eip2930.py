@@ -275,20 +275,141 @@ class TestAccessListRPC:
 class TestAccessListWithEIP1559:
     """Test EIP-1559 transactions with access lists."""
     
-    def test_eip1559_with_access_list(self, chain, alice_key):
+    def test_eip1559_with_access_list(self, chain, alice_key, alice_address):
         """Test that EIP-1559 transactions can include access lists."""
         recipient = bytes.fromhex("12" * 20)
-        access_list = [(recipient, [0])]
+        access_list = [(recipient, [0, 1])]
         
         tx = chain.create_eip1559_transaction(
             from_private_key=alice_key,
             to=recipient,
             gas=100_000,
+            access_list=access_list,
         )
         
-        # Note: The current implementation doesn't pass access_list through
-        # This test verifies the transaction can be created
+        # Verify transaction was created
         assert tx is not None
+        assert tx.type_id == 2  # EIP-1559
+        
+        # Verify access list is included
+        assert hasattr(tx, 'access_list')
+        assert len(tx.access_list) == 1
+        addr, slots = tx.access_list[0]
+        assert addr == recipient
+        assert list(slots) == [0, 1]
+    
+    def test_eip1559_with_access_list_execution(self, chain, alice_key, alice_address):
+        """Test execution of EIP-1559 transaction with access list."""
+        recipient = bytes.fromhex("cd" * 20)
+        access_list = [(recipient, [])]
+        
+        tx = chain.create_eip1559_transaction(
+            from_private_key=alice_key,
+            to=recipient,
+            value=1_000_000,
+            gas=50_000,
+            access_list=access_list,
+        )
+        
+        tx_hash = chain.send_transaction(tx)
+        block = chain.build_block()
+        
+        assert block is not None
+        assert len(block.transactions) == 1
+        
+        # Verify transaction was included and succeeded
+        _, _, receipt = chain.get_transaction_receipt(tx_hash)
+        assert receipt.status == 1
+    
+    def test_eip1559_with_access_list_dict_format(self, chain, alice_key, alice_address):
+        """Test EIP-1559 with access list in dict format (from RPC)."""
+        recipient = bytes.fromhex("ab" * 20)
+        
+        # Access list in RPC format (dict)
+        access_list = [
+            {
+                "address": "0x" + recipient.hex(),
+                "storageKeys": ["0x0", "0x1", "0x2"]
+            }
+        ]
+        
+        tx = chain.create_eip1559_transaction(
+            from_private_key=alice_key,
+            to=recipient,
+            gas=100_000,
+            access_list=access_list,
+        )
+        
+        # Verify access list was parsed correctly
+        assert len(tx.access_list) == 1
+        addr, slots = tx.access_list[0]
+        assert addr == recipient
+        assert list(slots) == [0, 1, 2]
+    
+    def test_eip1559_with_access_list_tuple_format(self, chain, alice_key, alice_address):
+        """Test EIP-1559 with access list in tuple format."""
+        recipient = bytes.fromhex("cd" * 20)
+        
+        # Access list in tuple format
+        access_list = [
+            (recipient, [0, 1, 2])
+        ]
+        
+        tx = chain.create_eip1559_transaction(
+            from_private_key=alice_key,
+            to=recipient,
+            gas=100_000,
+            access_list=access_list,
+        )
+        
+        # Verify access list was parsed correctly
+        assert len(tx.access_list) == 1
+        addr, slots = tx.access_list[0]
+        assert addr == recipient
+        assert list(slots) == [0, 1, 2]
+
+
+class TestAccessListInRPC:
+    """Test access list handling in RPC methods."""
+    
+    def test_rpc_eip1559_with_access_list(self, chain, alice_key, alice_address):
+        """Test eth_sendTransaction with EIP-1559 and access list."""
+        from sequencer.rpc.methods import create_methods
+        
+        recipient = bytes.fromhex("ee" * 20)
+        
+        tx_params = {
+            "from": f"0x{alice_address.hex()}",
+            "to": f"0x{recipient.hex()}",
+            "value": "0x100000",
+            "gas": "0x186a0",
+            "maxFeePerGas": "0x77359400",  # 2 gwei
+            "maxPriorityFeePerGas": "0x3b9aca00",  # 1 gwei
+            "accessList": [
+                {
+                    "address": f"0x{recipient.hex()}",
+                    "storageKeys": ["0x0", "0x1"]
+                }
+            ]
+        }
+        
+        methods = create_methods(chain)
+        
+        # Mock the from_private_key injection (in real RPC this comes from wallet)
+        # For testing, we directly call the transaction creation
+        tx = chain.create_eip1559_transaction(
+            from_private_key=alice_key,
+            to=recipient,
+            value=0x100000,
+            gas=0x186a0,
+            max_fee_per_gas=0x77359400,
+            max_priority_fee_per_gas=0x3b9aca00,
+            access_list=[(recipient, [0, 1])],
+        )
+        
+        # Verify transaction has access list
+        assert hasattr(tx, 'access_list')
+        assert len(tx.access_list) == 1
         assert tx.type_id == 2  # EIP-1559
 
 

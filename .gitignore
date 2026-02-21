@@ -39,3 +39,7 @@ htmlcov/
 
 # uv
 uv.lock
+
+# SQLite database
+sqlite.db
+

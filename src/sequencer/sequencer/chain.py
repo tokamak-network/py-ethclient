@@ -16,6 +16,7 @@ from sequencer.core.constants import (
 )
 from sequencer.core.types import Block, BlockHeader, Receipt
 from sequencer.core.crypto import keccak256, private_key_to_address
+from sequencer.core.create2 import compute_create_address
 from sequencer.evm.adapter import EVMAdapter, ChainConfig, ExecutionResult
 from sequencer.storage.store import InMemoryStore
 from sequencer.storage.sqlite_store import SQLiteStore
@@ -568,6 +569,51 @@ class Chain:
         with self._lock:
             return self._build_block_unsafe(timestamp)
     
+    def _extract_created_contracts(self, computation, tx) -> dict[bytes, dict]:
+        """
+        Extract all contract addresses created during transaction execution.
+        
+        This detects both CREATE (nonce-based) and CREATE2 (salt-based) deployments
+        by examining the computation's children.
+        
+        Args:
+            computation: The EVM computation result
+            tx: The transaction that was executed
+        
+        Returns:
+            Dict mapping address -> {"type": "create"|"create2", "salt": bytes|None}
+        """
+        created = {}
+        
+        # Method 1: Check for direct contract creation (CREATE)
+        if tx.to is None or tx.to == b"":
+            # CREATE contract: address based on sender + nonce
+            address = compute_create_address(tx.sender, tx.nonce)
+            created[address] = {"type": "create", "salt": None}
+        
+        # Method 2: Extract CREATE2 deployments from computation children
+        # CREATE2 happens during contract execution, not at the top level
+        if hasattr(computation, 'children'):
+            for child in computation.children:
+                # Check if this is a CREATE/CREATE2 execution
+                if hasattr(child, 'msg'):
+                    msg = child.msg
+                    if hasattr(msg, 'create_address') and msg.create_address:
+                        # Determine if it's CREATE or CREATE2
+                        is_create2 = hasattr(msg, 'salt') and msg.salt is not None
+                        if is_create2:
+                            created[msg.create_address] = {
+                                "type": "create2",
+                                "salt": msg.salt if hasattr(msg, 'salt') else None,
+                                "deployer": tx.sender,
+                                "init_code_hash": keccak256(msg.data) if hasattr(msg, 'data') else None,
+                            }
+                        elif msg.create_address not in created:
+                            # Nested CREATE (can happen in factory patterns)
+                            created[msg.create_address] = {"type": "create", "salt": None}
+        
+        return created
+
     def _build_block_unsafe(self, timestamp: int | None = None) -> Block:
         """Internal build_block without lock (callers must hold _lock)."""
         import time as time_module
@@ -584,6 +630,9 @@ class Chain:
         
         # Track addresses that are touched during this block
         touched_this_block: set[bytes] = set()
+        
+        # Track CREATE2 contracts for persistence
+        create2_contracts: list[tuple[bytes, dict]] = []
         
         # Track which transactions are actually included (gas limit may cut some off)
         included_txs = []
@@ -618,19 +667,31 @@ class Chain:
                 # Use receipt's cumulative gas used
                 cumulative_gas = evm_receipt.gas_used if hasattr(evm_receipt, 'gas_used') else cumulative_gas + tx.gas
             
-            # Calculate contract address for contract creation
+            # Extract all contracts created during this transaction (CREATE and CREATE2)
+            created_contracts = self._extract_created_contracts(computation, tx)
+            
+            # Track all created contract addresses
+            for contract_address, contract_info in created_contracts.items():
+                touched_this_block.add(contract_address)
+                
+                # Track CREATE2 contracts for persistence
+                if contract_info["type"] == "create2" and isinstance(self.store, SQLiteStore):
+                    create2_contracts.append((
+                        contract_address,
+                        {
+                            "deployer": contract_info.get("deployer", tx.sender),
+                            "salt": contract_info.get("salt", b"\x00" * 32),
+                            "init_code_hash": contract_info.get("init_code_hash", b"\x00" * 32),
+                        }
+                    ))
+            
+            # Primary contract address for receipt (first created contract, or None)
+            # For CREATE transactions, this is the single contract created
+            # For CREATE2, we track all contracts but receipt shows the primary one
             contract_address = None
             if tx.to is None or tx.to == b"":
-                # Contract creation: address = keccak256(rlp([sender, nonce]))[12:]
-                import rlp
-                sender_nonce = tx.nonce  # Use the transaction's nonce
-                sender = tx.sender
-                encoded = rlp.encode([sender, sender_nonce])
-                contract_address = keccak256(encoded)[12:]
-                
-                # Track contract address
-                if contract_address:
-                    touched_this_block.add(contract_address)
+                # Use CREATE address calculation for primary receipt field
+                contract_address = compute_create_address(tx.sender, tx.nonce)
             
             receipt = Receipt(
                 status=0 if computation.is_error else 1,
@@ -641,16 +702,17 @@ class Chain:
             receipts.append(receipt)
             
             # Save individual account state changes to SQLite
-            if isinstance(self.store, SQLiteStore) and contract_address:
-                # Save contract code immediately after creation
-                code = self.evm.get_code(contract_address)
-                if code:
-                    self.store.save_account(
-                        contract_address,
-                        nonce=self.evm.get_nonce(contract_address),
-                        balance=self.evm.get_balance(contract_address),
-                        code=code,
-                    )
+            if isinstance(self.store, SQLiteStore):
+                for contract_address in created_contracts:
+                    # Save contract code immediately after creation
+                    code = self.evm.get_code(contract_address)
+                    if code:
+                        self.store.save_account(
+                            contract_address,
+                            nonce=self.evm.get_nonce(contract_address),
+                            balance=self.evm.get_balance(contract_address),
+                            code=code,
+                        )
         
         parent = self.get_latest_block()
         parent_timestamp = parent.header.timestamp if parent else current_time - 1
@@ -700,6 +762,17 @@ class Chain:
         # Save state changes to SQLite
         if isinstance(self.store, SQLiteStore):
             self._save_evm_state_incremental(touched_this_block)
+            
+            # Save CREATE2 contract metadata
+            for contract_address, contract_info in create2_contracts:
+                self.store.save_create2_contract(
+                    address=contract_address,
+                    deployer=contract_info["deployer"],
+                    salt=contract_info["salt"],
+                    init_code_hash=contract_info["init_code_hash"],
+                    block_number=number,
+                    tx_hash=included_tx_hashes[-1] if included_tx_hashes else b"",
+                )
         
         return block
     
@@ -764,3 +837,100 @@ class Chain:
         for i, receipt in enumerate(receipts):
             trie[encode(i)] = receipt.to_rlp()
         return trie.root_hash
+
+    # ==================== CREATE2 Methods ====================
+    
+    def compute_create2_address(
+        self,
+        sender: bytes,
+        salt: bytes,
+        init_code: bytes,
+    ) -> bytes:
+        """
+        Compute the CREATE2 contract address before deployment.
+        
+        This allows predicting the address of a contract that will be deployed
+        via CREATE2, even before the deployment transaction is sent.
+        
+        Args:
+            sender: 20-byte deployer address
+            salt: 32-byte salt value (any 32 bytes)
+            init_code: Contract initialization code (constructor bytecode)
+        
+        Returns:
+            20-byte predicted contract address
+        
+        Example:
+            >>> sender = bytes.fromhex("deadbeef" * 5)
+            >>> salt = bytes(32)  # 32 zero bytes
+            >>> init_code = bytes.fromhex("602a60005260206000f3")
+            >>> address = chain.compute_create2_address(sender, salt, init_code)
+        """
+        from sequencer.core.create2 import compute_create2_address
+        return compute_create2_address(sender, salt, init_code)
+    
+    def is_create2_contract(self, address: bytes) -> bool:
+        """
+        Check if a contract was deployed via CREATE2.
+        
+        Args:
+            address: Contract address (20 bytes)
+        
+        Returns:
+            True if deployed via CREATE2, False otherwise
+        """
+        if isinstance(self.store, SQLiteStore):
+            return self.store.is_create2_contract(address)
+        return False
+    
+    def get_create2_contract_info(self, address: bytes) -> dict | None:
+        """
+        Get CREATE2 deployment information for a contract.
+        
+        Args:
+            address: Contract address (20 bytes)
+        
+        Returns:
+            Dict with deployer, salt, init_code_hash, block_number, tx_hash
+            or None if not a CREATE2 contract
+        """
+        if isinstance(self.store, SQLiteStore):
+            return self.store.get_create2_contract(address)
+        return None
+    
+    def get_create2_contracts_by_deployer(self, deployer: bytes) -> list[dict]:
+        """
+        Get all CREATE2 contracts deployed by a specific address.
+        
+        Args:
+            deployer: Deployer address (20 bytes)
+        
+        Returns:
+            List of dicts with contract deployment info
+        """
+        if isinstance(self.store, SQLiteStore):
+            return self.store.get_create2_contracts_by_deployer(deployer)
+        return []
+    
+    def find_create2_contract(
+        self,
+        deployer: bytes,
+        salt: bytes,
+        init_code_hash: bytes,
+    ) -> bytes | None:
+        """
+        Find a CREATE2 contract by its deployment parameters.
+        
+        This allows verifying if a specific CREATE2 deployment has occurred.
+        
+        Args:
+            deployer: Deployer address (20 bytes)
+            salt: Salt used (32 bytes)
+            init_code_hash: Hash of init code (32 bytes)
+        
+        Returns:
+            Contract address if found, None otherwise
+        """
+        if isinstance(self.store, SQLiteStore):
+            return self.store.find_create2_contract(deployer, salt, init_code_hash)
+        return None

@@ -575,13 +575,45 @@ slots_to_check = set(range(100)) | set(stored_storage.keys())
 
 **Reference**: [py-evm issue #172](https://github.com/ethereum/py-evm/issues/172)
 
-### 11.2 CREATE2 Contracts
+### 11.2 CREATE2 Contracts (EIP-1014)
 
-**Issue**: CREATE2 addresses not tracked
+**Status**: ✅ Fully Supported
 
-**Impact**: Contracts deployed via CREATE2 may lose state
+CREATE2 contracts are tracked and persisted alongside CREATE contracts:
 
-**Workaround**: Use CREATE (nonce-based)
+| Feature | Implementation |
+|---------|---------------|
+| **Address Computation** | `compute_create2_address(sender, salt, init_code)` |
+| **Contract Tracking** | SQLite table `create2_contracts` |
+| **Deployer Lookup** | `get_create2_contracts_by_deployer()` |
+| **Reverse Lookup** | `find_create2_contract(deployer, salt, hash)` |
+| **Verification** | `is_create2_contract(address)` |
+
+**Address Formula** (EIP-1014):
+```
+address = keccak256(0xff ++ sender ++ salt ++ keccak256(init_code))[12:]
+```
+
+**Usage**:
+```python
+# Predict CREATE2 address before deployment
+from sequencer.core.create2 import compute_create2_address
+
+sender = bytes.fromhex("deadbeef" * 5)
+salt = bytes(32)  # 32-byte salt
+init_code = bytes.fromhex("602a600055...")  # Constructor bytecode
+
+predicted_address = compute_create2_address(sender, salt, init_code)
+
+# Or use Chain method
+address = chain.compute_create2_address(sender, salt, init_code)
+
+# Check if deployed contract was CREATE2
+if chain.is_create2_contract(address):
+    info = chain.get_create2_contract_info(address)
+    print(f"Deployer: {info['deployer'].hex()}")
+    print(f"Salt: {info['salt'].hex()}")
+```
 
 ### 11.3 Block Sync
 
@@ -639,6 +671,7 @@ slots_to_check = set(range(100)) | set(stored_storage.keys())
 |---------|------|---------|
 | 0.1.0 | Feb 2026 | Initial release with Cancun support, EIP-1559, EIP-7702 |
 | 0.1.1 | Feb 2026 | Gas limit enforcement, block producer error handling, graceful shutdown |
+| 0.1.2 | Feb 2026 | CREATE2 support (EIP-1014), address computation and persistence |
 
 ---
 
@@ -646,10 +679,11 @@ slots_to_check = set(range(100)) | set(stored_storage.keys())
 
 - [Ethereum Yellow Paper](https://ethereum.github.io/yellowpaper/paper.pdf)
 - [JSON-RPC Specification](https://eth.wiki/json-rpc/API)
+- [EIP-1014](https://eips.ethereum.org/EIPS/eip-1014) - CREATE2 opcode
 - [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559) - Fee market change
 - [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) - Set EOA account code
 - [py-evm](https://github.com/ethereum/py-evm) - Python EVM
 
 ---
 
-*Last updated: February 2026 (v0.1.1)*
+*Last updated: February 2026 (v0.1.2)*

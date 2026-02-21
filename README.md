@@ -519,6 +519,7 @@ Phase 4 - Prague (EIP-7702):
 └── [x] Receipt serialization for Type 0x04
 
 Phase 5 - Future:
+├── [x] CREATE2 Support (EIP-1014) - Address computation, tracking, persistence
 ├── [ ] EIP-2930 (Access List transactions, Type 0x01)
 ├── [ ] EIP-2537 (BLS12-381 Precompiles)
 └── [ ] EIP-2935 (Block Hash History)
@@ -540,16 +541,18 @@ py-ethclient/
 │   ├── core/                    # Minimal types & crypto
 │   │   ├── types.py             # Account, Block, Receipt (~100 LOC)
 │   │   ├── crypto.py            # keccak256, sign, recover (~28 LOC)
-│   │   └── constants.py         # Chain constants (~16 LOC)
+│   │   ├── constants.py         # Chain constants (~16 LOC)
+│   │   └── create2.py           # CREATE2 address computation (~120 LOC)
 │   │
 │   ├── evm/                     # py-evm bridge
 │   │   └── adapter.py           # MiningChain wrapper (~165 LOC)
 │   │
 │   ├── storage/                 # In-memory storage
-│   │   └── store.py             # dict-based store (~53 LOC)
+│   │   ├── store.py             # dict-based store (~53 LOC)
+│   │   └── sqlite_store.py      # SQLite persistence (~700 LOC)
 │   │
 │   ├── sequencer/               # Sequencer logic
-│   │   ├── chain.py             # Block building (~270 LOC)
+│   │   ├── chain.py             # Block building (~450 LOC)
 │   │   └── mempool.py           # Tx pool with priority (~140 LOC)
 │   │
 │   ├── rpc/                     # JSON-RPC
@@ -585,6 +588,7 @@ py-ethclient/
     ├── test_sequencer.py        # Integration tests (~650 LOC)
     ├── test_eip1559.py          # EIP-1559 tests (~110 LOC)
     ├── test_eip7702.py          # EIP-7702 SetCode tests
+    ├── test_create2.py          # CREATE2 (EIP-1014) tests
     ├── test_mempool.py          # Mempool tests (~280 LOC)
     ├── test_block_time.py       # Block time tests (~65 LOC)
     ├── test_fee_history.py      # Fee history tests (~120 LOC)
@@ -730,14 +734,6 @@ The EVM state persistence uses a heuristic to discover storage slots by checking
 - **Proper Fix**: Hook into EVM's state journal (requires py-evm integration)
 - **Tracking**: See GitHub issue #XXX
 
-### CREATE2 Contract Address Tracking
-
-Only `CREATE` (nonce-based) contract addresses are automatically tracked. Contracts deployed via `CREATE2` (salt-based) may not have their addresses properly persisted.
-
-- **Impact**: CREATE2 contracts may lose code/storage on restart
-- **Workaround**: Use `CREATE` for contract deployment when possible
-- **Tracking**: See GitHub issue #XXX
-
 ### py-evm Dependency (Archived)
 
 This project uses `py-evm`, which is no longer actively maintained by the Ethereum Foundation.
@@ -765,7 +761,7 @@ The block producer thread includes error handling with configurable error thresh
 | State Recovery | ✅ Beta | Storage slot heuristic |
 | Gas Limit Enforcement | ✅ Production Ready | Enforced per block |
 | Block Producer Recovery | ⚠️ Beta | Manual restart needed |
-| CREATE2 Support | ⚠️ Beta | Address tracking limited |
+| CREATE2 Support | ✅ Production Ready | Full EIP-1014 support |
 
 **Recommended Use Cases:**
 - ✅ Development and testing environments

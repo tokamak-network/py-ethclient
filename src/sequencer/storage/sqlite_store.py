@@ -139,6 +139,28 @@ class SQLiteStore:
             CREATE INDEX IF NOT EXISTS idx_storage_address ON contract_storage(address)
         """)
         
+        # CREATE2 contracts table for tracking deterministic deployments
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS create2_contracts (
+                address BLOB PRIMARY KEY,
+                deployer BLOB NOT NULL,
+                salt BLOB NOT NULL,
+                init_code_hash BLOB NOT NULL,
+                created_at_block INTEGER NOT NULL,
+                created_in_tx BLOB NOT NULL
+            )
+        """)
+        
+        # Index for lookups by deployer
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_create2_deployer ON create2_contracts(deployer)
+        """)
+        
+        # Index for lookups by salt+hash (reverse lookup)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_create2_salt_hash ON create2_contracts(salt, init_code_hash)
+        """)
+        
         conn.commit()
     
     def _block_to_row(self, block: Block, receipts: list[Receipt], tx_hashes: list[bytes]) -> dict:
@@ -794,6 +816,154 @@ class SQLiteStore:
             cursor.execute("DELETE FROM contract_code")
             
             conn.commit()
+    
+    # ==================== CREATE2 Contract Tracking ====================
+    
+    def save_create2_contract(
+        self,
+        address: bytes,
+        deployer: bytes,
+        salt: bytes,
+        init_code_hash: bytes,
+        block_number: int,
+        tx_hash: bytes,
+    ):
+        """
+        Save a CREATE2 contract deployment record.
+        
+        Args:
+            address: The deployed contract address (20 bytes)
+            deployer: The address that deployed the contract (20 bytes)
+            salt: The salt used for CREATE2 (32 bytes)
+            init_code_hash: keccak256 hash of the init code (32 bytes)
+            block_number: Block number where deployment occurred
+            tx_hash: Transaction hash that created this contract
+        """
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO create2_contracts 
+                (address, deployer, salt, init_code_hash, created_at_block, created_in_tx)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (address, deployer, salt, init_code_hash, block_number, tx_hash))
+            
+            conn.commit()
+    
+    def get_create2_contract(self, address: bytes) -> dict | None:
+        """
+        Get CREATE2 contract info by address.
+        
+        Args:
+            address: Contract address (20 bytes)
+        
+        Returns:
+            Dict with deployer, salt, init_code_hash, block_number, tx_hash
+            or None if not found or not a CREATE2 contract
+        """
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "SELECT * FROM create2_contracts WHERE address = ?",
+                (address,)
+            )
+            row = cursor.fetchone()
+            
+            if row is None:
+                return None
+            
+            return {
+                "deployer": row["deployer"],
+                "salt": row["salt"],
+                "init_code_hash": row["init_code_hash"],
+                "block_number": row["created_at_block"],
+                "tx_hash": row["created_in_tx"],
+            }
+    
+    def find_create2_contract(
+        self,
+        deployer: bytes,
+        salt: bytes,
+        init_code_hash: bytes,
+    ) -> bytes | None:
+        """
+        Find a CREATE2 contract by deployer, salt, and init_code_hash.
+        
+        This allows pre-computed address verification.
+        
+        Args:
+            deployer: Deployer address (20 bytes)
+            salt: Salt used (32 bytes)
+            init_code_hash: Hash of init code (32 bytes)
+        
+        Returns:
+            Contract address if found, None otherwise
+        """
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "SELECT address FROM create2_contracts WHERE deployer = ? AND salt = ? AND init_code_hash = ?",
+                (deployer, salt, init_code_hash)
+            )
+            row = cursor.fetchone()
+            
+            return row["address"] if row else None
+    
+    def get_create2_contracts_by_deployer(self, deployer: bytes) -> list[dict]:
+        """
+        Get all CREATE2 contracts deployed by a specific address.
+        
+        Args:
+            deployer: Deployer address (20 bytes)
+        
+        Returns:
+            List of dicts with contract info
+        """
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "SELECT * FROM create2_contracts WHERE deployer = ? ORDER BY created_at_block",
+                (deployer,)
+            )
+            rows = cursor.fetchall()
+            
+            return [
+                {
+                    "address": row["address"],
+                    "salt": row["salt"],
+                    "init_code_hash": row["init_code_hash"],
+                    "block_number": row["created_at_block"],
+                    "tx_hash": row["created_in_tx"],
+                }
+                for row in rows
+            ]
+    
+    def is_create2_contract(self, address: bytes) -> bool:
+        """
+        Check if an address was deployed via CREATE2.
+        
+        Args:
+            address: Contract address (20 bytes)
+        
+        Returns:
+            True if deployed via CREATE2, False otherwise
+        """
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "SELECT 1 FROM create2_contracts WHERE address = ?",
+                (address,)
+            )
+            return cursor.fetchone() is not None
     
     def close(self):
         """Close the database connection with proper cleanup.

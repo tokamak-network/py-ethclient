@@ -563,6 +563,11 @@ class Chain:
             return (False, 0)
 
     def build_block(self, timestamp: int | None = None) -> Block:
+        with self._lock:
+            return self._build_block_unsafe(timestamp)
+    
+    def _build_block_unsafe(self, timestamp: int | None = None) -> Block:
+        """Internal build_block without lock (callers must hold _lock)."""
         import time as time_module
         current_time = int(time_module.time())
         

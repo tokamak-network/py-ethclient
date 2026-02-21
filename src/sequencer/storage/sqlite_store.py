@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -20,24 +21,26 @@ class SQLiteStore:
         """
         self.db_path = db_path
         self._conn: sqlite3.Connection | None = None
+        self._lock = threading.RLock()  # Thread safety for SQLite access
         self._init_db()
     
     def _get_conn(self) -> sqlite3.Connection:
         """Get or create database connection."""
         if self._conn is None:
-            self._conn = sqlite3.connect(self.db_path)
+            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
         return self._conn
     
     def _init_db(self):
         """Initialize database tables with optimal settings."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        # Enable optimal SQLite settings
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.execute("PRAGMA foreign_keys=ON")
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            # Enable optimal SQLite settings
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
         
         # Blocks table
         cursor.execute("""
@@ -258,149 +261,157 @@ class SQLiteStore:
     
     def get_block(self, number: int) -> Optional[Block]:
         """Get block by number."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM blocks WHERE number = ?", (number,))
-        row = cursor.fetchone()
-        return self._row_to_block(row) if row else None
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM blocks WHERE number = ?", (number,))
+            row = cursor.fetchone()
+            return self._row_to_block(row) if row else None
     
     def get_block_by_hash(self, block_hash: bytes) -> Optional[Block]:
         """Get block by hash."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM blocks WHERE hash = ?", (block_hash,))
-        row = cursor.fetchone()
-        return self._row_to_block(row) if row else None
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM blocks WHERE hash = ?", (block_hash,))
+            row = cursor.fetchone()
+            return self._row_to_block(row) if row else None
     
     def get_receipts(self, block_number: int) -> list[Receipt]:
         """Get all receipts for a block."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM receipts WHERE block_number = ? ORDER BY tx_index",
-            (block_number,)
-        )
-        rows = cursor.fetchall()
-        return [self._row_to_receipt(row) for row in rows]
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM receipts WHERE block_number = ? ORDER BY tx_index",
+                (block_number,)
+            )
+            rows = cursor.fetchall()
+            return [self._row_to_receipt(row) for row in rows]
     
     def get_transaction_receipt(self, tx_hash: bytes) -> tuple[int, int, Receipt] | None:
         """Get transaction receipt by hash. Returns (block_number, tx_index, receipt) or None."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        # Find transaction
-        cursor.execute(
-            "SELECT block_number, tx_index FROM transactions WHERE hash = ?",
-            (tx_hash,)
-        )
-        tx_row = cursor.fetchone()
-        if not tx_row:
-            return None
-        
-        block_number = tx_row["block_number"]
-        tx_index = tx_row["tx_index"]
-        
-        # Get receipt
-        cursor.execute(
-            "SELECT * FROM receipts WHERE block_number = ? AND tx_index = ?",
-            (block_number, tx_index)
-        )
-        receipt_row = cursor.fetchone()
-        if not receipt_row:
-            return None
-        
-        return (block_number, tx_index, self._row_to_receipt(receipt_row))
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            # Find transaction
+            cursor.execute(
+                "SELECT block_number, tx_index FROM transactions WHERE hash = ?",
+                (tx_hash,)
+            )
+            tx_row = cursor.fetchone()
+            if not tx_row:
+                return None
+            
+            block_number = tx_row["block_number"]
+            tx_index = tx_row["tx_index"]
+            
+            # Get receipt
+            cursor.execute(
+                "SELECT * FROM receipts WHERE block_number = ? AND tx_index = ?",
+                (block_number, tx_index)
+            )
+            receipt_row = cursor.fetchone()
+            if not receipt_row:
+                return None
+            
+            return (block_number, tx_index, self._row_to_receipt(receipt_row))
     
     def get_transaction_by_hash(self, tx_hash: bytes) -> tuple[Block, int] | None:
         """Get transaction by hash. Returns (block, tx_index) or None."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "SELECT block_number, tx_index FROM transactions WHERE hash = ?",
-            (tx_hash,)
-        )
-        tx_row = cursor.fetchone()
-        if not tx_row:
-            return None
-        
-        block = self.get_block(tx_row["block_number"])
-        if not block:
-            return None
-        
-        return (block, tx_row["tx_index"])
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "SELECT block_number, tx_index FROM transactions WHERE hash = ?",
+                (tx_hash,)
+            )
+            tx_row = cursor.fetchone()
+            if not tx_row:
+                return None
+            
+            block = self.get_block(tx_row["block_number"])
+            if not block:
+                return None
+            
+            return (block, tx_row["tx_index"])
     
     def get_latest_block(self) -> Optional[Block]:
         """Get the latest block."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM blocks ORDER BY number DESC LIMIT 1")
-        row = cursor.fetchone()
-        return self._row_to_block(row) if row else None
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM blocks ORDER BY number DESC LIMIT 1")
+            row = cursor.fetchone()
+            return self._row_to_block(row) if row else None
     
     def save_block(self, block: Block, receipts: list[Receipt], tx_hashes: list[bytes]):
         """Save block with receipts and transaction hashes atomically."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute("BEGIN IMMEDIATE")
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
             
-            # Insert block
-            row = self._block_to_row(block, receipts, tx_hashes)
-            cursor.execute("""
-                INSERT OR REPLACE INTO blocks (
-                    number, hash, parent_hash, ommers_hash, coinbase,
-                    state_root, transactions_root, receipts_root, logs_bloom,
-                    difficulty, gas_limit, gas_used, timestamp, extra_data,
-                    prev_randao, nonce, base_fee_per_gas, transactions
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                row["number"], row["hash"], row["parent_hash"], row["ommers_hash"],
-                row["coinbase"], row["state_root"], row["transactions_root"],
-                row["receipts_root"], row["logs_bloom"], row["difficulty"],
-                row["gas_limit"], row["gas_used"], row["timestamp"], row["extra_data"],
-                row["prev_randao"], row["nonce"], row["base_fee_per_gas"],
-                row["transactions"]
-            ))
-            
-            # Insert transactions with RLP data
-            for i, tx_hash in enumerate(tx_hashes):
-                tx_rlp = None
-                if i < len(block.transactions):
-                    tx = block.transactions[i]
-                    tx_rlp = tx.encode() if hasattr(tx, 'encode') else None
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
                 
+                # Insert block
+                row = self._block_to_row(block, receipts, tx_hashes)
                 cursor.execute("""
-                    INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, rlp)
-                    VALUES (?, ?, ?, ?)
-                """, (tx_hash, block.number, i, tx_rlp))
-            
-            # Insert receipts
-            for i, receipt in enumerate(receipts):
-                receipt_row = self._receipt_to_row(receipt, block.number, i)
-                cursor.execute("""
-                    INSERT OR REPLACE INTO receipts (
-                        block_number, tx_index, status, cumulative_gas_used, logs, contract_address
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT OR REPLACE INTO blocks (
+                        number, hash, parent_hash, ommers_hash, coinbase,
+                        state_root, transactions_root, receipts_root, logs_bloom,
+                        difficulty, gas_limit, gas_used, timestamp, extra_data,
+                        prev_randao, nonce, base_fee_per_gas, transactions
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    receipt_row["block_number"], receipt_row["tx_index"],
-                    receipt_row["status"], receipt_row["cumulative_gas_used"],
-                    receipt_row["logs"], receipt_row["contract_address"]
+                    row["number"], row["hash"], row["parent_hash"], row["ommers_hash"],
+                    row["coinbase"], row["state_root"], row["transactions_root"],
+                    row["receipts_root"], row["logs_bloom"], row["difficulty"],
+                    row["gas_limit"], row["gas_used"], row["timestamp"], row["extra_data"],
+                    row["prev_randao"], row["nonce"], row["base_fee_per_gas"],
+                    row["transactions"]
                 ))
-            
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+                
+                # Insert transactions with RLP data
+                for i, tx_hash in enumerate(tx_hashes):
+                    tx_rlp = None
+                    if i < len(block.transactions):
+                        tx = block.transactions[i]
+                        tx_rlp = tx.encode() if hasattr(tx, 'encode') else None
+                    
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, rlp)
+                        VALUES (?, ?, ?, ?)
+                    """, (tx_hash, block.number, i, tx_rlp))
+                
+                # Insert receipts
+                for i, receipt in enumerate(receipts):
+                    receipt_row = self._receipt_to_row(receipt, block.number, i)
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO receipts (
+                            block_number, tx_index, status, cumulative_gas_used, logs, contract_address
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                    """, (
+                        receipt_row["block_number"], receipt_row["tx_index"],
+                        receipt_row["status"], receipt_row["cumulative_gas_used"],
+                        receipt_row["logs"], receipt_row["contract_address"]
+                    ))
+                
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
     
     def get_latest_number(self) -> int:
         """Get the latest block number."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT MAX(number) as max_num FROM blocks")
-        row = cursor.fetchone()
-        return row["max_num"] if row and row["max_num"] is not None else -1
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT MAX(number) as max_num FROM blocks")
+            row = cursor.fetchone()
+            return row["max_num"] if row and row["max_num"] is not None else -1
     
     def get_logs(
         self,
@@ -421,71 +432,76 @@ class SQLiteStore:
         Returns:
             List of log entries matching the filter
         """
-        logs = []
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        # Query receipts for the block range
-        cursor.execute(
-            "SELECT * FROM receipts WHERE block_number >= ? AND block_number <= ?",
-            (from_block, to_block)
-        )
-        
-        for receipt_row in cursor.fetchall():
-            block_number = receipt_row["block_number"]
-            tx_index = receipt_row["tx_index"]
+        with self._lock:
+            logs = []
+            conn = self._get_conn()
+            cursor = conn.cursor()
             
-            # Get transaction hash
+            # Query receipts for the block range
             cursor.execute(
-                "SELECT hash FROM transactions WHERE block_number = ? AND tx_index = ?",
-                (block_number, tx_index)
+                "SELECT * FROM receipts WHERE block_number >= ? AND block_number <= ?",
+                (from_block, to_block)
             )
-            tx_row = cursor.fetchone()
-            tx_hash = tx_row["hash"] if tx_row else b""
             
-            # Get block hash
-            block = self.get_block(block_number)
-            block_hash = block.hash if block else b""
-            
-            # Parse logs from receipt
-            receipt = self._row_to_receipt(receipt_row)
-            
-            for log_index, log in enumerate(receipt.logs):
-                if isinstance(log, tuple) and len(log) == 3:
-                    log_address, log_topics, log_data = log
-                else:
-                    continue
+            for receipt_row in cursor.fetchall():
+                block_number = receipt_row["block_number"]
+                tx_index = receipt_row["tx_index"]
                 
-                # Convert topics to bytes format
-                normalized_topics = []
-                for topic in log_topics:
-                    if isinstance(topic, int):
-                        normalized_topics.append(topic.to_bytes(32, 'big'))
+                # Get transaction hash
+                cursor.execute(
+                    "SELECT hash FROM transactions WHERE block_number = ? AND tx_index = ?",
+                    (block_number, tx_index)
+                )
+                tx_row = cursor.fetchone()
+                tx_hash = tx_row["hash"] if tx_row else b""
+                
+                # Get block hash
+                block = self.get_block(block_number)
+                block_hash = block.hash if block else b""
+                
+                # Parse logs from receipt
+                receipt = self._row_to_receipt(receipt_row)
+                
+                for log_index, log in enumerate(receipt.logs):
+                    if isinstance(log, tuple) and len(log) == 3:
+                        log_address, log_topics, log_data = log
                     else:
-                        normalized_topics.append(topic)
-                
-                # Address filter
-                if address is not None:
-                    if isinstance(address, list):
-                        if log_address not in address:
+                        continue
+                    
+                    # Convert topics to bytes format
+                    normalized_topics = []
+                    for topic in log_topics:
+                        if isinstance(topic, int):
+                            normalized_topics.append(topic.to_bytes(32, 'big'))
+                        else:
+                            normalized_topics.append(topic)
+                    
+                    # Address filter
+                    if address is not None:
+                        if isinstance(address, list):
+                            if log_address not in address:
+                                continue
+                        elif log_address != address:
                             continue
-                    elif log_address != address:
-                        continue
-                
-                # Topic filter
-                if topics is not None:
-                    match = self._match_topics(normalized_topics, topics)
-                    if not match:
-                        continue
-                
-                logs.append({
-                    "address": log_address,
-                    "topics": normalized_topics,
-                    "data": log_data,
-                    "block_number": block_number,
-                    "block_hash": block_hash,
-                    "tx_hash": tx_hash,
-                    "tx_index": tx_index,
+                    
+                    # Topic filter
+                    if topics is not None:
+                        match = self._match_topics(normalized_topics, topics)
+                        if not match:
+                            continue
+                    
+                    logs.append({
+                        "address": log_address,
+                        "topics": normalized_topics,
+                        "data": log_data,
+                        "block_number": block_number,
+                        "block_hash": block_hash,
+                        "tx_hash": tx_hash,
+                        "tx_index": tx_index,
+                        "log_index": log_index,
+                    })
+            
+            return logs
                     "log_index": log_index,
                 })
         
@@ -526,174 +542,18 @@ class SQLiteStore:
             balance: Account balance in wei
             code: Contract bytecode (empty for EOAs)
         """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute("BEGIN IMMEDIATE")
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
             
-            # Calculate code hash
-            from sequencer.core.crypto import keccak256
-            code_hash = keccak256(code) if code else b"\x00" * 32
-            
-            # Save account (balance as TEXT for large integers)
-            cursor.execute("""
-                INSERT OR REPLACE INTO accounts (address, nonce, balance, code_hash, storage_root)
-                VALUES (?, ?, ?, ?, ?)
-            """, (address, nonce, str(balance), code_hash, b"\x00" * 32))
-            
-            # Save code if not empty
-            if code:
-                cursor.execute("""
-                    INSERT OR REPLACE INTO contract_code (code_hash, code)
-                    VALUES (?, ?)
-                """, (code_hash, code))
-            
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-    
-    def get_account(self, address: bytes) -> dict | None:
-        """
-        Get account state from database.
-        
-        Args:
-            address: Account address (20 bytes)
-        
-        Returns:
-            dict with nonce, balance, code, or None if account doesn't exist
-        """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT * FROM accounts WHERE address = ?", (address,))
-        row = cursor.fetchone()
-        
-        if row is None:
-            return None
-        
-        account = {
-            "nonce": row["nonce"],
-            "balance": int(row["balance"]),  # Convert TEXT back to int
-            "code": b"",
-        }
-        
-        # Get code if exists
-        code_hash = row["code_hash"]
-        if code_hash and code_hash != b"\x00" * 32:
-            cursor.execute("SELECT code FROM contract_code WHERE code_hash = ?", (code_hash,))
-            code_row = cursor.fetchone()
-            if code_row:
-                account["code"] = code_row["code"]
-        
-        return account
-    
-    def save_storage(self, address: bytes, slot: int, value: int):
-        """
-        Save a storage slot for a contract.
-        
-        Args:
-            address: Contract address
-            slot: Storage slot number
-            value: Storage value
-        """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            INSERT OR REPLACE INTO contract_storage (address, slot, value)
-            VALUES (?, ?, ?)
-        """, (address, slot, str(value)))  # Store as TEXT
-        
-        conn.commit()
-    
-    def get_storage(self, address: bytes, slot: int) -> int:
-        """
-        Get a storage slot value for a contract.
-        
-        Args:
-            address: Contract address
-            slot: Storage slot number
-        
-        Returns:
-            Storage value (0 if not set)
-        """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "SELECT value FROM contract_storage WHERE address = ? AND slot = ?",
-            (address, slot)
-        )
-        row = cursor.fetchone()
-        
-        return int(row["value"]) if row else 0  # Convert TEXT back to int
-    
-    def get_all_storage(self, address: bytes) -> dict[int, int]:
-        """
-        Get all storage slots for a contract.
-        
-        Args:
-            address: Contract address
-        
-        Returns:
-            Dict mapping slot -> value
-        """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "SELECT slot, value FROM contract_storage WHERE address = ?",
-            (address,)
-        )
-        
-        return {row["slot"]: int(row["value"]) for row in cursor.fetchall()}
-    
-    def get_all_accounts(self) -> list[tuple[bytes, dict]]:
-        """
-        Get all accounts from database.
-        
-        Returns:
-            List of (address, account_dict) tuples
-        """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT address FROM accounts")
-        addresses = [row["address"] for row in cursor.fetchall()]
-        
-        accounts = []
-        for address in addresses:
-            account = self.get_account(address)
-            if account:
-                accounts.append((address, account))
-        
-        return accounts
-    
-    def save_evm_state(self, accounts: dict[bytes, dict]):
-        """
-        Save complete EVM state atomically.
-        
-        Args:
-            accounts: Dict mapping address -> {nonce, balance, code, storage}
-        """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute("BEGIN IMMEDIATE")
-            
-            for address, account_data in accounts.items():
-                nonce = account_data.get("nonce", 0)
-                balance = account_data.get("balance", 0)
-                code = account_data.get("code", b"")
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
                 
                 # Calculate code hash
                 from sequencer.core.crypto import keccak256
                 code_hash = keccak256(code) if code else b"\x00" * 32
                 
-                # Save account (balance as TEXT)
+                # Save account (balance as TEXT for large integers)
                 cursor.execute("""
                     INSERT OR REPLACE INTO accounts (address, nonce, balance, code_hash, storage_root)
                     VALUES (?, ?, ?, ?, ?)
@@ -706,18 +566,181 @@ class SQLiteStore:
                         VALUES (?, ?)
                     """, (code_hash, code))
                 
-                # Save storage (values as TEXT)
-                storage = account_data.get("storage", {})
-                for slot, value in storage.items():
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO contract_storage (address, slot, value)
-                        VALUES (?, ?, ?)
-                    """, (address, slot, str(value)))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+    
+    def get_account(self, address: bytes) -> dict | None:
+        """
+        Get account state from database.
+        
+        Args:
+            address: Account address (20 bytes)
+        
+        Returns:
+            dict with nonce, balance, code, or None if account doesn't exist
+        """
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT * FROM accounts WHERE address = ?", (address,))
+            row = cursor.fetchone()
+            
+            if row is None:
+                return None
+            
+            account = {
+                "nonce": row["nonce"],
+                "balance": int(row["balance"]),  # Convert TEXT back to int
+                "code": b"",
+            }
+            
+            # Get code if exists
+            code_hash = row["code_hash"]
+            if code_hash and code_hash != b"\x00" * 32:
+                cursor.execute("SELECT code FROM contract_code WHERE code_hash = ?", (code_hash,))
+                code_row = cursor.fetchone()
+                if code_row:
+                    account["code"] = code_row["code"]
+            
+            return account
+    
+    def save_storage(self, address: bytes, slot: int, value: int):
+        """
+        Save a storage slot for a contract.
+        
+        Args:
+            address: Contract address
+            slot: Storage slot number
+            value: Storage value
+        """
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO contract_storage (address, slot, value)
+                VALUES (?, ?, ?)
+            """, (address, slot, str(value)))  # Store as TEXT
             
             conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+    
+    def get_storage(self, address: bytes, slot: int) -> int:
+        """
+        Get a storage slot value for a contract.
+        
+        Args:
+            address: Contract address
+            slot: Storage slot number
+        
+        Returns:
+            Storage value (0 if not set)
+        """
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "SELECT value FROM contract_storage WHERE address = ? AND slot = ?",
+                (address, slot)
+            )
+            row = cursor.fetchone()
+            
+            return int(row["value"]) if row else 0  # Convert TEXT back to int
+    
+    def get_all_storage(self, address: bytes) -> dict[int, int]:
+        """
+        Get all storage slots for a contract.
+        
+        Args:
+            address: Contract address
+        
+        Returns:
+            Dict mapping slot -> value
+        """
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "SELECT slot, value FROM contract_storage WHERE address = ?",
+                (address,)
+            )
+            
+            return {row["slot"]: int(row["value"]) for row in cursor.fetchall()}
+    
+    def get_all_accounts(self) -> list[tuple[bytes, dict]]:
+        """
+        Get all accounts from database.
+        
+        Returns:
+            List of (address, account_dict) tuples
+        """
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT address FROM accounts")
+            addresses = [row["address"] for row in cursor.fetchall()]
+            
+            accounts = []
+            for address in addresses:
+                account = self.get_account(address)
+                if account:
+                    accounts.append((address, account))
+            
+            return accounts
+    
+    def save_evm_state(self, accounts: dict[bytes, dict]):
+        """
+        Save complete EVM state atomically.
+        
+        Args:
+            accounts: Dict mapping address -> {nonce, balance, code, storage}
+        """
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
+                
+                for address, account_data in accounts.items():
+                    nonce = account_data.get("nonce", 0)
+                    balance = account_data.get("balance", 0)
+                    code = account_data.get("code", b"")
+                    
+                    # Calculate code hash
+                    from sequencer.core.crypto import keccak256
+                    code_hash = keccak256(code) if code else b"\x00" * 32
+                    
+                    # Save account (balance as TEXT)
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO accounts (address, nonce, balance, code_hash, storage_root)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (address, nonce, str(balance), code_hash, b"\x00" * 32))
+                    
+                    # Save code if not empty
+                    if code:
+                        cursor.execute("""
+                            INSERT OR REPLACE INTO contract_code (code_hash, code)
+                            VALUES (?, ?)
+                        """, (code_hash, code))
+                    
+                    # Save storage (values as TEXT)
+                    storage = account_data.get("storage", {})
+                    for slot, value in storage.items():
+                        cursor.execute("""
+                            INSERT OR REPLACE INTO contract_storage (address, slot, value)
+                            VALUES (?, ?, ?)
+                        """, (address, slot, str(value)))
+                
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
     
     def load_evm_state(self) -> dict[bytes, dict]:
         """
@@ -726,59 +749,62 @@ class SQLiteStore:
         Returns:
             Dict mapping address -> {nonce, balance, code, storage}
         """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        # Get all accounts
-        cursor.execute("SELECT address, nonce, balance, code_hash FROM accounts")
-        rows = cursor.fetchall()
-        
-        state = {}
-        for row in rows:
-            address = row["address"]
-            account = {
-                "nonce": row["nonce"],
-                "balance": int(row["balance"]),  # Convert TEXT to int
-                "code": b"",
-                "storage": {},
-            }
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
             
-            # Get code
-            code_hash = row["code_hash"]
-            if code_hash and code_hash != b"\x00" * 32:
-                cursor.execute("SELECT code FROM contract_code WHERE code_hash = ?", (code_hash,))
-                code_row = cursor.fetchone()
-                if code_row:
-                    account["code"] = code_row["code"]
+            # Get all accounts
+            cursor.execute("SELECT address, nonce, balance, code_hash FROM accounts")
+            rows = cursor.fetchall()
             
-            # Get storage
-            cursor.execute(
-                "SELECT slot, value FROM contract_storage WHERE address = ?",
-                (address,)
-            )
-            storage_rows = cursor.fetchall()
-            account["storage"] = {row["slot"]: int(row["value"]) for row in storage_rows}
+            state = {}
+            for row in rows:
+                address = row["address"]
+                account = {
+                    "nonce": row["nonce"],
+                    "balance": int(row["balance"]),  # Convert TEXT to int
+                    "code": b"",
+                    "storage": {},
+                }
+                
+                # Get code
+                code_hash = row["code_hash"]
+                if code_hash and code_hash != b"\x00" * 32:
+                    cursor.execute("SELECT code FROM contract_code WHERE code_hash = ?", (code_hash,))
+                    code_row = cursor.fetchone()
+                    if code_row:
+                        account["code"] = code_row["code"]
+                
+                # Get storage
+                cursor.execute(
+                    "SELECT slot, value FROM contract_storage WHERE address = ?",
+                    (address,)
+                )
+                storage_rows = cursor.fetchall()
+                account["storage"] = {row["slot"]: int(row["value"]) for row in storage_rows}
+                
+                state[address] = account
             
-            state[address] = account
-        
-        return state
+            return state
     
     def clear_evm_state(self):
         """Clear all EVM state from database."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        
-        cursor.execute("DELETE FROM contract_storage")
-        cursor.execute("DELETE FROM accounts")
-        cursor.execute("DELETE FROM contract_code")
-        
-        conn.commit()
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute("DELETE FROM contract_storage")
+            cursor.execute("DELETE FROM accounts")
+            cursor.execute("DELETE FROM contract_code")
+            
+            conn.commit()
     
     def close(self):
         """Close the database connection."""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
     
     def __del__(self):
         """Clean up database connection on object destruction."""

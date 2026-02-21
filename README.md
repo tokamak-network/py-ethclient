@@ -1,10 +1,30 @@
 # py-ethclient
 
-A Python Ethereum L1 execution client — a fully independent port of [ethrex](https://github.com/lambdaclass/ethrex) (Rust).
+**A Python Ethereum execution client built from scratch**
 
-Built to participate directly in the Ethereum network via devp2p. All core logic is implemented from scratch; only cryptographic primitives and the web framework are external dependencies.
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+[![Tests](https://img.shields.io/badge/tests-593%20passing-brightgreen)](#testing)
+[![LOC](https://img.shields.io/badge/LOC-15%2C271-blue)](#project-stats)
+
+py-ethclient is a fully independent Python implementation of an Ethereum Layer 1 execution client, inspired by [ethrex](https://github.com/lambdaclass/ethrex) (Rust). It connects directly to the Ethereum peer-to-peer network via devp2p/RLPx, implements the Ethereum Virtual Machine (EVM) with 140+ opcodes, and supports both full sync and snap sync for Mainnet and Sepolia.
+
+All core protocol logic — RLP encoding, Merkle Patricia Trie, EVM execution, RLPx transport encryption, eth/68 and snap/1 wire protocols, Discovery v4, and the Engine API — is implemented from scratch in pure Python. Only cryptographic primitives and the web framework are external dependencies.
 
 > **[한국어 README](./README_ko.md)**
+
+## Key Features
+
+- **Full EVM** — 140+ opcodes, precompiles (ecrecover, SHA-256, RIPEMD-160, modexp, BN128, BLAKE2f, KZG), EIP-1559/2929/2930/4844/7702 support
+- **Ethereum P2P Networking** — RLPx encrypted transport, eth/68 and snap/1 wire protocols, Discovery v4 with Kademlia routing
+- **Sync Modes** — Full sync (sequential block execution) and snap sync (4-phase parallel state download)
+- **JSON-RPC 2.0** — 20+ methods including `eth_call`, `eth_estimateGas`, transaction/receipt lookups, log queries
+- **Engine API V1/V2/V3** — `forkchoiceUpdated`, `getPayload`, `newPayload` with JWT authentication for consensus layer integration
+- **Persistent Storage** — LMDB-backed disk backend with hybrid overlay pattern for atomic state commits
+- **Multi-Network** — Mainnet, Sepolia, and Holesky with per-network genesis and fork configurations
+- **593 Tests** — Comprehensive test suite covering all protocol layers from RLP to end-to-end integration
+- **Docker Support** — Ready-to-use Docker Compose setup for quick deployment
+- **L2 Extensibility** — Built-in execution hook system for Layer 2 customization without modifying EVM core
 
 ## Requirements
 

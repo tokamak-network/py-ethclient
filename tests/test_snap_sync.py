@@ -161,11 +161,11 @@ class TestResponseHandlers:
         assert 30 in syncer._trie_node_responses
 
     def test_handler_without_event(self):
-        """Handler should not crash if no event is registered."""
+        """Stale responses without pending events should be dropped."""
         syncer = SnapSync()
         msg = AccountRangeMessage(request_id=99, accounts=[], proof=[])
         syncer.handle_account_range(msg.encode())  # should not raise
-        assert 99 in syncer._account_responses
+        assert 99 not in syncer._account_responses
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +352,10 @@ class TestPeerRefresh:
 
 
 class TestPeerHealth:
+    def test_snap_sync_default_no_proof_pool(self):
+        syncer = SnapSync()
+        assert syncer._proof_pool is None
+
     def test_adaptive_timeout_uses_rtt(self):
         syncer = SnapSync()
         peer = _make_mock_peer()
@@ -388,6 +392,35 @@ class TestPeerHealth:
         assert stale_peer not in peers
         assert fresh_peer in peers
         assert zero_peer in peers
+
+    @pytest.mark.asyncio
+    async def test_request_snap_aborts_when_peer_disconnected(self, monkeypatch):
+        syncer = SnapSync()
+        peer = _make_mock_peer()
+
+        async def send_and_disconnect(*_args, **_kwargs):
+            peer.connected = False
+
+        peer.send_snap_message = AsyncMock(side_effect=send_and_disconnect)
+        monkeypatch.setattr(
+            "ethclient.networking.sync.snap_sync.SNAP_TIMEOUT",
+            30.0,
+        )
+
+        result = await asyncio.wait_for(
+            syncer._request_snap(
+                peer=peer,
+                req_id=1,
+                relative_code=SnapMsg.GET_ACCOUNT_RANGE,
+                payload=b"\xc0",
+                response_buffer=syncer._account_responses,
+                request_name="AccountRange",
+            ),
+            timeout=0.5,
+        )
+
+        assert result is None
+        assert 1 not in syncer._response_events
 
 
 class TestProgressRestore:

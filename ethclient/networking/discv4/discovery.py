@@ -15,6 +15,8 @@ Packet structure:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import os
 import time
 import logging
 from dataclasses import dataclass
@@ -256,10 +258,45 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         self.transport: Optional[asyncio.DatagramTransport] = None
         self._pending_pings: dict[bytes, tuple[Node, float]] = {}  # ping_hash -> (node, timestamp)
         self._pending_find: dict[str, float] = {}  # endpoint_key -> timestamp
+        self._recently_pinged: dict[bytes, float] = {}  # node_id -> timestamp
+        self._last_send_error_log_at: float = 0.0
+        self._running = False
 
     def connection_made(self, transport: asyncio.DatagramTransport) -> None:
         self.transport = transport
         logger.info("Discovery UDP server started")
+
+    def error_received(self, exc: Exception) -> None:
+        """Handle datagram transport send/receive errors without asyncio warning storms."""
+        now = time.time()
+        if now - self._last_send_error_log_at >= 5.0:
+            logger.warning("Discovery UDP send/receive error: %s", exc)
+            self._last_send_error_log_at = now
+
+    @staticmethod
+    def _is_routable_endpoint(addr: tuple[str, int]) -> bool:
+        ip, port = addr
+        if port <= 0 or port > 65535:
+            return False
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if ip_obj.is_unspecified or ip_obj.is_multicast or ip_obj.is_loopback or ip_obj.is_link_local:
+            return False
+        return True
+
+    def _safe_sendto(self, payload: bytes, addr: tuple[str, int]) -> bool:
+        if not self._is_routable_endpoint(addr):
+            return False
+        if self.transport is None or self.transport.is_closing():
+            return False
+        try:
+            self.transport.sendto(payload, addr)
+            return True
+        except OSError as exc:
+            self.error_received(exc)
+            return False
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         """Handle incoming UDP packet."""
@@ -293,8 +330,7 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         # Send Pong
         to_endpoint = Endpoint(ip=addr[0], udp_port=addr[1])
         pong = encode_pong(self.private_key, to_endpoint, packet_hash)
-        if self.transport:
-            self.transport.sendto(pong, addr)
+        self._safe_sendto(pong, addr)
 
         # Add to routing table
         node = Node(
@@ -354,13 +390,12 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         for i in range(0, len(closest), MAX_NEIGHBOURS_PER_PACKET):
             chunk = closest[i:i + MAX_NEIGHBOURS_PER_PACKET]
             packet = encode_neighbours(self.private_key, chunk)
-            if self.transport:
-                self.transport.sendto(packet, addr)
+            self._safe_sendto(packet, addr)
 
     def _handle_neighbours(
         self, payload: bytes, pubkey: bytes, addr: tuple[str, int],
     ) -> None:
-        """Handle Neighbours response — add nodes to routing table."""
+        """Handle Neighbours response — add nodes to routing table and ping for liveness."""
         try:
             nodes, expiration = decode_neighbours(payload)
         except Exception:
@@ -369,9 +404,15 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         if expiration < int(time.time()):
             return
 
+        now = time.time()
         for node in nodes:
             if node.id != self.local_node.id:
                 self.table.add_node(node)
+                # Ping newly discovered nodes to verify liveness (sets last_pong)
+                if node.id not in self._recently_pinged or (now - self._recently_pinged[node.id]) > 60.0:
+                    self._recently_pinged[node.id] = now
+                    if node.ip and node.udp_port > 0:
+                        self.send_ping(node)
 
     # ------------------------------------------------------------------
     # Active operations
@@ -388,21 +429,19 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         packet = encode_ping(self.private_key, from_ep, to_ep)
         ping_hash = packet[:32]
 
-        self._pending_pings[ping_hash] = (node, time.time())
-
-        if self.transport:
-            self.transport.sendto(packet, (node.ip, node.udp_port))
+        if self._safe_sendto(packet, (node.ip, node.udp_port)):
+            self._pending_pings[ping_hash] = (node, time.time())
 
         return ping_hash
 
     def send_find_neighbours(self, node: Node, target: bytes) -> None:
         """Send FindNeighbours to a node."""
         packet = encode_find_neighbours(self.private_key, target)
-        if self.transport:
-            self.transport.sendto(packet, (node.ip, node.udp_port))
+        self._safe_sendto(packet, (node.ip, node.udp_port))
 
     async def bootstrap(self) -> None:
         """Ping boot nodes and perform initial lookup."""
+        self._running = True
         for node in self.boot_nodes:
             self.send_ping(node)
 
@@ -411,6 +450,24 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
 
         # Lookup ourselves to populate routing table
         await self.lookup(self.local_node.id)
+
+        # Start periodic refresh to keep discovering new peers
+        asyncio.create_task(self._refresh_loop())
+
+    async def _refresh_loop(self) -> None:
+        """Periodically discover new peers by looking up random targets."""
+        while self._running:
+            await asyncio.sleep(30.0)
+            try:
+                target = os.urandom(64)
+                await self.lookup(target)
+                # Clean up stale recently_pinged entries
+                now = time.time()
+                stale = [nid for nid, ts in self._recently_pinged.items() if now - ts > 300.0]
+                for nid in stale:
+                    self._recently_pinged.pop(nid, None)
+            except Exception as e:
+                logger.debug("Discovery refresh error: %s", e)
 
     async def lookup(self, target: bytes) -> list[Node]:
         """Perform a Kademlia lookup for the target.

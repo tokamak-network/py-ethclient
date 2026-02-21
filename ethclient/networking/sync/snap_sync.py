@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable, Optional, TYPE_CHECKING
@@ -52,6 +54,7 @@ TRIE_NODES_PER_REQUEST = 128
 SNAP_TIMEOUT = 15.0               # seconds
 MIN_SNAP_TIMEOUT = 8.0            # seconds
 MAX_SNAP_TIMEOUT = 60.0           # seconds
+SNAP_REQUEST_POLL_INTERVAL = 0.25  # seconds
 PEER_WAIT_TIMEOUT = 30.0          # seconds
 PEER_WAIT_POLL_INTERVAL = 1.0     # seconds
 PEER_FAIL_BAN_THRESHOLD = 3
@@ -65,6 +68,25 @@ MAX_STALE_SNAP_PEER_LAG_BLOCKS = 128
 MAX_HASH = b"\xff" * 32           # 2^256 - 1
 ZERO_HASH = b"\x00" * 32
 STRICT_RANGE_PROOFS = False
+
+
+def _verify_account_range_proof_task(
+    target_root: bytes,
+    first_key: bytes,
+    last_key: bytes,
+    keys: list[bytes],
+    values: list[bytes],
+    proof: list[bytes],
+) -> bool:
+    """Worker process entrypoint for account range proof verification."""
+    return verify_range_proof(
+        target_root,
+        first_key,
+        last_key,
+        keys,
+        values,
+        proof,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -140,8 +162,12 @@ EMPTY_TRIE_ROOT = bytes.fromhex(
 class SnapSync:
     """Manages snap/1 state synchronization."""
 
-    def __init__(self, store=None) -> None:
+    def __init__(self, store=None, proof_workers: int = 0) -> None:
         self.store = store
+        self._proof_workers = max(0, proof_workers)
+        self._proof_pool: Optional[ProcessPoolExecutor] = None
+        if self._proof_workers > 0:
+            self._proof_pool = ProcessPoolExecutor(max_workers=self._proof_workers)
         self.state = SnapSyncState()
         self._response_events: dict[int, asyncio.Event] = {}
         self._peer_provider: Optional[Callable[[], list[PeerConnection]]] = None
@@ -155,6 +181,56 @@ class SnapSync:
         self._storage_responses: dict[int, StorageRangesMessage] = {}
         self._bytecode_responses: dict[int, ByteCodesMessage] = {}
         self._trie_node_responses: dict[int, TrieNodesMessage] = {}
+
+    async def _verify_account_range_proof(
+        self,
+        first_key: bytes,
+        last_key: bytes,
+        keys: list[bytes],
+        values: list[bytes],
+        proof: list[bytes],
+    ) -> bool:
+        """Verify account range proof, optionally in a process pool."""
+        if self._proof_pool is None:
+            return _verify_account_range_proof_task(
+                self.state.target_root,
+                first_key,
+                last_key,
+                keys,
+                values,
+                proof,
+            )
+
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(
+                self._proof_pool,
+                _verify_account_range_proof_task,
+                self.state.target_root,
+                first_key,
+                last_key,
+                keys,
+                values,
+                proof,
+            )
+        except BrokenProcessPool:
+            logger.warning("Snap proof worker pool broken; falling back to in-process verification")
+            self._proof_pool.shutdown(wait=False, cancel_futures=True)
+            self._proof_pool = None
+            return _verify_account_range_proof_task(
+                self.state.target_root,
+                first_key,
+                last_key,
+                keys,
+                values,
+                proof,
+            )
+
+    def close(self) -> None:
+        """Release worker-pool resources."""
+        if self._proof_pool is not None:
+            self._proof_pool.shutdown(wait=False, cancel_futures=True)
+            self._proof_pool = None
 
     def _restore_progress(self) -> None:
         """Best-effort restore of persisted progress for snap resume."""
@@ -401,13 +477,31 @@ class SnapSync:
             return None
 
         timeout = self._adaptive_timeout(peer)
+        deadline = asyncio.get_running_loop().time() + timeout
         try:
-            await asyncio.wait_for(event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.warning("%s request %d timed out (%.1fs)", request_name, req_id, timeout)
-            self._record_timeout(peer)
-            self._request_started_at.pop(req_id, None)
-            return None
+            while True:
+                if event.is_set():
+                    break
+                if not peer.connected:
+                    logger.warning("%s request %d aborted: peer disconnected", request_name, req_id)
+                    self._record_timeout(peer)
+                    self._request_started_at.pop(req_id, None)
+                    response_buffer.pop(req_id, None)
+                    return None
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    logger.warning("%s request %d timed out (%.1fs)", request_name, req_id, timeout)
+                    self._record_timeout(peer)
+                    self._request_started_at.pop(req_id, None)
+                    response_buffer.pop(req_id, None)
+                    return None
+                try:
+                    await asyncio.wait_for(
+                        event.wait(),
+                        timeout=min(SNAP_REQUEST_POLL_INTERVAL, remaining),
+                    )
+                except asyncio.TimeoutError:
+                    continue
         finally:
             self._response_events.pop(req_id, None)
 
@@ -505,8 +599,7 @@ class SnapSync:
             if response.proof:
                 first_key = self.state.account_cursor
                 last_key = keys[-1] if keys else MAX_HASH
-                valid = verify_range_proof(
-                    self.state.target_root,
+                valid = await self._verify_account_range_proof(
                     first_key,
                     last_key,
                     keys,
@@ -794,32 +887,44 @@ class SnapSync:
     def handle_account_range(self, data: bytes) -> None:
         """Handle incoming AccountRange response."""
         msg = AccountRangeMessage.decode(data)
-        self._account_responses[msg.request_id] = msg
         event = self._response_events.get(msg.request_id)
+        if event is None:
+            logger.debug("Dropping stale AccountRange response id=%d", msg.request_id)
+            return
+        self._account_responses[msg.request_id] = msg
         if event:
             event.set()
 
     def handle_storage_ranges(self, data: bytes) -> None:
         """Handle incoming StorageRanges response."""
         msg = StorageRangesMessage.decode(data)
-        self._storage_responses[msg.request_id] = msg
         event = self._response_events.get(msg.request_id)
+        if event is None:
+            logger.debug("Dropping stale StorageRanges response id=%d", msg.request_id)
+            return
+        self._storage_responses[msg.request_id] = msg
         if event:
             event.set()
 
     def handle_byte_codes(self, data: bytes) -> None:
         """Handle incoming ByteCodes response."""
         msg = ByteCodesMessage.decode(data)
-        self._bytecode_responses[msg.request_id] = msg
         event = self._response_events.get(msg.request_id)
+        if event is None:
+            logger.debug("Dropping stale ByteCodes response id=%d", msg.request_id)
+            return
+        self._bytecode_responses[msg.request_id] = msg
         if event:
             event.set()
 
     def handle_trie_nodes(self, data: bytes) -> None:
         """Handle incoming TrieNodes response."""
         msg = TrieNodesMessage.decode(data)
-        self._trie_node_responses[msg.request_id] = msg
         event = self._response_events.get(msg.request_id)
+        if event is None:
+            logger.debug("Dropping stale TrieNodes response id=%d", msg.request_id)
+            return
+        self._trie_node_responses[msg.request_id] = msg
         if event:
             event.set()
 

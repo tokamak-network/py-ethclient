@@ -30,6 +30,11 @@ def main():
         default=10,
         help="Block production interval in seconds (default: 10)",
     )
+    parser.add_argument(
+        "--db-path",
+        default=None,
+        help="Path to SQLite database file for persistence. If not specified, uses in-memory storage.",
+    )
     
     args = parser.parse_args()
     
@@ -50,7 +55,23 @@ def main():
     print(f"Balance: 100 ETH")
     print(f"Block time: {args.block_time}s")
     
-    chain = Chain.from_genesis(genesis_state, chain_id=args.chain_id, block_time=args.block_time)
+    # Determine storage type based on db-path argument
+    if args.db_path:
+        store_type = "sqlite"
+        store_path = args.db_path
+        print(f"Storage: SQLite ({store_path})")
+    else:
+        store_type = "memory"
+        store_path = "sequencer.db"  # Default, but won't be used
+        print("Storage: In-memory (data will be lost on restart)")
+    
+    chain = Chain.from_genesis(
+        genesis_state,
+        chain_id=args.chain_id,
+        block_time=args.block_time,
+        store_type=store_type,
+        store_path=store_path,
+    )
     
     print(f"Genesis block created: {chain.get_latest_block().hash.hex()}")
     print(f"Starting RPC server on {args.host}:{args.port}")

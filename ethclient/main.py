@@ -17,11 +17,12 @@ import argparse
 import asyncio
 import json
 import logging
+import multiprocessing as mp
 import os
 import signal
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from coincurve import PrivateKey
 
@@ -79,6 +80,57 @@ def parse_enode(enode: str) -> Optional[Node]:
         return None
 
 
+def _run_eth_rpc_process(
+    data_dir: str,
+    rpc_port: int,
+    chain_config: ChainConfig,
+    archive_mode: bool,
+    peer_count_value: Any,
+    syncing_value: Any,
+) -> None:
+    """Run eth RPC server in a dedicated subprocess."""
+    from ethclient.storage.disk_backend import DiskBackend
+    import uvicorn
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    store = DiskBackend(Path(data_dir))
+    mempool = Mempool()
+    rpc = RPCServer()
+    register_eth_api(
+        rpc,
+        store=store,
+        mempool=mempool,
+        network_chain_id=chain_config.chain_id,
+        config=chain_config,
+        archive_enabled=archive_mode,
+        peer_count_provider=lambda: int(peer_count_value.value),
+        syncing_provider=lambda: bool(syncing_value.value),
+    )
+
+    async def _serve() -> None:
+        config = uvicorn.Config(
+            rpc.app,
+            host="0.0.0.0",
+            port=rpc_port,
+            log_level="warning",
+            loop="asyncio",
+        )
+        server = uvicorn.Server(config)
+        server.config.setup_event_loop = lambda: None
+        await server.serve()
+
+    try:
+        asyncio.run(_serve())
+    finally:
+        if hasattr(store, "close"):
+            store.close()
+
+
 # ---------------------------------------------------------------------------
 # Node class
 # ---------------------------------------------------------------------------
@@ -101,6 +153,7 @@ class EthNode:
         sync_mode: str = "snap",
         data_dir: Optional[str] = None,
         archive_mode: bool = False,
+        rpc_process_mode: bool = False,
         jwt_secret: Optional[bytes] = None,
     ) -> None:
         self.private_key = private_key
@@ -111,6 +164,8 @@ class EthNode:
         self.metrics_port = metrics_port
         self.sync_mode = sync_mode
         self.archive_mode = archive_mode
+        self.rpc_process_mode = rpc_process_mode
+        self.data_dir = data_dir
 
         # Initialize storage
         if data_dir:
@@ -198,6 +253,10 @@ class EthNode:
         self.metrics_rpc = RPCServer()
         self.metrics_rpc.set_metrics_provider(self._collect_metrics)
         self._sync_task: Optional[asyncio.Task] = None
+        self._rpc_state_task: Optional[asyncio.Task] = None
+        self._rpc_process: Optional[mp.Process] = None
+        self._rpc_peer_count_value = mp.Value("i", 0)
+        self._rpc_syncing_value = mp.Value("b", False)
 
         self._running = False
 
@@ -218,18 +277,41 @@ class EthNode:
         # Start P2P
         await self.p2p.start()
 
-        # Start RPC server in background
+        # Start eth RPC server (in-process by default, subprocess optionally)
         import uvicorn
-        config = uvicorn.Config(
-            self.rpc.app,
-            host="0.0.0.0",
-            port=self.rpc_port,
-            log_level="warning",
-            loop="asyncio",
-        )
-        self._rpc_server = uvicorn.Server(config)
-        self._rpc_server.config.setup_event_loop = lambda: None
-        self._rpc_task = asyncio.create_task(self._rpc_server.serve())
+        if self.rpc_process_mode:
+            if not self.data_dir:
+                logger.warning("rpc-process mode requires disk backend; using in-process RPC")
+                self.rpc_process_mode = False
+            else:
+                self._rpc_peer_count_value.value = self.p2p.peer_count
+                self._rpc_syncing_value.value = self.p2p.is_syncing
+                self._rpc_process = mp.Process(
+                    target=_run_eth_rpc_process,
+                    args=(
+                        self.data_dir,
+                        self.rpc_port,
+                        self.chain_config,
+                        self.archive_mode,
+                        self._rpc_peer_count_value,
+                        self._rpc_syncing_value,
+                    ),
+                    daemon=True,
+                )
+                self._rpc_process.start()
+                self._rpc_state_task = asyncio.create_task(self._rpc_state_publisher())
+
+        if not self.rpc_process_mode:
+            config = uvicorn.Config(
+                self.rpc.app,
+                host="0.0.0.0",
+                port=self.rpc_port,
+                log_level="warning",
+                loop="asyncio",
+            )
+            self._rpc_server = uvicorn.Server(config)
+            self._rpc_server.config.setup_event_loop = lambda: None
+            self._rpc_task = asyncio.create_task(self._rpc_server.serve())
 
         # Engine RPC server in background
         engine_config = uvicorn.Config(
@@ -273,6 +355,15 @@ class EthNode:
             self._engine_rpc_server.should_exit = True
         if hasattr(self, "_metrics_server"):
             self._metrics_server.should_exit = True
+        if self._rpc_state_task is not None:
+            self._rpc_state_task.cancel()
+            try:
+                await self._rpc_state_task
+            except asyncio.CancelledError:
+                pass
+        if self._rpc_process is not None and self._rpc_process.is_alive():
+            self._rpc_process.terminate()
+            self._rpc_process.join(timeout=5.0)
         if self._sync_task is not None:
             self._sync_task.cancel()
             try:
@@ -298,6 +389,13 @@ class EthNode:
             except Exception as exc:
                 logger.debug("sync supervisor error: %s", exc)
             await asyncio.sleep(5.0)
+
+    async def _rpc_state_publisher(self) -> None:
+        """Publish peer/sync state to the RPC subprocess."""
+        while self._running and self._rpc_process is not None and self._rpc_process.is_alive():
+            self._rpc_peer_count_value.value = self.p2p.peer_count
+            self._rpc_syncing_value.value = self.p2p.is_syncing
+            await asyncio.sleep(1.0)
 
     def _collect_metrics(self) -> dict[str, int]:
         """Return a minimal Prometheus-compatible metrics snapshot."""
@@ -423,6 +521,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable archive mode RPC semantics for historical state queries",
     )
     parser.add_argument(
+        "--rpc-process",
+        action="store_true",
+        help="Run eth RPC server in a dedicated process (disk backend only)",
+    )
+    parser.add_argument(
         "--jwt-secret",
         type=str,
         default=None,
@@ -516,6 +619,7 @@ def main() -> None:
         sync_mode=args.sync_mode,
         data_dir=data_dir,
         archive_mode=args.archive,
+        rpc_process_mode=args.rpc_process,
         jwt_secret=jwt_secret,
     )
 

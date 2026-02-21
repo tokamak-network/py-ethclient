@@ -105,6 +105,14 @@ class TestCLIParsing:
 
         assert args.private_key == key.secret.hex()
 
+    def test_rpc_process_arg(self):
+        from ethclient.main import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["--rpc-process"])
+
+        assert args.rpc_process is True
+
 
 # ===================================================================
 # Node initialization tests
@@ -187,6 +195,20 @@ class TestNodeInit:
         assert "eth_chainId" in node.rpc._methods
         assert "web3_clientVersion" in node.rpc._methods
         assert "net_version" in node.rpc._methods
+
+    def test_node_rpc_process_mode_flag(self):
+        from ethclient.main import EthNode
+        from ethclient.common.config import MAINNET_CONFIG
+
+        key = PrivateKey()
+        node = EthNode(
+            private_key=key.secret,
+            chain_config=MAINNET_CONFIG,
+            data_dir="data/test-rpc-process",
+            rpc_process_mode=True,
+        )
+
+        assert node.rpc_process_mode is True
 
 
 # ===================================================================

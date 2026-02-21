@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "py-ethclient"
+abstract: "A Python Ethereum Layer 1 execution client built from scratch — EVM, RLPx, eth/68, snap/1, full sync, snap sync, Engine API, and JSON-RPC."
+authors:
+  - name: "Tokamak Network"
+url: "https://github.com/tokamak-network/py-ethclient"
+repository-code: "https://github.com/tokamak-network/py-ethclient"
+license: MIT
+keywords:
+  - ethereum
+  - execution-client
+  - evm
+  - python
+  - blockchain
+  - devp2p
+  - rlpx
+  - snap-sync
+  - engine-api
+  - json-rpc

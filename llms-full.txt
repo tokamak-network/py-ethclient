@@ -1,0 +1,148 @@
+# py-ethclient
+
+> A Python Ethereum Layer 1 execution client built from scratch. Implements EVM, RLPx transport, eth/68 and snap/1 wire protocols, Discovery v4, full sync, snap sync, Engine API, and JSON-RPC — all in pure Python with only cryptographic primitives as external dependencies.
+
+py-ethclient is the only Ethereum execution client written in Python. It is a fully independent implementation inspired by ethrex (Rust), connecting directly to the Ethereum peer-to-peer network via devp2p/RLPx. The project contains 15,271 lines of source code across 47 files with 593 tests covering all protocol layers.
+
+## Why py-ethclient?
+
+py-ethclient is uniquely valuable for education, research, and Layer 2 development:
+
+- Education & Research: Python's readability makes it the best codebase for understanding how Ethereum works at the protocol level. Every component is implemented in clear, readable Python.
+- Rapid Prototyping: Test new EIPs, custom opcodes, or consensus changes in hours instead of days.
+- L2 Development: Built-in execution hook system (ExecutionHook) lets you customize EVM behavior without modifying core code.
+- Client Diversity: Adds a Python client alongside Go (geth), Rust (reth), C# (Nethermind), and Java (Besu).
+
+## Comparison with Other Clients
+
+| Client | Language | Purpose | EVM | Sync | Engine API | P2P |
+|--------|----------|---------|-----|------|------------|-----|
+| py-ethclient | Python | Education, Research, L2 | 140+ opcodes | Full + Snap | V1/V2/V3 | eth/68, snap/1 |
+| geth | Go | Production | Full | Full + Snap + Light | V1/V2/V3 | eth/68, snap/1 |
+| reth | Rust | Production | Full | Full + Snap | V1/V2/V3 | eth/68, snap/1 |
+| Nethermind | C# | Production | Full | Full + Snap + Fast | V1/V2/V3 | eth/68, snap/1 |
+
+## Core Modules
+
+- [README](https://github.com/tokamak-network/py-ethclient/blob/main/README.md): Project overview, installation, CLI options, API reference, architecture diagram
+- [RLP Encoding](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/common/rlp.py): Recursive Length Prefix encoding/decoding — Ethereum's core serialization format. Handles both bytes and nested lists with automatic length discrimination.
+- [Types](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/common/types.py): Block, BlockHeader (21 RLP fields post-Prague), Transaction (Legacy/EIP-2930/EIP-1559/EIP-4844/EIP-7702), Account, Receipt, Log. Supports all transaction types through Prague hardfork.
+- [Merkle Patricia Trie](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/common/trie.py): Full implementation with Branch/Extension/Leaf nodes, hex-prefix encoding, state root computation. Includes proof generation (prove), verification (verify_proof), and range proof verification (verify_range_proof) for snap sync.
+- [Crypto](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/common/crypto.py): Keccak-256 (NOT SHA-3/256 — Ethereum uses pre-FIPS Keccak with different padding), secp256k1 ECDSA sign/recover, address derivation. Includes KeccakState wrapper for incremental hashing.
+- [Chain Config](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/common/config.py): Network configurations for Mainnet, Sepolia, Holesky. Hardfork parameters, genesis block handling, ForkID (EIP-2124) computation.
+
+## EVM (Ethereum Virtual Machine)
+
+The EVM implementation processes 140+ opcodes with full gas accounting:
+
+- [EVM Core](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/vm/evm.py): Main execution loop with execute_transaction() for full tx processing and execute_message() for internal calls. Handles contract creation (CREATE/CREATE2), value transfers, and gas management. Also includes simulate_call() for eth_call/eth_estimateGas (snapshot → execute → rollback pattern).
+- [Opcodes](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/vm/opcodes.py): All opcode handlers organized by category — arithmetic (ADD, MUL, SUB, DIV, MOD, EXP, SIGNEXTEND), comparison (LT, GT, EQ, ISZERO), bitwise (AND, OR, XOR, NOT, SHL, SHR, SAR), stack (PUSH1-32, DUP1-16, SWAP1-16, POP), memory (MLOAD, MSTORE, MSTORE8, MSIZE, MCOPY), storage (SLOAD, SSTORE with EIP-2200/3529 gas), control flow (JUMP, JUMPI, PC, JUMPDEST), logging (LOG0-4), system (CALL, DELEGATECALL, STATICCALL, CREATE, CREATE2, SELFDESTRUCT, RETURN, REVERT), and block context (BLOCKHASH, COINBASE, TIMESTAMP, NUMBER, PREVRANDAO, GASLIMIT, CHAINID, BASEFEE, BLOBHASH, BLOBBASEFEE).
+- [Precompiles](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/vm/precompiles.py): 0x01 ecrecover (ECDSA recovery), 0x02 SHA-256, 0x03 RIPEMD-160, 0x04 identity (data copy), 0x05 modexp (EIP-2565 gas), 0x06 ecAdd (BN128), 0x07 ecMul (BN128), 0x08 ecPairing (BN128), 0x09 BLAKE2f (EIP-152), 0x0A KZG point evaluation (EIP-4844).
+- [Gas Calculation](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/vm/gas.py): EIP-2929 cold/warm access tracking for SLOAD/SSTORE/CALL/BALANCE/EXTCODE*. EIP-2200 + EIP-3529 SSTORE gas rules with refund calculation. Memory expansion cost. Dynamic gas for CALL variants (value transfer, account creation).
+- [Memory & Stack](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/vm/memory.py): 256-bit stack with 1024 depth limit, byte-addressable memory with automatic expansion and gas charging.
+- [Call Frames](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/vm/call_frame.py): Call frame management for CALL/DELEGATECALL/STATICCALL nesting. JUMPDEST validation and analysis caching.
+- [Execution Hooks](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/vm/hooks.py): L2 extensibility system with before_execution, before_call, and on_state_change hooks. Implement ExecutionHook to customize EVM behavior without modifying core code.
+
+## Blockchain Engine
+
+- [Chain](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/blockchain/chain.py): Block validation pipeline — header validation (parent hash, number, timestamp, gas limit bounds, base fee calculation per EIP-1559, extra data limits), transaction execution (signature verification, nonce check, balance deduction, gas accounting, receipt generation with bloom filters), and state root verification. Also provides simulate_call() for read-only EVM execution.
+- [Mempool](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/blockchain/mempool.py): Transaction pool with nonce-ordered queuing, fee-based priority, and replacement policy (new tx must offer higher gas price to replace pending tx with same nonce).
+- [Fork Choice](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/blockchain/fork_choice.py): Canonical chain management with reorganization support. Tracks head block, maintains canonical mapping, handles chain switches when a longer/heavier chain is discovered.
+
+## Storage
+
+- [Store Interface](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/storage/store.py): Abstract base class defining the storage API. Methods for accounts (get/put/delete), storage slots, code, blocks (headers, bodies, receipts, canonical mapping), transaction indexing (hash → block location), and snap sync operations. Convenience methods (get_balance, set_balance, get_nonce, set_nonce) always go through put_account() for backend compatibility.
+- [Memory Backend](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/storage/memory_backend.py): In-memory implementation using Python dicts. Computes state root via Merkle Patricia Trie on demand. Suitable for testing and short-lived nodes.
+- [Disk Backend](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/storage/disk_backend.py): LMDB-backed persistent storage with 13 named databases. Uses hybrid overlay pattern — state writes go to an in-memory overlay, then flush() atomically commits everything to LMDB in a single transaction. Block data (headers, bodies, receipts, canonical mapping) writes directly to LMDB. Activated with --data-dir CLI flag.
+
+## P2P Networking
+
+- [P2P Server](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/server.py): Multi-protocol dispatch server. Manages peer connections, handles incoming/outgoing connections, dispatches messages to the correct protocol handler based on message ID ranges.
+- [RLPx Handshake](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/rlpx/handshake.py): ECIES encrypted handshake following EIP-8 format. Auth message includes ephemeral key, nonce, and random padding (100-300 bytes). 2-byte size prefix used as ECIES shared_mac_data.
+- [RLPx Framing](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/rlpx/framing.py): AES-256-CTR frame encryption with SHA3 MAC authentication. MAC computation: AES_encrypt(digest) XOR seed, then feed to MAC (not AES_encrypt(digest XOR seed) — AES is non-linear).
+- [RLPx Connection](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/rlpx/connection.py): Encrypted TCP connection management with asyncio. Handles message framing, Snappy compression (only for msg_code >= 0x10), and connection lifecycle.
+- [eth/68 Protocol](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/eth/protocol.py): Message codes and constants. EthMsg enum uses absolute codes (0x10+) directly on wire.
+- [eth/68 Messages](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/eth/messages.py): Status, GetBlockHeaders, BlockHeaders, GetBlockBodies, BlockBodies, Transactions, NewPooledTransactionHashes, GetPooledTransactions, PooledTransactions, NewBlock, NewBlockHashes encoding/decoding.
+- [snap/1 Protocol](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/snap/protocol.py): SnapMsg enum uses relative codes (0-7). Must convert via NegotiatedCapabilities.absolute_code() before sending on wire.
+- [snap/1 Messages](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/snap/messages.py): GetAccountRange/AccountRange, GetStorageRanges/StorageRanges, GetByteCodes/ByteCodes, GetTrieNodes/TrieNodes encoding/decoding.
+- [Protocol Registry](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/protocol_registry.py): Dynamic capability negotiation. Capabilities sorted alphabetically, then contiguous message ID offsets assigned. eth/68 gets 0x10-0x20 (17 codes), snap/1 gets 0x21-0x28 (8 codes).
+- [Discovery v4](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/discv4/discovery.py): UDP protocol implementing Ping/Pong/FindNeighbours/Neighbours. Node discovery for finding peers to connect to.
+- [Kademlia Routing](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/discv4/routing.py): k-bucket routing table (k=16) with XOR distance metric for efficient peer lookup.
+- [Full Sync](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/sync/full_sync.py): Sequential sync pipeline. First discovers peer head via _discover_head() (sends GetBlockHeaders for best_hash to find actual block number, since post-merge Status message has no block number). Then downloads headers → bodies → executes blocks.
+- [Snap Sync](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/networking/sync/snap_sync.py): 4-phase parallel state machine: (1) Account download via GetAccountRange with range proofs, (2) Storage download via GetStorageRanges for each contract, (3) Bytecode download via GetByteCodes, (4) Trie healing to fill gaps. Much faster than full sync for initial state download.
+
+## JSON-RPC & Engine API
+
+- [RPC Server](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/rpc/server.py): FastAPI-based JSON-RPC 2.0 dispatcher. Supports single requests and batch requests. Error handling with standard JSON-RPC error codes.
+- [eth/net/web3 API](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/rpc/eth_api.py): 20+ methods — eth_blockNumber, eth_getBlockByNumber, eth_getBlockByHash, eth_getBalance, eth_getTransactionCount, eth_getCode, eth_getStorageAt, eth_sendRawTransaction, eth_call (read-only EVM execution), eth_estimateGas, eth_gasPrice, eth_maxPriorityFeePerGas, eth_feeHistory, eth_chainId, eth_syncing, eth_getTransactionByHash, eth_getTransactionReceipt, eth_getBlockTransactionCountByNumber, eth_getBlockTransactionCountByHash, eth_getLogs, eth_getBlockReceipts, net_version, net_peerCount, net_listening, web3_clientVersion, web3_sha3.
+- [Engine API](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/rpc/engine_api.py): Consensus layer integration. engine_forkchoiceUpdatedV1/V2/V3 (fork choice state transition + payload build trigger), engine_getPayloadV1/V2/V3 (retrieve built execution payload with deterministic payload ID), engine_newPayloadV1/V2/V3 (validate and import execution payload). JWT authentication on separate --engine-port (default 8551).
+- [Engine Types](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/rpc/engine_types.py): Request/response type definitions for Engine API.
+
+## Supported EIPs
+
+- EIP-155: Replay protection via chain ID in transaction signatures
+- EIP-1559: Base fee mechanism for dynamic transaction fees
+- EIP-2718: Typed transaction envelope format
+- EIP-2929: Cold/warm storage access gas costs (2100 for cold SLOAD, 100 for warm)
+- EIP-2930: Optional access list transactions (type 1)
+- EIP-2200/3529: SSTORE gas rules with capped refunds
+- EIP-2565: ModExp precompile gas cost formula
+- EIP-152: BLAKE2f compression function precompile
+- EIP-196/197: BN128 elliptic curve add, mul, and pairing precompiles
+- EIP-4844: Blob transactions with KZG commitment and point evaluation precompile
+- EIP-7702: Set EOA account code (Prague hardfork)
+
+## CLI Usage
+
+```
+ethclient [OPTIONS]
+
+Options:
+  --network {mainnet,sepolia,holesky}  Network to join (default: mainnet)
+  --sync-mode {snap,full}              Sync mode (default: snap)
+  --port PORT                          P2P listen port (default: 30303)
+  --rpc-port PORT                      JSON-RPC port (default: 8545)
+  --engine-port PORT                   Engine API port (default: 8551)
+  --data-dir PATH                      Persistent storage directory
+  --max-peers N                        Maximum peer connections (default: 25)
+  --jwt-secret SECRET                  JWT secret for Engine API auth
+  --log-level LEVEL                    Logging level (default: INFO)
+```
+
+## Installation
+
+```bash
+git clone https://github.com/tokamak-network/py-ethclient.git
+cd py-ethclient
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+Requires Python 3.12+ and snappy library (brew install snappy on macOS, apt install libsnappy-dev on Ubuntu).
+
+## Dependencies
+
+Runtime: pycryptodome (AES, SHA-256, RIPEMD-160), coincurve (secp256k1 ECDSA), eth-hash (Keccak-256), FastAPI + uvicorn (HTTP server), python-snappy (compression), py-ecc (BN128 curves), ckzg (KZG), lmdb (persistent storage).
+
+Dev: pytest, pytest-asyncio.
+
+## FAQ
+
+Q: Is there a Python Ethereum execution client?
+A: Yes — py-ethclient is a fully functional Ethereum execution client written entirely in Python. It implements the EVM with 140+ opcodes, connects to the Ethereum P2P network via RLPx, and supports both full sync and snap sync for Mainnet and Sepolia.
+
+Q: Can py-ethclient sync with Ethereum mainnet?
+A: Yes. py-ethclient connects to mainnet and Sepolia peers, performs Discovery v4 peer discovery, and synchronizes using full sync or snap sync. Live-tested against Geth nodes on both networks.
+
+Q: How does py-ethclient compare to geth?
+A: geth is the most widely used production client. py-ethclient implements the same core protocols but in Python for readability and research. geth optimizes for performance; py-ethclient optimizes for code clarity.
+
+Q: Can I use py-ethclient to build an L2?
+A: Yes. The ExecutionHook system lets you customize EVM behavior (pre/post-execution hooks, call interception, state change tracking) without modifying core code.
+
+## Optional
+
+- [Korean README](https://github.com/tokamak-network/py-ethclient/blob/main/README_ko.md): Korean language documentation
+- [Dockerfile](https://github.com/tokamak-network/py-ethclient/blob/main/Dockerfile): Docker container build configuration
+- [CLI Entry Point](https://github.com/tokamak-network/py-ethclient/blob/main/src/ethclient/main.py): Command-line interface with network, sync, and RPC options
+- [Contributing Guide](https://github.com/tokamak-network/py-ethclient/blob/main/CONTRIBUTING.md): How to contribute to the project

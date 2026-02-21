@@ -748,10 +748,11 @@ This project uses `py-evm`, which is no longer actively maintained by the Ethere
 
 ### Block Producer Error Recovery
 
-The block producer thread includes error handling but will stop after 10 consecutive errors. Automatic recovery is not implemented.
+The block producer thread includes error handling with configurable error threshold (default: 10 consecutive errors). It uses exponential backoff between retry attempts. After max errors, the thread stops gracefully.
 
 - **Impact**: Node may stop producing blocks after persistent errors
 - **Workaround**: Restart node manually
+- **Configuration**: `max_errors` parameter in `_block_producer(chain, max_errors=10)`
 - **Tracking**: See GitHub issue #XXX
 
 ## Production Readiness

@@ -816,10 +816,9 @@ class SQLiteStore:
         """Context manager entry."""
         return self
     
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, *args):
         """Context manager exit - ensures proper cleanup."""
         self.close()
-        return False
     
     def __del__(self):
         """Clean up database connection on object destruction.

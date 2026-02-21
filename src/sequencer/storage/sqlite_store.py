@@ -63,15 +63,22 @@ class SQLiteStore:
             )
         """)
         
-        # Transactions table (for fast lookup by hash)
+        # Transactions table (for fast lookup by hash and full data)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
                 hash BLOB PRIMARY KEY,
                 block_number INTEGER NOT NULL,
                 tx_index INTEGER NOT NULL,
+                rlp BLOB,
                 FOREIGN KEY (block_number) REFERENCES blocks(number)
             )
         """)
+        
+        # Add rlp column if it doesn't exist (for existing databases)
+        try:
+            cursor.execute("ALTER TABLE transactions ADD COLUMN rlp BLOB")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         
         # Receipts table
         cursor.execute("""
@@ -158,7 +165,7 @@ class SQLiteStore:
         }
     
     def _row_to_block(self, row: sqlite3.Row) -> Block:
-        """Convert database row to Block object."""
+        """Convert database row to Block object with transactions."""
         header = BlockHeader(
             parent_hash=row["parent_hash"],
             ommers_hash=row["ommers_hash"],
@@ -178,9 +185,33 @@ class SQLiteStore:
             base_fee_per_gas=row["base_fee_per_gas"],
         )
         
-        # Note: We don't store full transaction objects, just hashes
-        # Transactions would need to be fetched separately if needed
-        return Block(header=header, transactions=[])
+        # Fetch transactions from database
+        transactions = self._get_block_transactions(row["number"])
+        
+        return Block(header=header, transactions=transactions)
+    
+    def _get_block_transactions(self, block_number: int) -> list:
+        """Get all transactions for a block, decoded from RLP."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT rlp FROM transactions WHERE block_number = ? ORDER BY tx_index",
+            (block_number,)
+        )
+        
+        transactions = []
+        for row in cursor.fetchall():
+            if row["rlp"]:
+                try:
+                    # Use py-evm's transaction decoder
+                    from eth.vm.forks.cancun.transactions import CancunTransactionBuilder
+                    tx = CancunTransactionBuilder.decode(row["rlp"])
+                    transactions.append(tx)
+                except Exception:
+                    # If decoding fails, skip this transaction
+                    pass
+        
+        return transactions
     
     def _receipt_to_row(self, receipt: Receipt, block_number: int, tx_index: int) -> dict:
         """Convert receipt to database row."""
@@ -333,12 +364,17 @@ class SQLiteStore:
                 row["transactions"]
             ))
             
-            # Insert transactions
+            # Insert transactions with RLP data
             for i, tx_hash in enumerate(tx_hashes):
+                tx_rlp = None
+                if i < len(block.transactions):
+                    tx = block.transactions[i]
+                    tx_rlp = tx.encode() if hasattr(tx, 'encode') else None
+                
                 cursor.execute("""
-                    INSERT OR REPLACE INTO transactions (hash, block_number, tx_index)
-                    VALUES (?, ?, ?)
-                """, (tx_hash, block.number, i))
+                    INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, rlp)
+                    VALUES (?, ?, ?, ?)
+                """, (tx_hash, block.number, i, tx_rlp))
             
             # Insert receipts
             for i, receipt in enumerate(receipts):

@@ -180,15 +180,20 @@ def create_server(chain, host: str = "127.0.0.1", port: int = 8545) -> HTTPServe
     return HTTPServer((host, port), RPCHandler)
 
 
-def _block_producer(chain, max_errors: int = 10):
+def _block_producer(chain, max_errors: int = 10, stop_event: threading.Event = None):
     """Background block producer with error recovery.
     
     Stops after max_errors consecutive failures to allow recovery.
+    Uses stop_event for graceful shutdown.
     """
     errors = 0
     while errors < max_errors:
+        if stop_event and stop_event.is_set():
+            break
         try:
             time.sleep(1)
+            if stop_event and stop_event.is_set():
+                break
             if chain.should_build_block():
                 chain.build_block()
                 errors = 0  # Reset on success
@@ -197,20 +202,35 @@ def _block_producer(chain, max_errors: int = 10):
             print(f"[ERROR] Block producer {errors}/{max_errors}: {e}")
             if errors < max_errors:
                 time.sleep(5)  # Backoff
-    print("[FATAL] Block producer stopped after max errors")
+    if errors >= max_errors:
+        print("[FATAL] Block producer stopped after max errors")
 
 
 def serve(chain, host: str = "127.0.0.1", port: int = 8545):
     """Start JSON-RPC server with graceful shutdown."""
     server = create_server(chain, host, port)
-    threading.Thread(target=_block_producer, args=(chain,), daemon=True).start()
+    
+    # Use an event for graceful shutdown of the block producer
+    stop_event = threading.Event()
+    
+    # Start block producer as daemon thread
+    producer_thread = threading.Thread(
+        target=_block_producer,
+        args=(chain,),
+        kwargs={"stop_event": stop_event},
+        daemon=True
+    )
+    producer_thread.start()
     
     print(f"JSON-RPC server listening on {host}:{port}")
     print(f"Block production interval: {chain.block_time}s")
     
     def on_signal(signum, frame):
         print("\nShutting down...")
-        server.shutdown()
+        stop_event.set()  # Signal block producer to stop
+        # Run shutdown in a separate thread to avoid deadlock
+        shutdown_thread = threading.Thread(target=server.shutdown)
+        shutdown_thread.start()
     
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
@@ -218,6 +238,7 @@ def serve(chain, host: str = "127.0.0.1", port: int = 8545):
     try:
         server.serve_forever()
     finally:
+        stop_event.set()  # Ensure block producer stops
         if hasattr(chain.store, 'close'):
             chain.store.close()
         print("Shutdown complete")

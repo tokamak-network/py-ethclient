@@ -248,9 +248,10 @@ class Chain:
         return (block, block.transactions[tx_index])
 
     def add_transaction_to_pool(self, tx) -> bool:
-        sender = tx.sender
-        current_nonce = self.get_nonce(sender)
-        return self.mempool.add(tx, current_nonce)
+        with self._lock:
+            sender = tx.sender
+            current_nonce = self.get_nonce(sender)
+            return self.mempool.add(tx, current_nonce)
 
     def create_transaction(
         self,

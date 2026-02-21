@@ -268,6 +268,9 @@ class TestTransferExecution:
         assert chain.get_nonce(address) == 1
 
     def test_insufficient_balance_prevents_tx(self, pk, address):
+        """Transaction with insufficient balance should be rejected."""
+        from sequencer.sequencer.mempool import InsufficientFunds
+        
         genesis_state = {
             address: {"balance": to_wei(1, "ether"), "nonce": 0, "code": b"", "storage": {}}
         }
@@ -275,18 +278,19 @@ class TestTransferExecution:
         
         initial_balance = chain.get_balance(address)
         
-        try:
-            tx = chain.create_transaction(
-                from_private_key=b"\x01" * 32,
-                to=b"\xde\xad\xbe\xef" * 5,
-                value=to_wei(10, "ether"),
-                gas=SIMPLE_TRANSFER_GAS,
-            )
-            chain.send_transaction(tx)
-            block = chain.build_block()
-        except Exception:
-            pass
+        # Attempt to create a transaction that exceeds balance
+        tx = chain.create_transaction(
+            from_private_key=b"\x01" * 32,
+            to=b"\xde\xad\xbe\xef" * 5,
+            value=to_wei(10, "ether"),  # More than the 1 ETH balance
+            gas=SIMPLE_TRANSFER_GAS,
+        )
         
+        # Should raise InsufficientFunds when trying to send
+        with pytest.raises(InsufficientFunds):
+            chain.send_transaction(tx)
+        
+        # Balance should be unchanged
         final_balance = chain.get_balance(address)
         assert final_balance == initial_balance
 

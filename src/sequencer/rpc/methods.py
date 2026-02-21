@@ -169,9 +169,8 @@ def create_methods(chain) -> dict[str, Callable]:
                 max_priority_fee_per_gas=max_priority,
                 max_fee_per_gas=max_fee,
                 nonce=nonce,
+                access_list=parsed_access_list,
             )
-            # Note: For now, access list on EIP-1559 is not passed through
-            # This would require updating create_eip1559_transaction signature
         # EIP-1559 transaction without access list (Type 0x02)
         elif max_fee_per_gas is not None or max_priority_fee_per_gas is not None:
             max_fee = _parse_int(max_fee_per_gas) if max_fee_per_gas else None
@@ -221,6 +220,8 @@ def create_methods(chain) -> dict[str, Callable]:
             error_msg = str(e)
             if "nonce too low" in error_msg.lower():
                 raise ValueError(f"nonce too low")
+            if "insufficient funds" in error_msg.lower():
+                raise ValueError(error_msg)
             raise
 
     def eth_signAuthorization(params: list) -> dict:
@@ -274,6 +275,8 @@ def create_methods(chain) -> dict[str, Callable]:
             error_msg = str(e)
             if "nonce too low" in error_msg.lower():
                 raise ValueError(f"nonce too low")
+            if "insufficient funds" in error_msg.lower():
+                raise ValueError(error_msg)
             raise
 
     def eth_estimateGas(params: list) -> str:
@@ -509,12 +512,10 @@ def _parse_access_list(access_list: list) -> list[tuple[bytes, list[int]]]:
     """
     parsed = []
     for entry in access_list:
-        # Handle both dict format and tuple format
         if isinstance(entry, dict):
             addr = _parse_address(entry["address"])
             storage_keys = []
             for key in entry.get("storageKeys", entry.get("storage_keys", [])):
-                # Storage keys are 32 bytes (256 bits), convert to int
                 if isinstance(key, int):
                     storage_keys.append(key)
                 elif isinstance(key, str):

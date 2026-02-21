@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from sequencer.core.crypto import keccak256
 
 
@@ -11,6 +11,11 @@ class NonceTooLow(MempoolError):
 
 
 class UnderpricedReplacement(MempoolError):
+    pass
+
+
+class InsufficientFunds(MempoolError):
+    """Raised when sender does not have enough balance for transaction."""
     pass
 
 

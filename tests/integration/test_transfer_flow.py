@@ -59,14 +59,13 @@ class TestTransferFlow:
         assert chain.get_nonce(alice_address) == 1
 
     def test_insufficient_balance_fails(self, chain, alice_address, bob_address):
-        """Transfer with insufficient balance should fail."""
+        """Transfer with insufficient balance should be rejected immediately."""
+        from sequencer.sequencer.mempool import InsufficientFunds
+        
         # Get initial balance
         initial_balance = chain.get_balance(alice_address)
         
         # Try to send more than we have
-        # Note: py-evm validates gas before applying tx, so this will raise
-        # In a real network, insufficient balance would cause tx to fail in block
-        # Here we test with high gas to bypass gas validation
         nonce = chain.get_nonce(alice_address)
         signed_tx = chain.create_transaction(
             from_private_key=ALICE_PRIVATE_KEY,
@@ -78,23 +77,13 @@ class TestTransferFlow:
             nonce=nonce,
         )
         
-        # The transaction will be added to mempool
-        chain.send_transaction(signed_tx)
+        # The transaction should be rejected with InsufficientFunds
+        with pytest.raises(InsufficientFunds):
+            chain.send_transaction(signed_tx)
         
-        # But execution should fail or balance should be unchanged
-        try:
-            block = chain.build_block()
-            # If block was built, check that tx failed
-            if block and len(block.transactions) > 0:
-                receipts = chain.store.get_receipts(block.number)
-                assert receipts[0].status == 0  # Failed
-        except Exception:
-            # Transaction validation failed - expected
-            pass
-        
-        # Balance should be unchanged (or slightly less if gas was charged)
+        # Balance should be unchanged
         final_balance = chain.get_balance(alice_address)
-        assert final_balance <= initial_balance
+        assert final_balance == initial_balance
 
     def test_nonce_increment(self, chain, alice_address, bob_address):
         """Nonce increments after each transaction."""

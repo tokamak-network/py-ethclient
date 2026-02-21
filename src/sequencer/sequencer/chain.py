@@ -296,7 +296,49 @@ class Chain:
         max_priority_fee_per_gas: int | None = None,
         max_fee_per_gas: int | None = None,
         nonce: int | None = None,
+        access_list: list[tuple[bytes, Sequence[int]]] | None = None,
     ) -> Any:
+        """
+        Create a signed EIP-1559 transaction (Type 0x02).
+        
+        EIP-1559 transactions introduce a base fee mechanism and can optionally
+        include an access list (EIP-2930) for gas optimization.
+        
+        Args:
+            from_private_key: Private key of the sender
+            to: Recipient address (None for contract creation)
+            value: Value to transfer in wei
+            data: Transaction data
+            gas: Gas limit
+            max_priority_fee_per_gas: Priority fee per gas (tip to miner)
+            max_fee_per_gas: Maximum total fee per gas
+            nonce: Sender's nonce (auto-filled if None)
+            access_list: Optional list of (address, [storage_keys]) tuples.
+                        Can be in tuple format [(addr_bytes, [slot_int, ...])]
+                        or RPC format [{"address": "0x...", "storageKeys": ["0x..."]}]
+        
+        Returns:
+            Signed DynamicFeeTransaction
+        
+        Example:
+            >>> # Simple transfer
+            >>> tx = chain.create_eip1559_transaction(
+            ...     from_private_key=private_key,
+            ...     to=recipient,
+            ...     value=1_000_000,
+            ...     gas=21_000,
+            ... )
+            >>> 
+            >>> # With access list for gas optimization (tuple format)
+            >>> access_list = [(contract_address, [0, 1])]
+            >>> tx = chain.create_eip1559_transaction(
+            ...     from_private_key=private_key,
+            ...     to=contract_address,
+            ...     data=calldata,
+            ...     gas=200_000,
+            ...     access_list=access_list,
+            ... )
+        """
         sender = private_key_to_address(from_private_key)
         
         if nonce is None:
@@ -313,6 +355,27 @@ class Chain:
         
         to_address = b"" if to is None else to
         
+        # Parse access_list if provided (support both tuple and dict formats)
+        formatted_access_list: Sequence[tuple[bytes, Sequence[int]]] = ()
+        if access_list is not None:
+            formatted_access_list = []
+            for item in access_list:
+                if isinstance(item, dict):
+                    # RPC format: {"address": "0x...", "storageKeys": [...]}
+                    addr_str = item["address"]
+                    addr = bytes.fromhex(addr_str[2:] if addr_str.startswith("0x") else addr_str)
+                    storage_keys = [int(k, 16) if isinstance(k, str) and k.startswith("0x") else int(k) for k in item.get("storageKeys", [])]
+                    formatted_access_list.append((addr, storage_keys))
+                elif isinstance(item, (list, tuple)) and len(item) == 2:
+                    # Tuple format: (address_bytes, [slot_int, ...])
+                    addr, storage_keys = item
+                    if isinstance(addr, str):
+                        addr = bytes.fromhex(addr.replace("0x", ""))
+                    parsed_keys = [int(k, 16) if isinstance(k, str) and k.startswith("0x") else int(k) for k in storage_keys]
+                    formatted_access_list.append((addr, parsed_keys))
+                else:
+                    formatted_access_list.append(item)
+        
         unsigned_tx = self.evm.create_unsigned_eip1559_transaction(
             nonce=nonce,
             max_priority_fee_per_gas=max_priority_fee_per_gas,
@@ -322,6 +385,7 @@ class Chain:
             value=value,
             data=data,
             chain_id=self.chain_id,
+            access_list=formatted_access_list,
         )
         
         pk = keys.PrivateKey(from_private_key)
@@ -388,37 +452,24 @@ class Chain:
         
         to_address = b"" if to is None else to
         
-        # Convert access_list to the format expected by py-evm
-        # py-evm expects: Sequence[Tuple[Address, Sequence[int]]]
-        formatted_access_list = []
+        # Parse access_list (support both tuple and dict formats)
+        formatted_access_list: Sequence[tuple[bytes, Sequence[int]]] = []
         for item in access_list:
             if isinstance(item, dict):
-                # Handle dict format: {"address": ..., "storageKeys": [...]}
-                addr = item["address"] if isinstance(item["address"], bytes) else bytes.fromhex(item["address"].replace("0x", ""))
-                storage_keys = []
-                for k in item.get("storageKeys", []):
-                    if isinstance(k, int):
-                        storage_keys.append(k)
-                    elif isinstance(k, str):
-                        # Handle hex strings like "0x0" or "0x123"
-                        storage_keys.append(int(k, 16) if k.startswith("0x") else int(k))
-                    else:
-                        storage_keys.append(int(k))
+                # RPC format: {"address": "0x...", "storageKeys": [...]}
+                addr_str = item["address"]
+                addr = bytes.fromhex(addr_str[2:] if addr_str.startswith("0x") else addr_str)
+                storage_keys = [int(k, 16) if isinstance(k, str) and k.startswith("0x") else int(k) for k in item.get("storageKeys", [])]
                 formatted_access_list.append((addr, storage_keys))
             elif isinstance(item, (list, tuple)) and len(item) == 2:
-                # Handle tuple format: (address, [storage_keys])
+                # Tuple format: (address_bytes, [slot_int, ...])
                 addr, storage_keys = item
                 if isinstance(addr, str):
                     addr = bytes.fromhex(addr.replace("0x", ""))
-                parsed_keys = []
-                for k in storage_keys:
-                    if isinstance(k, int):
-                        parsed_keys.append(k)
-                    elif isinstance(k, str):
-                        parsed_keys.append(int(k, 16) if k.startswith("0x") else int(k))
-                    else:
-                        parsed_keys.append(int(k))
+                parsed_keys = [int(k, 16) if isinstance(k, str) and k.startswith("0x") else int(k) for k in storage_keys]
                 formatted_access_list.append((addr, parsed_keys))
+            else:
+                formatted_access_list.append(item)
         
         unsigned_tx = self.evm.create_unsigned_access_list_transaction(
             nonce=nonce,
@@ -525,6 +576,47 @@ class Chain:
 
     def send_transaction(self, signed_tx) -> bytes:
         with self._lock:
+            # Validate balance before adding to mempool
+            sender = signed_tx.sender
+            balance = self.get_balance(sender)
+            
+            # Calculate required amount: value + gas * gas_price
+            value = signed_tx.value
+            
+            # Get gas price (handle both legacy and EIP-1559 transactions)
+            if hasattr(signed_tx, 'max_fee_per_gas'):
+                # EIP-1559 transaction
+                gas_price = signed_tx.max_fee_per_gas
+            else:
+                # Legacy transaction
+                gas_price = signed_tx.gas_price
+            
+            gas = signed_tx.gas
+            required = value + (gas * gas_price)
+            
+            # Account for pending transactions from the same sender
+            pending_cost = 0
+            if sender in self.mempool.by_sender:
+                for tx_hash in self.mempool.by_sender[sender].values():
+                    pending_tx = self.mempool.txs.get(tx_hash)
+                    if pending_tx:
+                        pending_cost += pending_tx.value
+                        # Add gas cost for pending transaction
+                        if hasattr(pending_tx, 'max_fee_per_gas'):
+                            pending_cost += pending_tx.gas * pending_tx.max_fee_per_gas
+                        else:
+                            pending_cost += pending_tx.gas * pending_tx.gas_price
+            
+            available_balance = balance - pending_cost
+            
+            if available_balance < required:
+                from sequencer.sequencer.mempool import InsufficientFunds
+                raise InsufficientFunds(
+                    f"insufficient funds for gas * price + value: "
+                    f"address {sender.hex()} have {balance} want {required}"
+                    f" (pending: {pending_cost})"
+                )
+            
             tx_hash = keccak256(signed_tx.encode())
             self.add_transaction_to_pool(signed_tx)
             return tx_hash
@@ -724,6 +816,8 @@ class Chain:
     def _build_block_unsafe(self, timestamp: int | None = None) -> Block:
         """Internal build_block without lock (callers must hold _lock)."""
         import time as time_module
+        from eth_utils.exceptions import ValidationError
+        
         current_time = int(time_module.time())
         
         current_nonces = {}
@@ -745,17 +839,29 @@ class Chain:
         included_txs = []
         included_tx_hashes = []
         
+        # Track failed transactions to remove from mempool
+        failed_tx_hashes = []
+        
         for tx in pending:
             # Check gas limit BEFORE execution using declared gas
             tx_gas_limit = tx.gas
             if cumulative_gas + tx_gas_limit > self.gas_limit:
                 break  # Block full, stop adding transactions
             
-            block, evm_receipt, computation = self.evm.apply_transaction(tx)
+            tx_hash = keccak256(tx.encode())
+            
+            # Try to execute the transaction
+            try:
+                block, evm_receipt, computation = self.evm.apply_transaction(tx)
+            except ValidationError as e:
+                # Transaction failed validation (e.g., insufficient balance)
+                # Skip this transaction and continue with others
+                print(f"Warning: Transaction {tx_hash.hex()} failed validation: {e}")
+                failed_tx_hashes.append(tx_hash)
+                continue
             
             # Track this transaction as included
             included_txs.append(tx)
-            tx_hash = keccak256(tx.encode())
             included_tx_hashes.append(tx_hash)
             
             # Track sender
@@ -858,7 +964,12 @@ class Chain:
         block = Block(header=header, transactions=included_txs)
         self.store.save_block(block, receipts, included_tx_hashes)
         
+        # Remove included transactions from mempool
         for tx_hash in included_tx_hashes:
+            self.mempool.remove(tx_hash)
+        
+        # Remove failed transactions from mempool
+        for tx_hash in failed_tx_hashes:
             self.mempool.remove(tx_hash)
         
         self._last_block_time = block_timestamp

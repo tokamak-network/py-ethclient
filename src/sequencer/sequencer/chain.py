@@ -1,5 +1,6 @@
 """Sequencer chain management."""
 
+import threading
 import time
 from typing import Any
 
@@ -64,6 +65,7 @@ class Chain:
         
         self.mempool = Mempool()
         self._last_block_time: int = 0
+        self._lock = threading.RLock()  # Thread safety for concurrent access
         
         # Track touched addresses for state persistence
         self._touched_addresses: set[bytes] = set()

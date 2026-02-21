@@ -705,12 +705,14 @@ class Chain:
                 
                 # Get and save storage for contracts
                 if code:
-                    # We need to get storage - for now we'll check stored slots
-                    # and save any that changed
+                    # Get previously stored slots
                     stored_storage = self.store.get_all_storage(address)
                     
-                    # Check common slots (0-10 for typical contracts)
-                    for slot in range(100):
+                    # Check all slots that were previously stored or are likely to be used
+                    # Slots 0-9 are common for simple contracts, but we also check stored slots
+                    slots_to_check = set(range(20)) | set(stored_storage.keys())
+                    
+                    for slot in slots_to_check:
                         value = self.evm.get_storage(address, slot)
                         if value != 0:
                             self.store.save_storage(address, slot, value)

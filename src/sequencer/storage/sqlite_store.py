@@ -667,7 +667,7 @@ class SQLiteStore:
     
     def save_evm_state(self, accounts: dict[bytes, dict]):
         """
-        Save complete EVM state.
+        Save complete EVM state atomically.
         
         Args:
             accounts: Dict mapping address -> {nonce, balance, code, storage}
@@ -675,37 +675,43 @@ class SQLiteStore:
         conn = self._get_conn()
         cursor = conn.cursor()
         
-        for address, account_data in accounts.items():
-            nonce = account_data.get("nonce", 0)
-            balance = account_data.get("balance", 0)
-            code = account_data.get("code", b"")
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
             
-            # Calculate code hash
-            from sequencer.core.crypto import keccak256
-            code_hash = keccak256(code) if code else b"\x00" * 32
-            
-            # Save account (balance as TEXT)
-            cursor.execute("""
-                INSERT OR REPLACE INTO accounts (address, nonce, balance, code_hash, storage_root)
-                VALUES (?, ?, ?, ?, ?)
-            """, (address, nonce, str(balance), code_hash, b"\x00" * 32))
-            
-            # Save code if not empty
-            if code:
+            for address, account_data in accounts.items():
+                nonce = account_data.get("nonce", 0)
+                balance = account_data.get("balance", 0)
+                code = account_data.get("code", b"")
+                
+                # Calculate code hash
+                from sequencer.core.crypto import keccak256
+                code_hash = keccak256(code) if code else b"\x00" * 32
+                
+                # Save account (balance as TEXT)
                 cursor.execute("""
-                    INSERT OR REPLACE INTO contract_code (code_hash, code)
-                    VALUES (?, ?)
-                """, (code_hash, code))
+                    INSERT OR REPLACE INTO accounts (address, nonce, balance, code_hash, storage_root)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (address, nonce, str(balance), code_hash, b"\x00" * 32))
+                
+                # Save code if not empty
+                if code:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO contract_code (code_hash, code)
+                        VALUES (?, ?)
+                    """, (code_hash, code))
+                
+                # Save storage (values as TEXT)
+                storage = account_data.get("storage", {})
+                for slot, value in storage.items():
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO contract_storage (address, slot, value)
+                        VALUES (?, ?, ?)
+                    """, (address, slot, str(value)))
             
-            # Save storage (values as TEXT)
-            storage = account_data.get("storage", {})
-            for slot, value in storage.items():
-                cursor.execute("""
-                    INSERT OR REPLACE INTO contract_storage (address, slot, value)
-                    VALUES (?, ?, ?)
-                """, (address, slot, str(value)))
-        
-        conn.commit()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     
     def load_evm_state(self) -> dict[bytes, dict]:
         """

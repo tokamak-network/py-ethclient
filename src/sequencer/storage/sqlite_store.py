@@ -303,49 +303,55 @@ class SQLiteStore:
         return self._row_to_block(row) if row else None
     
     def save_block(self, block: Block, receipts: list[Receipt], tx_hashes: list[bytes]):
-        """Save block with receipts and transaction hashes."""
+        """Save block with receipts and transaction hashes atomically."""
         conn = self._get_conn()
         cursor = conn.cursor()
         
-        # Insert block
-        row = self._block_to_row(block, receipts, tx_hashes)
-        cursor.execute("""
-            INSERT OR REPLACE INTO blocks (
-                number, hash, parent_hash, ommers_hash, coinbase,
-                state_root, transactions_root, receipts_root, logs_bloom,
-                difficulty, gas_limit, gas_used, timestamp, extra_data,
-                prev_randao, nonce, base_fee_per_gas, transactions
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            row["number"], row["hash"], row["parent_hash"], row["ommers_hash"],
-            row["coinbase"], row["state_root"], row["transactions_root"],
-            row["receipts_root"], row["logs_bloom"], row["difficulty"],
-            row["gas_limit"], row["gas_used"], row["timestamp"], row["extra_data"],
-            row["prev_randao"], row["nonce"], row["base_fee_per_gas"],
-            row["transactions"]
-        ))
-        
-        # Insert transactions
-        for i, tx_hash in enumerate(tx_hashes):
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            
+            # Insert block
+            row = self._block_to_row(block, receipts, tx_hashes)
             cursor.execute("""
-                INSERT OR REPLACE INTO transactions (hash, block_number, tx_index)
-                VALUES (?, ?, ?)
-            """, (tx_hash, block.number, i))
-        
-        # Insert receipts
-        for i, receipt in enumerate(receipts):
-            receipt_row = self._receipt_to_row(receipt, block.number, i)
-            cursor.execute("""
-                INSERT OR REPLACE INTO receipts (
-                    block_number, tx_index, status, cumulative_gas_used, logs, contract_address
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO blocks (
+                    number, hash, parent_hash, ommers_hash, coinbase,
+                    state_root, transactions_root, receipts_root, logs_bloom,
+                    difficulty, gas_limit, gas_used, timestamp, extra_data,
+                    prev_randao, nonce, base_fee_per_gas, transactions
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                receipt_row["block_number"], receipt_row["tx_index"],
-                receipt_row["status"], receipt_row["cumulative_gas_used"],
-                receipt_row["logs"], receipt_row["contract_address"]
+                row["number"], row["hash"], row["parent_hash"], row["ommers_hash"],
+                row["coinbase"], row["state_root"], row["transactions_root"],
+                row["receipts_root"], row["logs_bloom"], row["difficulty"],
+                row["gas_limit"], row["gas_used"], row["timestamp"], row["extra_data"],
+                row["prev_randao"], row["nonce"], row["base_fee_per_gas"],
+                row["transactions"]
             ))
-        
-        conn.commit()
+            
+            # Insert transactions
+            for i, tx_hash in enumerate(tx_hashes):
+                cursor.execute("""
+                    INSERT OR REPLACE INTO transactions (hash, block_number, tx_index)
+                    VALUES (?, ?, ?)
+                """, (tx_hash, block.number, i))
+            
+            # Insert receipts
+            for i, receipt in enumerate(receipts):
+                receipt_row = self._receipt_to_row(receipt, block.number, i)
+                cursor.execute("""
+                    INSERT OR REPLACE INTO receipts (
+                        block_number, tx_index, status, cumulative_gas_used, logs, contract_address
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    receipt_row["block_number"], receipt_row["tx_index"],
+                    receipt_row["status"], receipt_row["cumulative_gas_used"],
+                    receipt_row["logs"], receipt_row["contract_address"]
+                ))
+            
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     
     def get_latest_number(self) -> int:
         """Get the latest block number."""

@@ -139,21 +139,6 @@ def _format_receipt(receipt, tx_hash: bytes, block_hash: bytes,
     }
 
 
-def _format_log(log, block_hash: bytes, block_number: int,
-                tx_hash: bytes, tx_index: int, log_index: int) -> dict:
-    return {
-        "address": bytes_to_hex(log.address),
-        "topics": [bytes_to_hex(t) for t in log.topics],
-        "data": bytes_to_hex(log.data),
-        "blockNumber": int_to_hex(block_number),
-        "blockHash": bytes_to_hex(block_hash),
-        "transactionHash": bytes_to_hex(tx_hash),
-        "transactionIndex": int_to_hex(tx_index),
-        "logIndex": int_to_hex(log_index),
-        "removed": False,
-    }
-
-
 # ---------------------------------------------------------------------------
 # Register eth_ methods
 # ---------------------------------------------------------------------------
@@ -368,8 +353,19 @@ def register_eth_api(rpc: RPCServer, store=None, mempool=None,
 
         tx_hash = tx.tx_hash()
 
-        if mempool is not None:
-            mempool.add_transaction(tx)
+        if mempool is not None and store is not None:
+            try:
+                sender = tx.sender()
+                account = store.get_account(sender)
+                current_nonce = account.nonce if account else 0
+                sender_balance = account.balance if account else 0
+                ok, err = mempool.add(tx, sender, current_nonce, sender_balance)
+                if not ok:
+                    raise RPCError(INVALID_PARAMS, err or "Transaction rejected")
+            except RPCError:
+                raise
+            except Exception as e:
+                raise RPCError(INVALID_PARAMS, f"Failed to validate transaction: {e}")
 
         return bytes_to_hex(tx_hash)
 

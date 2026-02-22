@@ -208,31 +208,3 @@ def decode_uint(data: bytes) -> int:
     return int.from_bytes(data, "big")
 
 
-def encode_fixed(value: int, length: int) -> bytes:
-    """Encode integer as fixed-length big-endian bytes (e.g., 32 for hashes)."""
-    return value.to_bytes(length, "big")
-
-
-def decode_fixed(data: bytes, expected_length: int) -> int:
-    """Decode fixed-length bytes to integer."""
-    if len(data) != expected_length:
-        raise RLPDecodingError(
-            f"Expected {expected_length} bytes, got {len(data)}"
-        )
-    return int.from_bytes(data, "big")
-
-
-def encode_address(addr: bytes) -> bytes:
-    """Encode a 20-byte address for RLP."""
-    if len(addr) != 20:
-        raise ValueError(f"Address must be 20 bytes, got {len(addr)}")
-    return addr
-
-
-def decode_address(data: bytes) -> bytes:
-    """Decode RLP bytes as 20-byte address."""
-    if len(data) == 0:
-        return b"\x00" * 20
-    if len(data) != 20:
-        raise RLPDecodingError(f"Address must be 20 bytes, got {len(data)}")
-    return data

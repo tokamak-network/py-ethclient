@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import hashlib
 import hmac
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from Crypto.Cipher import AES

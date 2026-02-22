@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ethclient.common.types import Block, BlockHeader
+from ethclient.common.types import BlockHeader
 from ethclient.storage.store import Store
 
 
@@ -97,14 +97,6 @@ class ForkChoice:
         """Set the safe block hash (from consensus layer)."""
         self._safe_hash = block_hash
 
-    @property
-    def finalized_hash(self) -> Optional[bytes]:
-        return self._finalized_hash
-
-    @property
-    def safe_hash(self) -> Optional[bytes]:
-        return self._safe_hash
-
     def is_canonical(self, block_hash: bytes) -> bool:
         """Check if a block is part of the canonical chain."""
         header = self.store.get_block_header(block_hash)
@@ -150,6 +142,3 @@ class ForkChoice:
 
         return header_a.block_hash()
 
-    def import_block(self, block: Block) -> None:
-        """Import a block into storage (without executing or setting as head)."""
-        self.store.put_block(block)

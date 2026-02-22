@@ -208,8 +208,6 @@ def _verify_jwt_hs256(token: str, secret: bytes) -> bool:
 
 
 def hex_to_int(value: str) -> int:
-    if value.startswith("0x") or value.startswith("0X"):
-        return int(value, 16)
     return int(value, 16)
 
 

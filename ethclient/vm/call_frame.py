@@ -68,17 +68,6 @@ class CallFrame:
     def remaining_gas(self) -> int:
         return self.gas - self.gas_used
 
-    def read_code(self, n: int = 1) -> bytes:
-        """Read n bytes from code at current PC (without advancing)."""
-        return self.code[self.pc : self.pc + n]
-
-    def current_opcode(self) -> int:
-        """Read the current opcode byte."""
-        if self.pc >= len(self.code):
-            return 0x00  # STOP
-        return self.code[self.pc]
-
-
 MAX_CALL_DEPTH = 1024
 
 

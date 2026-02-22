@@ -10,7 +10,6 @@ from __future__ import annotations
 # Base gas costs (Berlin+)
 # ---------------------------------------------------------------------------
 
-G_ZERO = 0
 G_BASE = 2
 G_VERY_LOW = 3
 G_LOW = 5
@@ -42,7 +41,6 @@ G_KECCAK256 = 30
 G_KECCAK256_WORD = 6
 G_COPY = 3
 G_BLOCKHASH = 20
-G_SLOAD = G_WARM_ACCESS     # Base cost (warm), cold adds G_COLD_SLOAD - G_WARM_ACCESS
 
 # EIP-3529 (London): Reduced refunds
 MAX_REFUND_QUOTIENT = 5  # max refund = gas_used // 5

@@ -595,11 +595,6 @@ class FullSync:
         if event:
             event.set()
 
-    def handle_block_bodies(self, data: bytes) -> None:
-        """Handle incoming BlockBodies response."""
-        msg = BlockBodiesMessage.decode(data)
-        self._store_block_bodies_response(msg)
-
     async def handle_block_bodies_async(self, data: bytes) -> None:
         """Handle incoming BlockBodies response with decode offloaded to worker pool."""
         loop = asyncio.get_running_loop()

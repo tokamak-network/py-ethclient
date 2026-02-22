@@ -696,18 +696,6 @@ def bloom_add(bloom: bytearray, data: bytes) -> None:
         bloom[byte_idx] |= 1 << bit_idx
 
 
-def bloom_contains(bloom: bytes, data: bytes) -> bool:
-    """Check if data might be in the bloom filter."""
-    h = keccak256(data)
-    for i in range(3):
-        bit = (h[i * 2] << 8 | h[i * 2 + 1]) & 0x7FF
-        byte_idx = BLOOM_BYTE_SIZE - 1 - (bit // 8)
-        bit_idx = bit % 8
-        if not (bloom[byte_idx] & (1 << bit_idx)):
-            return False
-    return True
-
-
 def logs_bloom(logs: list[Log]) -> bytes:
     """Compute the bloom filter for a list of logs."""
     bloom = bytearray(BLOOM_BYTE_SIZE)

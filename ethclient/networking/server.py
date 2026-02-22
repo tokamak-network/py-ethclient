@@ -35,8 +35,6 @@ from ethclient.networking.eth.messages import (
     BlockBodiesMessage,
     GetReceiptsMessage,
     ReceiptsMessage,
-    TransactionsMessage,
-    NewPooledTransactionHashesMessage,
     NewBlockHashesMessage,
     encode_ping,
     encode_pong,
@@ -936,25 +934,6 @@ class P2PServer:
         """Handle new block hash announcements."""
         msg = await self._decode_with_pool(_decode_new_block_hashes_message, data)
         logger.debug("Received %d new block hashes", len(msg.hashes))
-
-    # ------------------------------------------------------------------
-    # TX broadcast
-    # ------------------------------------------------------------------
-
-    async def broadcast_transactions(self, tx_data: list[bytes]) -> None:
-        """Broadcast transactions to all connected peers."""
-        if not tx_data:
-            return
-
-        msg = TransactionsMessage(transactions=tx_data)
-        payload = msg.encode()
-
-        for peer in list(self.peers.values()):
-            if peer.connected:
-                try:
-                    await peer.send_eth_message(EthMsg.TRANSACTIONS, payload)
-                except Exception:
-                    pass
 
     # ------------------------------------------------------------------
     # Background tasks

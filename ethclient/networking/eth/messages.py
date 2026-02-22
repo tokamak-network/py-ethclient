@@ -159,13 +159,9 @@ class GetBlockHeadersMessage:
     reverse: bool = False
 
     def encode(self) -> bytes:
-        if isinstance(self.origin, int):
-            origin = self.origin
-        else:
-            origin = self.origin
         return rlp.encode([
             self.request_id,
-            [origin, self.amount, self.skip, 1 if self.reverse else 0],
+            [self.origin, self.amount, self.skip, 1 if self.reverse else 0],
         ])
 
     @classmethod

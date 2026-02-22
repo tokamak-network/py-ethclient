@@ -51,9 +51,6 @@ class Node:
     def __hash__(self) -> int:
         return hash(self.id)
 
-    def endpoint(self) -> tuple[str, int]:
-        return (self.ip, self.udp_port)
-
 
 # ---------------------------------------------------------------------------
 # Distance utilities
@@ -168,12 +165,6 @@ class RoutingTable:
 
         all_nodes.sort(key=lambda x: x[0])
         return [node for _, node in all_nodes[:count]]
-
-    def get_node(self, pubkey: bytes) -> Optional[Node]:
-        """Look up a node by public key."""
-        node_id = keccak256(pubkey)
-        idx = self.bucket_index(node_id)
-        return self.buckets[idx].find(pubkey)
 
     def total_nodes(self) -> int:
         """Total number of nodes in the table."""

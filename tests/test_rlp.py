@@ -201,6 +201,7 @@ class TestEncodeDecodeUint:
         assert encode_uint(256) == b"\x01\x00"
         assert decode_uint(b"\x01\x00") == 256
 
-    def test_leading_zero_rejected(self):
-        with pytest.raises(RLPDecodingError, match="leading zeros"):
-            decode_uint(b"\x00\x01")
+    def test_leading_zero_tolerated(self):
+        # decode_uint tolerates non-canonical leading zeros for compatibility
+        # with data produced by other Ethereum clients (e.g., op-geth).
+        assert decode_uint(b"\x00\x01") == 1

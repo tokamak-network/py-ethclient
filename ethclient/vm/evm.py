@@ -23,7 +23,7 @@ from ethclient.vm.memory import (
     SelfDestruct,
     InvalidOpcode,
 )
-from ethclient.vm.gas import AccessSets, G_CREATE, G_CODEDEPOSIT, G_CALLSTIPEND
+from ethclient.vm.gas import AccessSets, G_CODEDEPOSIT
 from ethclient.vm.opcodes import OPCODE_TABLE
 from ethclient.vm.precompiles import is_precompile, run_precompile
 from ethclient.vm.hooks import ExecutionHook, DefaultHook

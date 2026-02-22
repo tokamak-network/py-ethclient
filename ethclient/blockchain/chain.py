@@ -31,7 +31,6 @@ from ethclient.vm.gas import (
     intrinsic_gas,
     G_CODEDEPOSIT,
     MAX_REFUND_QUOTIENT,
-    AccessSets,
 )
 from ethclient.vm.precompiles import is_precompile, run_precompile, PRECOMPILES
 from ethclient.vm.hooks import ExecutionHook, DefaultHook
@@ -145,7 +144,6 @@ def simulate_call(
             env.access_sets.mark_warm_address(precompile_addr)
 
         gas_available = gas_limit - base_gas
-        snap = env.snapshot()
 
         if to is None:
             # Contract creation
@@ -563,7 +561,6 @@ def execute_transaction(
     # Check balance: sender must afford gas + value
     max_cost = tx.gas_limit * effective_gas_price + tx.value
     if tx.tx_type == TxType.BLOB:
-        blob_fee = (header.excess_blob_gas or 0)  # simplified
         max_cost += len(tx.blob_versioned_hashes) * tx.max_fee_per_blob_gas
     sender_balance = store.get_balance(sender)
     if sender_balance < max_cost:
@@ -607,7 +604,7 @@ def execute_transaction(
 
     # Execute
     gas_available = tx.gas_limit - base_gas
-    to_bytes = tx.to if tx.to is not None else None
+    to_bytes = tx.to
 
     snap = env.snapshot()
 
@@ -759,7 +756,7 @@ def _bind_env_to_store(env: ExecutionEnvironment, store: Store) -> None:
 
 def _sync_env_to_store(env: ExecutionEnvironment, store: Store) -> None:
     """Sync state changes from ExecutionEnvironment back to Store."""
-    from ethclient.common.types import Account, EMPTY_CODE_HASH
+    from ethclient.common.types import Account
 
     # Update balances and nonces
     all_addrs = set(env._balances.keys()) | set(env._nonces.keys())

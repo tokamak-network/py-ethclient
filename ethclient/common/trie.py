@@ -557,21 +557,6 @@ def _common_prefix_length(a: list[int], b: list[int]) -> int:
     return max_len
 
 
-def compute_trie_root(items: dict[bytes, bytes], use_raw_keys: bool = False) -> bytes:
-    """Compute a trie root hash from a dict of key-value pairs.
-
-    If use_raw_keys=True, keys are used directly as nibble paths.
-    Otherwise keys are keccak256-hashed (standard state trie behavior).
-    """
-    trie = Trie()
-    for key, value in items.items():
-        if use_raw_keys:
-            trie.put_raw(key, value)
-        else:
-            trie.put(key, value)
-    return trie.root_hash
-
-
 def ordered_trie_root(values: list[bytes]) -> bytes:
     """Compute a trie root from an ordered list of values.
 

@@ -6,7 +6,6 @@ Manages pending and queued transactions with per-sender nonce ordering.
 
 from __future__ import annotations
 
-import heapq
 import threading
 import time
 from dataclasses import dataclass, field
@@ -153,27 +152,6 @@ class Mempool:
             result.sort()
             return [pt.tx for pt in result]
 
-    def get_queued(self, sender: bytes) -> list[Transaction]:
-        """Get queued (non-executable) transactions for a sender."""
-        with self._lock:
-            txs = self._by_sender.get(sender, {})
-            return sorted(txs.values(), key=lambda t: t.nonce)
-
-    def remove(self, tx_hash: bytes) -> bool:
-        """Remove a transaction by hash."""
-        with self._lock:
-            if tx_hash not in self._known:
-                return False
-            self._known.discard(tx_hash)
-            for sender, txs in self._by_sender.items():
-                for nonce, tx in list(txs.items()):
-                    if tx.tx_hash() == tx_hash:
-                        del txs[nonce]
-                        if not txs:
-                            del self._by_sender[sender]
-                        return True
-            return False
-
     def remove_committed(self, sender: bytes, committed_nonce: int) -> int:
         """Remove all transactions for sender with nonce < committed_nonce.
 
@@ -197,36 +175,10 @@ class Mempool:
 
             return removed
 
-    def update_base_fee(self, base_fee: int) -> int:
-        """Update base fee and remove transactions that no longer meet it.
-
-        Returns number of evicted transactions.
-        """
-        with self._lock:
-            self.base_fee = base_fee
-            evicted = 0
-
-            for sender in list(self._by_sender.keys()):
-                txs = self._by_sender[sender]
-                for nonce in list(txs.keys()):
-                    tx = txs[nonce]
-                    if tx.effective_gas_price(base_fee) < base_fee:
-                        self._known.discard(tx.tx_hash())
-                        del txs[nonce]
-                        evicted += 1
-                if not txs:
-                    del self._by_sender[sender]
-
-            return evicted
-
     @property
     def size(self) -> int:
         with self._lock:
             return len(self._known)
-
-    def get_all_senders(self) -> list[bytes]:
-        with self._lock:
-            return list(self._by_sender.keys())
 
     def clear(self) -> None:
         with self._lock:

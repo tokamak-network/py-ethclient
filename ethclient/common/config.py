@@ -8,14 +8,12 @@ Tracks hardfork activation blocks/timestamps.
 from __future__ import annotations
 
 import binascii
-import json
 from dataclasses import dataclass, field
 from typing import Optional
 
 from ethclient.common import rlp
 from ethclient.common.crypto import keccak256
 from ethclient.common.types import (
-    Account,
     Block,
     BlockHeader,
     EMPTY_TRIE_ROOT,
@@ -92,32 +90,14 @@ class ChainConfig:
     bpo1_time: Optional[int] = None
     bpo2_time: Optional[int] = None
 
-    def is_homestead(self, block_number: int) -> bool:
-        return self.homestead_block is not None and block_number >= self.homestead_block
-
-    def is_eip155(self, block_number: int) -> bool:
-        return self.eip155_block is not None and block_number >= self.eip155_block
-
-    def is_eip158(self, block_number: int) -> bool:
-        return self.eip158_block is not None and block_number >= self.eip158_block
-
     def is_byzantium(self, block_number: int) -> bool:
         return self.byzantium_block is not None and block_number >= self.byzantium_block
 
     def is_constantinople(self, block_number: int) -> bool:
         return self.constantinople_block is not None and block_number >= self.constantinople_block
 
-    def is_istanbul(self, block_number: int) -> bool:
-        return self.istanbul_block is not None and block_number >= self.istanbul_block
-
-    def is_berlin(self, block_number: int) -> bool:
-        return self.berlin_block is not None and block_number >= self.berlin_block
-
     def is_london(self, block_number: int) -> bool:
         return self.london_block is not None and block_number >= self.london_block
-
-    def is_shanghai(self, timestamp: int) -> bool:
-        return self.shanghai_time is not None and timestamp >= self.shanghai_time
 
     def is_cancun(self, timestamp: int) -> bool:
         return self.cancun_time is not None and timestamp >= self.cancun_time
@@ -433,12 +413,6 @@ class Genesis:
             ),
         )
 
-    @classmethod
-    def from_json_file(cls, path: str) -> Genesis:
-        with open(path) as f:
-            return cls.from_json(json.load(f))
-
-
 # ---------------------------------------------------------------------------
 # ForkID (EIP-2124)
 # ---------------------------------------------------------------------------
@@ -508,14 +482,3 @@ def compute_fork_id(genesis_hash: bytes, config: ChainConfig, head_block: int = 
     return fork_hash, fork_next
 
 
-def get_network_fork_id(chain_id: int) -> tuple[bytes, int]:
-    """Get the current ForkID for a well-known network.
-
-    Uses a very high head block/time to include all known forks.
-    """
-    config = CHAIN_CONFIGS.get(chain_id)
-    genesis_hash = GENESIS_HASHES.get(chain_id)
-    if config is None or genesis_hash is None:
-        return (b"\x00" * 4, 0)
-    # Use a high block/time to include all past forks
-    return compute_fork_id(genesis_hash, config, head_block=100_000_000, head_time=2_000_000_000)

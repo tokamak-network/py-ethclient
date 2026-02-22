@@ -10,14 +10,11 @@ Header-data: frame-size(3 bytes, big-endian) || header-rlp(13 bytes, zero-padded
 
 from __future__ import annotations
 
-import hashlib
-import struct
 from typing import Optional
 
 from Crypto.Cipher import AES
 
 from ethclient.common import rlp
-from ethclient.common.crypto import keccak256
 
 
 class FrameCoder:

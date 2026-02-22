@@ -101,6 +101,9 @@ async def do_handshake(conn, remote_pubkey, our_status):
     print(f"  Remote: {remote_hello.client_id}")
     print(f"  Capabilities: {remote_hello.capabilities}")
 
+    # Enable Snappy compression for sub-protocol messages
+    conn.use_snappy = True
+
     await conn.send_message(0x10, our_status.encode())
 
     for _ in range(10):
@@ -202,10 +205,12 @@ async def main():
                 status_msg = StatusMessage(
                     protocol_version=ETH_VERSION,
                     network_id=11155111,
-                    total_difficulty=17_000_000_000_000_000,
-                    best_hash=SEPOLIA_GENESIS_HASH,
                     genesis_hash=SEPOLIA_GENESIS_HASH,
                     fork_id=fork_id,
+                    # eth/69 fields
+                    earliest_block=0,
+                    latest_block=0,
+                    latest_block_hash=SEPOLIA_GENESIS_HASH,
                 )
 
                 rs = await do_handshake(c, pubkey, status_msg)
@@ -234,10 +239,13 @@ async def main():
     print("Phase 2: Download Recent Blocks")
     print("=" * 70)
 
-    # Get headers ending at best_hash (reverse)
+    # Get headers ending at head hash (reverse)
+    head_hash = (remote_status.latest_block_hash
+                 if remote_status.protocol_version >= 69
+                 else remote_status.best_hash)
     t0 = time.time()
     recent_headers = await request_headers(
-        conn, remote_status.best_hash, count=32, req_id=1, reverse=True,
+        conn, head_hash, count=32, req_id=1, reverse=True,
     )
     elapsed = time.time() - t0
 

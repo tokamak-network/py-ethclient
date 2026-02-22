@@ -118,6 +118,9 @@ async def do_handshake(conn: RLPxConnection, remote_pubkey: bytes,
     print(f"  Remote: {remote_hello.client_id}")
     print(f"  Capabilities: {remote_hello.capabilities}")
 
+    # Enable Snappy compression for sub-protocol messages
+    conn.use_snappy = True
+
     # Send Status
     await conn.send_message(0x10, our_status.encode())
 

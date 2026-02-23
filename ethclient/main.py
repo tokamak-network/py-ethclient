@@ -432,6 +432,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="py-ethclient",
         description="Python Ethereum L1 execution client",
     )
+    subparsers = parser.add_subparsers(dest="command")
+    from ethclient.l2.cli import add_l2_subparser
+    add_l2_subparser(subparsers)
     parser.add_argument(
         "--network",
         choices=["mainnet", "sepolia", "holesky"],
@@ -537,6 +540,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    # Handle L2 subcommand
+    if args.command == "l2":
+        from ethclient.l2.cli import handle_l2_command
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
+        handle_l2_command(args)
+        return
 
     # Setup logging
     logging.basicConfig(

@@ -1,19 +1,17 @@
 # py-ethclient
 
-**A Python Ethereum execution client with built-in ZK proving and L1↔L2 bridge**
+**The Python L2 development platform — build application-specific ZK rollups in pure Python**
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-713%20passing-brightgreen)](#testing)
-[![LOC](https://img.shields.io/badge/LOC-17%2C784-blue)](#project-stats)
+[![Tests](https://img.shields.io/badge/tests-785%20passing-brightgreen)](#testing)
+[![LOC](https://img.shields.io/badge/LOC-19%2C655-blue)](#project-stats)
 
-py-ethclient is a fully independent Python implementation of an Ethereum Layer 1 execution client, inspired by [ethrex](https://github.com/lambdaclass/ethrex) (Rust). It connects directly to the Ethereum peer-to-peer network via devp2p/RLPx, implements the Ethereum Virtual Machine (EVM) with 140+ opcodes, and supports both full sync and snap sync for Mainnet and Sepolia.
+py-ethclient is a Python L2 development platform for building **application-specific ZK rollups**. Define your state transition function as a plain Python function, and py-ethclient handles the rest — sequencing, batching, Groth16 proving, and L1 verification.
 
-It also includes a **Groth16 ZK proving toolkit** — the only Python environment where circuit definition, trusted setup, proof generation, native verification, and EVM on-chain verification all run in a single process. This makes it the fastest way to prototype and debug ZK circuits, especially with AI coding agents.
+Built on a fully independent Ethereum L1 execution client inspired by [ethrex](https://github.com/lambdaclass/ethrex) (Rust). It connects directly to the Ethereum P2P network via devp2p/RLPx, implements the EVM with 140+ opcodes, and supports full sync and snap sync for Mainnet and Sepolia. The built-in **Groth16 ZK proving**, **L1↔L2 General State Bridge**, and **application-specific rollup framework** make it the fastest way to prototype L2 protocols and ZK circuits.
 
-It also includes an **L1↔L2 General State Bridge** — an Optimism-style CrossDomainMessenger that relays arbitrary messages between L1 and L2 with real EVM execution, force inclusion for censorship resistance, and an escape hatch for value recovery.
-
-All core protocol logic — RLP encoding, Merkle Patricia Trie, EVM execution, RLPx transport encryption, eth/68 and snap/1 wire protocols, Discovery v4, Engine API, Groth16 ZK proving, and L1↔L2 bridge — is implemented from scratch in pure Python. Only cryptographic primitives and the web framework are external dependencies.
+All core protocol logic — RLP encoding, Merkle Patricia Trie, EVM execution, RLPx transport encryption, eth/68 and snap/1 wire protocols, Discovery v4, Engine API, Groth16 ZK proving, L1↔L2 bridge, and L2 rollup framework — is implemented from scratch in pure Python. Only cryptographic primitives and the web framework are external dependencies.
 
 > **[한국어 README](./README_ko.md)**
 
@@ -21,8 +19,9 @@ All core protocol logic — RLP encoding, Merkle Patricia Trie, EVM execution, R
 
 - [Key Features](#key-features)
 - [Why py-ethclient?](#why-py-ethclient)
-- [ZK Toolkit](#zk-toolkit)
+- [L2 Rollup Framework](#l2-rollup-framework)
 - [L2 Bridge](#l2-bridge)
+- [ZK Toolkit](#zk-toolkit)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Docker](#docker)
@@ -37,27 +36,30 @@ All core protocol logic — RLP encoding, Merkle Patricia Trie, EVM execution, R
 
 ## Key Features
 
-- **Full EVM** — 140+ opcodes, precompiles (ecrecover, SHA-256, RIPEMD-160, modexp, BN128, BLAKE2f, KZG), EIP-1559/2929/2930/4844/7702 support
-- **Groth16 ZK Toolkit** — Circuit definition, trusted setup, proof generation, native + EVM verification, gas profiling, snarkjs compatibility — all in pure Python
+- **Application-Specific ZK Rollup** — Define your rollup logic as a Python function (State Transition Function), plug it into the Rollup orchestrator, and get automatic sequencing, Groth16 proving, and L1 verification out of the box
+- **4 Pluggable Interfaces** — StateTransitionFunction, DAProvider, L1Backend, ProofBackend — swap any component without touching the rest
+- **Full Prove-Verify Pipeline** — Sequencer → Batch → Groth16 Proof → L1 Verification, all in a single Python process
+- **L2 RPC API** — 7 `l2_*` JSON-RPC methods for transaction submission, state queries, batch production, and proof submission
 - **L1↔L2 General State Bridge** — Optimism-style CrossDomainMessenger with pluggable relay handlers (EVM, Merkle proof, ZK proof, TinyDB, direct state), force inclusion (anti-censorship), and escape hatch (value recovery)
+- **Groth16 ZK Toolkit** — Circuit definition, trusted setup, proof generation, native + EVM verification, gas profiling, snarkjs compatibility — all in pure Python
+- **Full EVM** — 140+ opcodes, precompiles (ecrecover, SHA-256, RIPEMD-160, modexp, BN128, BLAKE2f, KZG), EIP-1559/2929/2930/4844/7702 support
 - **Ethereum P2P Networking** — RLPx encrypted transport, eth/68 and snap/1 wire protocols, Discovery v4 with Kademlia routing
 - **Sync Modes** — Full sync (sequential block execution) and snap sync (4-phase parallel state download)
-- **JSON-RPC 2.0** — 20+ methods including `eth_call`, `eth_estimateGas`, transaction/receipt lookups, log queries, and `zk_` namespace for ZK verification
+- **JSON-RPC 2.0** — 20+ methods including `eth_call`, `eth_estimateGas`, transaction/receipt lookups, log queries, `zk_` and `l2_` namespaces
 - **Engine API V1/V2/V3** — `forkchoiceUpdated`, `getPayload`, `newPayload` with JWT authentication for consensus layer integration
 - **Persistent Storage** — LMDB-backed disk backend with hybrid overlay pattern for atomic state commits
 - **Multi-Network** — Mainnet, Sepolia, and Holesky with per-network genesis and fork configurations
-- **685 Tests** — Comprehensive test suite covering all protocol layers from RLP to ZK proving to L2 bridge to end-to-end integration
+- **785 Tests** — Comprehensive test suite covering all protocol layers from RLP to ZK proving to L2 rollup to end-to-end integration
 - **Docker Support** — Ready-to-use Docker Compose setup for quick deployment
-- **L2 Extensibility** — Execution hook system, pluggable relay handlers (EVM/Merkle/ZK/TinyDB/Direct), and CrossDomainMessenger bridge for Layer 2 development without modifying EVM core
 
 ## Why py-ethclient?
 
 Ethereum client diversity is critical for network resilience. py-ethclient is the only Ethereum execution client written in Python, making it uniquely valuable for:
 
+- **Application-Specific L2 Development** — Write your rollup logic as a plain Python function. The framework handles sequencing, batching, Groth16 proving, and L1 verification. No Solidity, no circom, no complex toolchains — just Python
+- **ZK Circuit Development** — Define circuits in Python, generate proofs, and test on-chain verification in a single Jupyter notebook. No circom/snarkjs/Solidity toolchain needed — the fastest way to prototype ZK applications, especially with AI coding agents
 - **Education & Research** — Python's readability makes it the best codebase for understanding how Ethereum actually works at the protocol level. Every component (EVM, RLPx, Merkle tries, sync) is implemented in clear, readable Python
 - **Rapid Prototyping** — Test new EIPs, custom opcodes, or consensus changes in hours instead of days. Python's dynamic nature enables fast iteration on protocol experiments
-- **ZK Circuit Development** — Define circuits in Python, generate proofs, and test on-chain verification in a single Jupyter notebook. No circom/snarkjs/Solidity toolchain needed — the fastest way to prototype ZK applications, especially with AI coding agents
-- **L2 Development** — The built-in execution hook system and L1↔L2 bridge let you build a complete Layer 2 execution environment — from cross-domain messaging to force inclusion and escape hatches — without modifying any core EVM code
 - **Client Diversity** — Adding a Python client to the Ethereum ecosystem (alongside Go, Rust, C#, Java) strengthens the network against implementation-specific bugs
 
 ### Comparison with Other Execution Clients
@@ -65,73 +67,143 @@ Ethereum client diversity is critical for network resilience. py-ethclient is th
 | | py-ethclient | [geth](https://github.com/ethereum/go-ethereum) | [reth](https://github.com/paradigmxyz/reth) | [nethermind](https://github.com/NethermindEth/nethermind) |
 |---|---|---|---|---|
 | **Language** | Python | Go | Rust | C# |
-| **Purpose** | Education, Research, L2, ZK | Production | Production | Production |
-| **EVM** | 140+ opcodes | Full | Full | Full |
+| **Purpose** | L2 Development, ZK, Education | Production | Production | Production |
+| **App-Specific Rollup** | Built-in framework | N/A | N/A | N/A |
 | **ZK Proving** | Built-in Groth16 | N/A | N/A | N/A |
 | **L2 Bridge** | Built-in CrossDomainMessenger | N/A | N/A | N/A |
+| **EVM** | 140+ opcodes | Full | Full | Full |
 | **Sync modes** | Full + Snap | Full + Snap + Light | Full + Snap | Full + Snap + Fast |
 | **Engine API** | V1/V2/V3 | V1/V2/V3 | V1/V2/V3 | V1/V2/V3 |
 | **P2P protocols** | eth/68, snap/1 | eth/68, snap/1 | eth/68, snap/1 | eth/68, snap/1 |
 | **Code readability** | Very High | High | Medium | Medium |
-| **Extensibility** | Hook system | Plugin | Modular | Plugin |
 
-## ZK Toolkit
+## L2 Rollup Framework
 
-py-ethclient includes a **Groth16 ZK proving toolkit** — the only Python environment where you can define circuits, generate proofs, and test EVM on-chain verification in a single process.
+py-ethclient includes a complete **application-specific ZK rollup framework**. Define your state transition logic as a plain Python function, and the framework handles sequencing, batching, Groth16 proving, and L1 verification.
+
+### Quick Example: Counter Rollup
 
 ```python
-from ethclient.zk import Circuit, groth16
-from ethclient.zk.evm_verifier import EVMVerifier
+from ethclient.l2 import Rollup, L2Tx, L2TxType
 
-# 1. Define circuit (Python expressions)
-c = Circuit()
-x, y = c.private("x"), c.private("y")
-z = c.public("z")
-c.constrain(x * y, z)   # R1CS: x * y = z
+# 1. Define your State Transition Function — just a Python function
+def counter_stf(state, tx):
+    count = state.get("count", 0)
+    if tx.data.get("action") == "increment":
+        state["count"] = count + 1
+        return {"new_count": count + 1}
 
-# 2. Trusted setup
-pk, vk = groth16.setup(c)
+# 2. Create a Rollup with your STF
+rollup = Rollup(stf=counter_stf)
+rollup.setup()  # Groth16 trusted setup + L1 verifier deployment
 
-# 3. Generate proof
-proof = groth16.prove(pk, private={"x": 3, "y": 5}, public={"z": 15}, circuit=c)
+# 3. Submit transactions
+tx = L2Tx(sender=b"\x01"*20, nonce=0, data={"action": "increment"},
+          tx_type=L2TxType.CALL)
+rollup.submit_tx(tx)
 
-# 4. Native verification
-assert groth16.verify(vk, proof, [15])
+# 4. Produce batch + prove + verify on L1
+batch = rollup.produce_batch()
+receipt = rollup.prove_and_submit(batch)
 
-# 5. EVM on-chain verification (uses built-in EVM + ecPairing precompile)
-result = EVMVerifier(vk).verify_on_evm(proof, [15])
-assert result.success  # gas_used ≈ 210,000
+assert receipt.verified          # L1 accepted the proof
+assert rollup.state["count"] == 1
 ```
 
-### What's Included
+### How It Works
 
-| Component | Description |
-|---|---|
-| **Circuit Builder** | Python operator overloading for R1CS constraint definition |
-| **Groth16 Prover** | Full proving pipeline: R1CS → QAP → trusted setup → proof generation |
-| **Native Verifier** | Pairing-based verification with debug mode (intermediate pairing values) |
-| **EVM Verifier** | Auto-generated verifier bytecode using ecAdd/ecMul/ecPairing precompiles |
-| **Gas Profiler** | Per-precompile gas breakdown for on-chain cost optimization |
-| **snarkjs Compat** | Import/export snarkjs JSON format (vkey, proof, public inputs) |
-| **ZK RPC API** | `zk_verifyGroth16`, `zk_deployVerifier`, `zk_verifyOnChain` endpoints |
+```
+User Tx → Sequencer → State Transition Function → Batch Assembly
+                                                        ↓
+                          L1 Verification ← Groth16 Proof ← DA Storage
+```
 
-### Why Not circom + snarkjs?
+1. **Sequencer** receives transactions, validates nonces, executes STF with snapshot/rollback
+2. **Batch** is sealed when `max_txs_per_batch` is reached or `force_seal()` is called
+3. **Groth16 Prover** generates a ZK proof over old_state_root → new_state_root transition
+4. **L1 Backend** verifies the proof and records the new state root
 
-| | circom + snarkjs + Hardhat | py-ethclient |
+### Pluggable Components
+
+The framework uses 4 pluggable interfaces — swap any component without touching the rest:
+
+| Interface | Default | Description |
 |---|---|---|
-| **Languages needed** | circom (DSL) + Node.js + Solidity | Python only |
-| **Tools to install** | Rust compiler + Node.js + Solidity toolchain | `pip install py-ethclient` |
-| **Circuit → Proof → Verify** | 5 CLI commands across 3 tools | 3 Python function calls |
-| **EVM testing** | Deploy to testnet | In-memory EVM, instant |
-| **Debug failures** | Hex dump analysis | Python traceback + pairing values |
-| **AI agent friendly** | Multiple tools, niche DSL | Python (best language for AI agents) |
-| **Iteration speed** | Minutes (compile → setup → prove → deploy) | Seconds |
+| `StateTransitionFunction` | `PythonRuntime` (wraps any callable) | Your rollup logic |
+| `DAProvider` | `LocalDAProvider` (in-memory) | Data availability storage |
+| `ProofBackend` | `Groth16ProofBackend` | ZK proof generation and verification |
+| `L1Backend` | `InMemoryL1Backend` | L1 contract interaction (verifier) |
 
-Run the full demo:
+```python
+from ethclient.l2 import Rollup, L2Config
+
+# Custom configuration
+config = L2Config(
+    name="my-rollup",
+    chain_id=42170,
+    max_txs_per_batch=128,
+    batch_timeout=30,
+    rpc_port=9545,
+)
+
+# Plug in custom components
+rollup = Rollup(
+    stf=my_stf_function,
+    da=my_custom_da,        # implement DAProvider
+    l1=my_l1_backend,       # implement L1Backend
+    prover=my_prover,       # implement ProofBackend
+    config=config,
+)
+```
+
+### Balance Transfer Example
+
+```python
+def balance_stf(state, tx):
+    action = tx.data.get("action")
+    if action == "mint":
+        addr = tx.data["to"]
+        amount = tx.data["amount"]
+        state[addr] = state.get(addr, 0) + amount
+        return {"minted": amount, "to": addr}
+    elif action == "transfer":
+        src, dst = tx.data["from"], tx.data["to"]
+        amount = tx.data["amount"]
+        if state.get(src, 0) < amount:
+            raise ValueError("insufficient balance")
+        state[src] -= amount
+        state[dst] = state.get(dst, 0) + amount
+        return {"transferred": amount}
+
+rollup = Rollup(stf=balance_stf)
+rollup.setup()
+# mint, transfer, produce batch, prove, verify — all works
+```
+
+### L2 CLI
 
 ```bash
-python examples/zk_notebook_demo.py
+# Scaffold a new rollup project
+ethclient l2 init --name my-rollup
+
+# This creates:
+#   l2.json      — rollup configuration
+#   stf.py       — State Transition Function template
 ```
+
+### L2 RPC API
+
+When running with the L2 module, 7 additional JSON-RPC methods are available:
+
+| Method | Description |
+|---|---|
+| `l2_sendTransaction` | Submit a transaction to the rollup |
+| `l2_getState` | Get current rollup state |
+| `l2_getStateRoot` | Get current Merkle state root |
+| `l2_getBatch` | Query a sealed batch by number |
+| `l2_produceBatch` | Trigger batch production |
+| `l2_proveAndSubmit` | Prove a batch and submit to L1 |
+| `l2_chainInfo` | Get rollup chain info (name, chain_id, batch count, etc.) |
 
 ## L2 Bridge
 
@@ -210,6 +282,64 @@ Run the full demo:
 python examples/general_state_bridge.py
 ```
 
+## ZK Toolkit
+
+py-ethclient includes a **Groth16 ZK proving toolkit** — the only Python environment where you can define circuits, generate proofs, and test EVM on-chain verification in a single process.
+
+```python
+from ethclient.zk import Circuit, groth16
+from ethclient.zk.evm_verifier import EVMVerifier
+
+# 1. Define circuit (Python expressions)
+c = Circuit()
+x, y = c.private("x"), c.private("y")
+z = c.public("z")
+c.constrain(x * y, z)   # R1CS: x * y = z
+
+# 2. Trusted setup
+pk, vk = groth16.setup(c)
+
+# 3. Generate proof
+proof = groth16.prove(pk, private={"x": 3, "y": 5}, public={"z": 15}, circuit=c)
+
+# 4. Native verification
+assert groth16.verify(vk, proof, [15])
+
+# 5. EVM on-chain verification (uses built-in EVM + ecPairing precompile)
+result = EVMVerifier(vk).verify_on_evm(proof, [15])
+assert result.success  # gas_used ≈ 210,000
+```
+
+### What's Included
+
+| Component | Description |
+|---|---|
+| **Circuit Builder** | Python operator overloading for R1CS constraint definition |
+| **Groth16 Prover** | Full proving pipeline: R1CS → QAP → trusted setup → proof generation |
+| **Native Verifier** | Pairing-based verification with debug mode (intermediate pairing values) |
+| **EVM Verifier** | Auto-generated verifier bytecode using ecAdd/ecMul/ecPairing precompiles |
+| **Gas Profiler** | Per-precompile gas breakdown for on-chain cost optimization |
+| **snarkjs Compat** | Import/export snarkjs JSON format (vkey, proof, public inputs) |
+| **ZK RPC API** | `zk_verifyGroth16`, `zk_deployVerifier`, `zk_verifyOnChain` endpoints |
+
+### Why Not circom + snarkjs?
+
+| | circom + snarkjs + Hardhat | py-ethclient |
+|---|---|---|
+| **Languages needed** | circom (DSL) + Node.js + Solidity | Python only |
+| **Tools to install** | Rust compiler + Node.js + Solidity toolchain | `pip install py-ethclient` |
+| **Circuit → Proof → Verify** | 5 CLI commands across 3 tools | 3 Python function calls |
+| **EVM testing** | Deploy to testnet | In-memory EVM, instant |
+| **Debug failures** | Hex dump analysis | Python traceback + pairing values |
+| **AI agent friendly** | Multiple tools, niche DSL | Python (best language for AI agents) |
+| **Iteration speed** | Minutes (compile → setup → prove → deploy) | Seconds |
+
+Run the full demo:
+
+```bash
+python examples/zk_notebook_demo.py
+```
+
 ## Requirements
 
 - Python 3.12+
@@ -270,6 +400,19 @@ docker run -p 30303:30303 -p 8545:8545 py-ethclient --network sepolia
 
 ## Quick Start
 
+### L2 Rollup Mode
+
+```bash
+# Scaffold a new rollup project
+ethclient l2 init --name my-rollup
+
+# Edit stf.py to define your State Transition Function
+# Then start the rollup node
+ethclient l2 start --config l2.json
+```
+
+### L1 Node Mode
+
 ```bash
 # Run with defaults (mainnet, snap sync, ports 30303/8545)
 ethclient
@@ -288,6 +431,17 @@ ethclient --genesis ./genesis.json --port 30303
 ```
 
 ### CLI Options
+
+**L2 Commands**
+
+| Command | Description |
+|---|---|
+| `ethclient l2 init --name <name>` | Scaffold a new rollup project (creates l2.json + stf.py) |
+| `ethclient l2 start --config <path>` | Start the L2 rollup node |
+| `ethclient l2 prove --batch <n>` | Generate ZK proof for a batch |
+| `ethclient l2 submit --batch <n>` | Submit proven batch to L1 |
+
+**L1 Node Options**
 
 | Option | Default | Description |
 |---|---|---|
@@ -313,6 +467,18 @@ ethclient --genesis ./genesis.json --port 30303
 A JSON-RPC 2.0 endpoint is served at `http://localhost:8545`.
 
 ### Supported Methods
+
+**l2_ namespace** (L2 rollup operations)
+
+| Method | Description |
+|---|---|
+| `l2_sendTransaction` | Submit a transaction to the rollup |
+| `l2_getState` | Get current rollup state dict |
+| `l2_getStateRoot` | Get current Merkle state root (hex) |
+| `l2_getBatch` | Query a sealed batch by number |
+| `l2_produceBatch` | Trigger batch production |
+| `l2_proveAndSubmit` | Prove a batch and submit to L1 |
+| `l2_chainInfo` | Get rollup chain info |
 
 **eth_ namespace**
 
@@ -376,44 +542,64 @@ A JSON-RPC 2.0 endpoint is served at `http://localhost:8545`.
 ### Usage Examples
 
 ```bash
-# Get latest block number
+# Submit L2 transaction
+curl -X POST http://localhost:9545 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"l2_sendTransaction","params":[{"sender":"0x01","data":{"action":"increment"}}],"id":1}'
+
+# Get L2 state root
+curl -X POST http://localhost:9545 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"l2_getStateRoot","params":[],"id":1}'
+
+# Get latest block number (L1)
 curl -X POST http://localhost:8545 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
-
-# Query account balance
-curl -X POST http://localhost:8545 \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045","latest"],"id":1}'
 ```
 
 ## Testing
 
 ```bash
-# Run all tests
+# Run all tests (785 tests)
 pytest
 
-# Run tests for a specific module
-pytest tests/test_rlp.py              # RLP encoding/decoding
-pytest tests/test_trie.py             # Merkle Patricia Trie
-pytest tests/test_trie_proofs.py      # Trie Merkle proofs & range verification
-pytest tests/test_evm.py              # EVM opcode execution
-pytest tests/test_storage.py          # State storage
-pytest tests/test_blockchain.py       # Block validation/execution
-pytest tests/test_p2p.py              # P2P networking
-pytest tests/test_protocol_registry.py # Multi-protocol capability negotiation
-pytest tests/test_snap_messages.py    # snap/1 message encoding/decoding
-pytest tests/test_snap_sync.py        # Snap sync state machine
-pytest tests/test_rpc.py              # JSON-RPC server + Engine API
-pytest tests/test_disk_backend.py     # LMDB persistent storage
-pytest tests/test_zk_circuit.py       # ZK circuit builder (R1CS)
-pytest tests/test_zk_groth16.py       # Groth16 prove/verify + snarkjs compat
-pytest tests/test_zk_evm.py           # EVM-based ZK verification
-pytest tests/test_bridge_messenger.py # L2 bridge messenger send/relay
-pytest tests/test_bridge_e2e.py       # L2 bridge end-to-end scenarios
-pytest tests/test_bridge_censorship.py # Force inclusion + escape hatch
-pytest tests/test_bridge_proof_relay.py # Proof-based relay handlers
-pytest tests/test_integration.py      # End-to-end integration
+# Run L2 rollup tests
+pytest tests/test_l2_types.py            # L2 types, encoding, state snapshots
+pytest tests/test_l2_da.py               # Data availability provider
+pytest tests/test_l2_runtime.py          # Python STF runtime wrapper
+pytest tests/test_l2_sequencer.py        # Sequencer, mempool, batch assembly
+pytest tests/test_l2_prover.py           # Groth16 proof backend
+pytest tests/test_l2_l1.py               # L1 backend, proof verification
+pytest tests/test_l2_integration.py      # Full cycle: STF → batch → prove → L1 verify
+
+# Run L1 client tests
+pytest tests/test_rlp.py                 # RLP encoding/decoding
+pytest tests/test_trie.py                # Merkle Patricia Trie
+pytest tests/test_trie_proofs.py         # Trie Merkle proofs & range verification
+pytest tests/test_evm.py                 # EVM opcode execution
+pytest tests/test_storage.py             # State storage
+pytest tests/test_blockchain.py          # Block validation/execution
+pytest tests/test_p2p.py                 # P2P networking
+pytest tests/test_protocol_registry.py   # Multi-protocol capability negotiation
+pytest tests/test_snap_messages.py       # snap/1 message encoding/decoding
+pytest tests/test_snap_sync.py           # Snap sync state machine
+pytest tests/test_rpc.py                 # JSON-RPC server + Engine API
+pytest tests/test_disk_backend.py        # LMDB persistent storage
+
+# Run ZK tests
+pytest tests/test_zk_circuit.py          # ZK circuit builder (R1CS)
+pytest tests/test_zk_groth16.py          # Groth16 prove/verify + snarkjs compat
+pytest tests/test_zk_evm.py              # EVM-based ZK verification
+
+# Run bridge tests
+pytest tests/test_bridge_messenger.py    # L2 bridge messenger send/relay
+pytest tests/test_bridge_e2e.py          # L2 bridge end-to-end scenarios
+pytest tests/test_bridge_censorship.py   # Force inclusion + escape hatch
+pytest tests/test_bridge_proof_relay.py  # Proof-based relay handlers
+
+# Run integration tests
+pytest tests/test_integration.py         # End-to-end integration
 
 # Verbose output
 pytest -v
@@ -424,6 +610,20 @@ pytest -v
 ```
 ethclient/
 ├── main.py                          # CLI entry point, node initialization
+├── l2/                              # Application-specific ZK rollup framework
+│   ├── types.py                     # L2Tx, L2State, Batch, BatchReceipt, STFResult
+│   ├── config.py                    # L2Config (chain_id, batch size, timeouts)
+│   ├── interfaces.py                # 4 ABCs: STF, DAProvider, L1Backend, ProofBackend
+│   ├── state.py                     # L2StateStore (Trie-based Merkle state roots)
+│   ├── runtime.py                   # PythonRuntime (wraps callable → STF)
+│   ├── da.py                        # LocalDAProvider (in-memory DA)
+│   ├── sequencer.py                 # Sequencer (mempool, nonce tracking, batch assembly)
+│   ├── prover.py                    # Groth16ProofBackend (circuit → proof → verify)
+│   ├── l1_backend.py                # InMemoryL1Backend (verifier simulation)
+│   ├── submitter.py                 # BatchSubmitter (prove → submit → verify pipeline)
+│   ├── rollup.py                    # Rollup orchestrator (main user-facing API)
+│   ├── rpc_api.py                   # l2_* JSON-RPC method registration
+│   └── cli.py                       # CLI: ethclient l2 {init|start|prove|submit}
 ├── common/                          # Core foundation modules
 │   ├── rlp.py                       # RLP encoding/decoding
 │   ├── types.py                     # Block, BlockHeader, Transaction, Account, etc.
@@ -514,6 +714,8 @@ ethclient/
 
 ### Components Built from Scratch
 
+- **Application-Specific ZK Rollup Framework** — Pluggable STF/DA/Prover/L1 interfaces, Sequencer with mempool and nonce tracking, batch assembly with auto-seal, Groth16 proof backend with 128-bit field truncation, BatchSubmitter pipeline, Rollup orchestrator, L2 RPC API, CLI scaffolding
+- **L2 State Management** — Trie-based Merkle state root computation for arbitrary key-value state, snapshot/rollback for atomic batch execution, tag-based encoding for mixed-type state values
 - **RLP (Recursive Length Prefix)** — Ethereum serialization format: encoding/decoding, list/bytes discrimination
 - **Merkle Patricia Trie** — Branch/Extension/Leaf nodes, hex-prefix encoding, state root computation, Merkle proof generation/verification, range proofs
 - **EVM** — 140+ opcodes, 256-bit stack, byte-addressable memory, EIP-2929 cold/warm tracking, EIP-1559 base fee
@@ -568,6 +770,7 @@ class L2Hook(ExecutionHook):
 
 | Module | Files | LOC | Description |
 |---|---:|---:|---|
+| `l2/` | 14 | 1,276 | App-specific ZK rollup: STF, sequencer, prover, L1 backend, rollup orchestrator, RPC, CLI |
 | `common/` | 6 | 2,374 | RLP, types, trie (+ proofs), crypto, config |
 | `vm/` | 8 | 2,703 | EVM, opcodes, precompiles, gas |
 | `storage/` | 4 | 1,431 | Store interface, in-memory & LMDB backends |
@@ -576,13 +779,20 @@ class L2Hook(ExecutionHook):
 | `zk/` | 6 | 1,844 | Groth16 circuit builder, prover, verifier, EVM verifier, snarkjs compat |
 | `bridge/` | 6 | 1,056 | CrossDomainMessenger, BridgeWatcher, BridgeEnvironment, force inclusion, escape hatch |
 | `rpc/` | 6 | 1,838 | JSON-RPC server, eth API, Engine API, ZK API |
-| `main.py` | 1 | 633 | CLI entry point |
-| **Total** | **61** | **18,134** | |
+| `main.py` | 1 | 648 | CLI entry point |
+| **Total** | **75** | **19,655** | |
 
 ### Test Code
 
 | Test File | LOC | Tests | Covers |
 |---|---:|---:|---|
+| `test_l2_types.py` | 139 | 17 | L2 tx types, encoding/decoding, state snapshots |
+| `test_l2_da.py` | 56 | 8 | Data availability provider |
+| `test_l2_runtime.py` | 99 | 9 | Python STF runtime wrapper |
+| `test_l2_sequencer.py` | 162 | 10 | Sequencer, mempool, batch assembly, auto-seal |
+| `test_l2_prover.py` | 91 | 10 | Groth16 proof backend, field truncation |
+| `test_l2_l1.py` | 86 | 6 | L1 backend, proof verification, batch tracking |
+| `test_l2_integration.py` | 229 | 12 | Full cycle: counter STF, balance transfer, multi-batch |
 | `test_rlp.py` | 206 | 56 | RLP encoding/decoding |
 | `test_trie.py` | 213 | 26 | Merkle Patricia Trie |
 | `test_trie_proofs.py` | 254 | 23 | Trie proof generation/verification, range proofs |
@@ -605,9 +815,15 @@ class L2Hook(ExecutionHook):
 | `test_integration.py` | 272 | 14 | Cross-module integration |
 | `test_disk_backend.py` | 543 | 31 | LMDB persistence, flush, overlay, state root consistency |
 | `integration/` | 68 | 6 | Archive mode, chaindata, Fusaka compliance |
-| **Total** | **8,778** | **713** | |
+| **Total** | **9,755** | **785** | |
 
 ## FAQ
+
+**Can I build an application-specific rollup with py-ethclient?**
+Yes — py-ethclient includes a complete application-specific ZK rollup framework. Define your state transition logic as a plain Python function, and the framework handles sequencing, batching, Groth16 proving, and L1 verification. See the [L2 Rollup Framework](#l2-rollup-framework) section.
+
+**How does the rollup framework work?**
+You write a State Transition Function (STF) — a Python function that takes `(state, tx)` and mutates state. The Sequencer collects transactions, executes the STF, and assembles batches. The Groth16 prover generates a ZK proof over the state transition, and the L1 backend verifies it. All 4 components (STF, DA, Prover, L1) are pluggable interfaces.
 
 **Is there a Python Ethereum execution client?**
 Yes — py-ethclient is a fully functional Ethereum execution client written entirely in Python. It implements the EVM with 140+ opcodes, connects to the Ethereum P2P network via RLPx (eth/68, snap/1), and supports both full sync and snap sync for Mainnet and Sepolia.
@@ -618,17 +834,11 @@ Yes. py-ethclient connects to Ethereum mainnet and Sepolia testnet peers, perfor
 **How does py-ethclient compare to geth?**
 geth (Go Ethereum) is the most widely used production execution client. py-ethclient implements the same core protocols (EVM, eth/68, snap/1, Engine API) but is written in Python for readability and research purposes. While geth is optimized for production performance, py-ethclient prioritizes code clarity, making it ideal for learning how Ethereum works at the protocol level.
 
-**Can I use py-ethclient to build an L2?**
-Yes. py-ethclient includes a built-in execution hook system (`ExecutionHook`) and an L1↔L2 General State Bridge (`CrossDomainMessenger`). The hook system lets you customize EVM behavior, while the bridge provides cross-domain messaging with real EVM execution, force inclusion for censorship resistance, and an escape hatch for value recovery — all without modifying any core code. This makes it a practical foundation for L2 development.
-
 **What is the L2 bridge?**
 The L2 bridge is an Optimism-style `CrossDomainMessenger` that relays arbitrary messages between L1 and L2. Messages are executed on the target domain's EVM, producing real state changes. It includes force inclusion (bypass censoring operators after a 50-block window) and an escape hatch (recover deposited value on L1 when L2 is unresponsive). See the [L2 Bridge](#l2-bridge) section.
 
 **What relay modes are available?**
 The bridge supports 5 relay handlers: EVMRelayHandler (default, full EVM execution), MerkleProofHandler (Merkle proof against trusted L1 state root), ZKProofHandler (Groth16 zero-knowledge proof verification), TinyDBHandler (document DB backend for non-EVM L2), and DirectStateHandler (trusted relayer, direct state application). With proof-based relay, L2 can use any runtime — not just EVM.
-
-**What EIPs does py-ethclient support?**
-py-ethclient supports EIP-155 (replay protection), EIP-1559 (dynamic fees), EIP-2718 (typed transactions), EIP-2929/2930 (access lists), EIP-4844 (blob transactions with KZG), and EIP-7702 (Prague EOA code). See the [Supported EIPs](#supported-eips) section for the full list.
 
 **Can I use py-ethclient for ZK development?**
 Yes. py-ethclient includes a built-in Groth16 ZK proving toolkit. You can define R1CS circuits using Python expressions, generate proofs, verify them natively or on the in-memory EVM, profile gas costs, and export to snarkjs format — all without installing circom, snarkjs, or Solidity toolchains. See the [ZK Toolkit](#zk-toolkit) section.
@@ -636,8 +846,13 @@ Yes. py-ethclient includes a built-in Groth16 ZK proving toolkit. You can define
 **Is the ZK prover production-ready?**
 The prover is implemented in pure Python (using py_ecc for BN128 curve operations), so it's best suited for education, prototyping, and small circuits (< 1000 constraints). For production proving, use snarkjs or rapidsnark for proof generation, then verify the proofs with py-ethclient's native or EVM verifier.
 
+**What EIPs does py-ethclient support?**
+py-ethclient supports EIP-155 (replay protection), EIP-1559 (dynamic fees), EIP-2718 (typed transactions), EIP-2929/2930 (access lists), EIP-4844 (blob transactions with KZG), and EIP-7702 (Prague EOA code). See the [Supported EIPs](#supported-eips) section for the full list.
+
 ## Current Limitations
 
+- **L2 CLI** — `l2 start`, `l2 prove`, `l2 submit` subcommands are scaffolded but not fully wired (use the Python API directly)
+- **L2 RPC** — `register_l2_api()` exists but is not yet auto-started from the CLI
 - **Engine API** — V1/V2/V3 implemented; block production flow operational but ongoing optimization
 - **eth_getLogs** — Stub implementation; log filtering not yet implemented
 - **contractAddress** — Transaction receipt does not yet derive the contract address for CREATE transactions

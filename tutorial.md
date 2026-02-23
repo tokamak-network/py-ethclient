@@ -1,6 +1,6 @@
 # py-ethclient Tutorial
 
-**Python으로 ZK 증명과 L1↔L2 브릿지를 구축하는 완전 가이드**
+**Python으로 ZK 증명, L1↔L2 브릿지, 애플리케이션 특화 ZK 롤업을 구축하는 완전 가이드**
 
 ---
 
@@ -34,6 +34,13 @@
   - [4.5 Escape Hatch — 최후의 수단](#45-escape-hatch--최후의-수단)
   - [4.6 전체 코드](#46-전체-코드)
   - [4.7 Proof-Based Relay](#47-proof-based-relay)
+- [Part 5: 애플리케이션 특화 ZK 롤업](#part-5-애플리케이션-특화-zk-롤업)
+  - [5.1 롤업이란?](#51-롤업이란)
+  - [5.2 Counter 롤업 — 가장 간단한 예제](#52-counter-롤업--가장-간단한-예제)
+  - [5.3 잔액 이체 롤업](#53-잔액-이체-롤업)
+  - [5.4 플러거블 컴포넌트](#54-플러거블-컴포넌트)
+  - [5.5 L2 CLI로 프로젝트 스캐폴딩](#55-l2-cli로-프로젝트-스캐폴딩)
+  - [5.6 전체 코드](#56-전체-코드)
 
 ---
 
@@ -1214,3 +1221,394 @@ assert env.l2_store.get_balance(ALICE) == 0
 ```bash
 python examples/bridge_relay_modes.py
 ```
+
+---
+
+## Part 5: 애플리케이션 특화 ZK 롤업
+
+> "상태 전이 함수를 Python 함수로 작성하면, 시퀀싱, 배치, Groth16 증명, L1 검증을 프레임워크가 처리한다."
+
+### 5.1 롤업이란?
+
+**롤업**은 트랜잭션을 L2에서 실행하고, 그 결과를 L1에 증명하는 스케일링 기법입니다. py-ethclient의 L2 롤업 프레임워크는 **애플리케이션 특화** 접근법을 사용합니다 — EVM 블록을 재실행하는 대신, 개발자가 정의한 **State Transition Function(STF)**을 실행합니다.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  User Tx → Sequencer → STF 실행 → Batch 봉인                │
+│                                       ↓                      │
+│            L1 검증 ← Groth16 Proof ← DA 저장                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+핵심 개념:
+
+| 개념 | 설명 |
+|------|------|
+| **STF** | `(state, tx) → output` — 롤업의 비즈니스 로직. 일반 Python 함수 |
+| **Sequencer** | 트랜잭션을 수집하고, 논스를 검증하고, STF를 실행하고, 배치를 조립 |
+| **Batch** | 트랜잭션 모음 + old/new 상태 루트 + DA commitment |
+| **Groth16 Prover** | 상태 전이(old_root → new_root)에 대한 ZK 증명 생성 |
+| **L1 Backend** | 증명을 검증하고 새 상태 루트를 기록 |
+
+4개 컴포넌트 모두 **플러거블 인터페이스**입니다 — 기본 구현이 제공되며, 필요하면 교체할 수 있습니다.
+
+### 5.2 Counter 롤업 — 가장 간단한 예제
+
+카운터를 증가시키는 가장 단순한 롤업입니다:
+
+```python
+from ethclient.l2 import Rollup, L2Tx, L2TxType
+
+# ━━━ 1. State Transition Function 정의 ━━━
+# 일반 Python 함수입니다!
+def counter_stf(state, tx):
+    """카운터를 증가시키는 STF"""
+    count = state.get("count", 0)
+    if tx.data.get("action") == "increment":
+        state["count"] = count + 1
+        return {"new_count": count + 1}
+
+# ━━━ 2. Rollup 생성 ━━━
+rollup = Rollup(stf=counter_stf)
+
+# ━━━ 3. Trusted Setup ━━━
+# Groth16 circuit 빌드 + trusted setup + L1 verifier 배포
+rollup.setup()
+print(f"Setup 완료: {rollup.is_setup}")
+
+# ━━━ 4. 트랜잭션 제출 ━━━
+tx = L2Tx(
+    sender=b"\x01" * 20,
+    nonce=0,
+    data={"action": "increment"},
+    tx_type=L2TxType.CALL,
+)
+rollup.submit_tx(tx)
+print(f"상태: count = {rollup.state.get('count', 0)}")
+# → count = 1 (STF가 즉시 실행됨)
+
+# ━━━ 5. 배치 생성 ━━━
+batch = rollup.produce_batch()
+print(f"Batch #{batch.number}: {len(batch.transactions)} txs")
+print(f"  old_root: {batch.old_state_root.hex()[:16]}...")
+print(f"  new_root: {batch.new_state_root.hex()[:16]}...")
+
+# ━━━ 6. 증명 + L1 제출 ━━━
+receipt = rollup.prove_and_submit(batch)
+print(f"L1 검증: {'PASS' if receipt.verified else 'FAIL'}")
+print(f"State root: {receipt.state_root.hex()[:16]}...")
+assert receipt.verified
+```
+
+`Rollup`이 내부적으로 하는 일:
+
+1. `counter_stf` 함수를 `PythonRuntime`으로 래핑
+2. `Sequencer`가 트랜잭션을 수신, 논스 체크 후 STF 실행
+3. `produce_batch()`가 `Sequencer.force_seal()` 호출 → Batch 생성
+4. `prove_and_submit()`가 Groth16 proof 생성 → L1 검증
+
+### 5.3 잔액 이체 롤업
+
+좀 더 현실적인 예제 — 토큰 발행(mint)과 이체(transfer)를 지원하는 롤업:
+
+```python
+from ethclient.l2 import Rollup, L2Tx, L2TxType
+
+def balance_stf(state, tx):
+    """잔액 mint + transfer STF"""
+    action = tx.data.get("action")
+
+    if action == "mint":
+        addr = tx.data["to"]
+        amount = tx.data["amount"]
+        state[addr] = state.get(addr, 0) + amount
+        return {"minted": amount, "to": addr}
+
+    elif action == "transfer":
+        src = tx.data["from"]
+        dst = tx.data["to"]
+        amount = tx.data["amount"]
+
+        # 잔액 부족 시 예외 → STF가 실패로 처리, 상태 롤백
+        if state.get(src, 0) < amount:
+            raise ValueError(f"insufficient balance: {state.get(src, 0)} < {amount}")
+
+        state[src] -= amount
+        state[dst] = state.get(dst, 0) + amount
+        return {"transferred": amount, "from": src, "to": dst}
+
+# Rollup 생성 + setup
+rollup = Rollup(stf=balance_stf)
+rollup.setup()
+
+# Alice에게 1000 토큰 발행
+mint_tx = L2Tx(
+    sender=b"\x00" * 20,  # minter
+    nonce=0,
+    data={"action": "mint", "to": "alice", "amount": 1000},
+    tx_type=L2TxType.CALL,
+)
+rollup.submit_tx(mint_tx)
+print(f"Alice 잔액: {rollup.state.get('alice', 0)}")  # 1000
+
+# Alice → Bob 300 이체
+transfer_tx = L2Tx(
+    sender=b"\x01" * 20,
+    nonce=0,
+    data={"action": "transfer", "from": "alice", "to": "bob", "amount": 300},
+    tx_type=L2TxType.CALL,
+)
+rollup.submit_tx(transfer_tx)
+print(f"Alice: {rollup.state.get('alice', 0)}, Bob: {rollup.state.get('bob', 0)}")
+# → Alice: 700, Bob: 300
+
+# 잔액 부족 이체 시도 → STF 실패, 상태 롤백
+bad_tx = L2Tx(
+    sender=b"\x01" * 20,
+    nonce=1,
+    data={"action": "transfer", "from": "bob", "to": "alice", "amount": 9999},
+    tx_type=L2TxType.CALL,
+)
+rollup.submit_tx(bad_tx)
+# Bob 잔액은 여전히 300 (롤백됨)
+print(f"실패 후 Bob: {rollup.state.get('bob', 0)}")  # 300
+
+# 배치 생성 + 증명 + L1 검증
+batch = rollup.produce_batch()
+receipt = rollup.prove_and_submit(batch)
+assert receipt.verified
+print(f"\nL1 검증 성공! Batch #{batch.number}")
+```
+
+**STF가 예외를 발생시키면** Sequencer가 자동으로 상태를 롤백합니다:
+- `state_store.snapshot()` → STF 실행 → 예외 발생 → `state_store.rollback()`
+- 실패한 트랜잭션은 배치에 포함되지만, 상태에는 영향 없음
+
+### 5.4 플러거블 컴포넌트
+
+4개 인터페이스는 모두 교체 가능합니다:
+
+```python
+from ethclient.l2 import Rollup, L2Config
+from ethclient.l2.interfaces import (
+    StateTransitionFunction, DAProvider, L1Backend, ProofBackend,
+)
+
+# 커스텀 DA Provider 예시
+class MyDAProvider(DAProvider):
+    def store_batch(self, batch_number: int, data: bytes) -> bytes:
+        # S3, IPFS, EigenDA 등에 저장
+        ...
+        return commitment
+
+    def retrieve_batch(self, batch_number: int):
+        ...
+
+    def verify_commitment(self, batch_number: int, commitment: bytes) -> bool:
+        ...
+
+# 커스텀 설정
+config = L2Config(
+    name="my-dex-rollup",
+    chain_id=42170,
+    max_txs_per_batch=128,    # 배치당 최대 트랜잭션
+    batch_timeout=30,          # 초
+    rpc_port=9545,
+)
+
+# 조립
+rollup = Rollup(
+    stf=my_stf_function,
+    da=MyDAProvider(),
+    config=config,
+    # l1, prover는 기본값 사용 (InMemoryL1Backend, Groth16ProofBackend)
+)
+```
+
+기본 제공 구현:
+
+| 인터페이스 | 기본 구현 | 설명 |
+|---|---|---|
+| `StateTransitionFunction` | `PythonRuntime` | callable을 STF로 래핑 |
+| `DAProvider` | `LocalDAProvider` | 인메모리 dict, keccak256 commitment |
+| `ProofBackend` | `Groth16ProofBackend` | BN128 Groth16, 128-bit 필드 절삭 |
+| `L1Backend` | `InMemoryL1Backend` | groth16.verify로 직접 검증 |
+
+### 5.5 L2 CLI로 프로젝트 스캐폴딩
+
+새 롤업 프로젝트를 CLI로 빠르게 생성할 수 있습니다:
+
+```bash
+ethclient l2 init --name my-rollup
+```
+
+생성되는 파일:
+
+**l2.json** — 롤업 설정:
+```json
+{
+  "name": "my-rollup",
+  "chain_id": 42170,
+  "max_txs_per_batch": 64,
+  "batch_timeout": 10,
+  "rpc_port": 9545
+}
+```
+
+**stf.py** — State Transition Function 템플릿:
+```python
+def apply(state, tx):
+    """State Transition Function — 이 함수를 수정하세요."""
+    action = tx.data.get("action")
+    if action == "set":
+        key = tx.data.get("key")
+        value = tx.data.get("value")
+        if key is not None:
+            state[key] = value
+            return {"key": key, "value": value}
+    return None
+```
+
+이 파일을 수정해서 원하는 롤업 로직을 구현하면 됩니다.
+
+### 5.6 전체 코드
+
+아래를 `rollup_tutorial.py`로 저장하고 실행하세요:
+
+```python
+"""Application-Specific ZK Rollup Tutorial
+
+Counter STF → 멀티 배치 → 잔액 이체 → 실패 롤백 → L1 검증
+"""
+
+import time
+from ethclient.l2 import Rollup, L2Tx, L2TxType
+
+print("=" * 60)
+print("  Application-Specific ZK Rollup Tutorial")
+print("=" * 60)
+
+# ━━━ 1. Counter STF ━━━
+print("\n[1] Counter Rollup")
+
+def counter_stf(state, tx):
+    count = state.get("count", 0)
+    if tx.data.get("action") == "increment":
+        state["count"] = count + 1
+        return {"new_count": count + 1}
+
+rollup = Rollup(stf=counter_stf)
+
+print("    Setting up (trusted setup + verifier deploy)...")
+t0 = time.time()
+rollup.setup()
+print(f"    Setup: {time.time() - t0:.1f}s")
+
+# 3번 증가
+for i in range(3):
+    tx = L2Tx(sender=b"\x01" * 20, nonce=i,
+              data={"action": "increment"}, tx_type=L2TxType.CALL)
+    rollup.submit_tx(tx)
+
+assert rollup.state["count"] == 3
+print(f"    count = {rollup.state['count']} (3번 increment)")
+
+# 배치 + 증명
+batch = rollup.produce_batch()
+print(f"    Batch #{batch.number}: {len(batch.transactions)} txs")
+
+t0 = time.time()
+receipt = rollup.prove_and_submit(batch)
+print(f"    Prove + L1 verify: {time.time() - t0:.1f}s")
+assert receipt.verified
+print(f"    L1 verified: YES")
+
+# ━━━ 2. 멀티 배치 ━━━
+print("\n[2] Multi-batch (chained state roots)")
+
+for i in range(3, 6):
+    tx = L2Tx(sender=b"\x01" * 20, nonce=i,
+              data={"action": "increment"}, tx_type=L2TxType.CALL)
+    rollup.submit_tx(tx)
+
+batch2 = rollup.produce_batch()
+receipt2 = rollup.prove_and_submit(batch2)
+assert receipt2.verified
+assert rollup.state["count"] == 6
+print(f"    count = {rollup.state['count']} (batch #0 → #1)")
+print(f"    Batch #{batch2.number} L1 verified: YES")
+
+# ━━━ 3. 잔액 이체 ━━━
+print("\n[3] Balance Transfer Rollup")
+
+def balance_stf(state, tx):
+    action = tx.data.get("action")
+    if action == "mint":
+        addr = tx.data["to"]
+        amount = tx.data["amount"]
+        state[addr] = state.get(addr, 0) + amount
+        return {"minted": amount}
+    elif action == "transfer":
+        src, dst = tx.data["from"], tx.data["to"]
+        amount = tx.data["amount"]
+        if state.get(src, 0) < amount:
+            raise ValueError("insufficient balance")
+        state[src] -= amount
+        state[dst] = state.get(dst, 0) + amount
+        return {"transferred": amount}
+
+rollup2 = Rollup(stf=balance_stf)
+rollup2.setup()
+
+# Mint 1000 to Alice
+rollup2.submit_tx(L2Tx(
+    sender=b"\x00" * 20, nonce=0,
+    data={"action": "mint", "to": "alice", "amount": 1000},
+    tx_type=L2TxType.CALL,
+))
+print(f"    Mint: alice = {rollup2.state.get('alice', 0)}")
+
+# Transfer 300 from Alice to Bob
+rollup2.submit_tx(L2Tx(
+    sender=b"\x01" * 20, nonce=0,
+    data={"action": "transfer", "from": "alice", "to": "bob", "amount": 300},
+    tx_type=L2TxType.CALL,
+))
+print(f"    Transfer: alice = {rollup2.state.get('alice', 0)}, bob = {rollup2.state.get('bob', 0)}")
+
+# Insufficient balance → rollback
+rollup2.submit_tx(L2Tx(
+    sender=b"\x01" * 20, nonce=1,
+    data={"action": "transfer", "from": "bob", "to": "alice", "amount": 9999},
+    tx_type=L2TxType.CALL,
+))
+assert rollup2.state.get("bob", 0) == 300  # unchanged!
+print(f"    Failed transfer: bob still = {rollup2.state.get('bob', 0)} (rollback)")
+
+# Batch + prove
+batch3 = rollup2.produce_batch()
+receipt3 = rollup2.prove_and_submit(batch3)
+assert receipt3.verified
+print(f"    L1 verified: YES")
+
+# ━━━ 4. Chain Info ━━━
+print("\n[4] Chain Info")
+info = rollup2.chain_info()
+print(f"    name:     {info['name']}")
+print(f"    chain_id: {info['chain_id']}")
+print(f"    batches:  {info['sealed_batches']}")
+
+print(f"\n{'=' * 60}")
+print(f"  All checks passed!")
+print(f"{'=' * 60}")
+```
+
+```bash
+python rollup_tutorial.py
+```
+
+> **다음 단계:**
+> - `StateTransitionFunction`을 직접 구현해 보세요 (ABC 상속)
+> - `DAProvider`를 파일 시스템이나 외부 저장소로 교체해 보세요
+> - `l2_*` RPC 메서드를 사용해 HTTP로 롤업과 상호작용해 보세요
+> - [Part 1](#part-1-hello-world-zk)의 ZK 툴킷과 결합하여 커스텀 circuit을 사용해 보세요

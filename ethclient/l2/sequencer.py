@@ -82,7 +82,6 @@ class Sequencer:
             if result.success:
                 self._state_store.commit()
                 self._current_batch_txs.append(tx)
-                self._nonces[tx.sender] = tx.nonce + 1
             else:
                 self._state_store.rollback(snap)
 

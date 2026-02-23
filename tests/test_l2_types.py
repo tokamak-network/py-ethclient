@@ -53,6 +53,20 @@ class TestL2Tx:
         assert L2TxType.WITHDRAWAL == 2
 
 
+class TestL2TxValidation:
+    def test_sender_wrong_length_raises(self):
+        with pytest.raises(ValueError, match="sender must be 20 bytes"):
+            L2Tx(sender=b"\x01" * 10, nonce=0, data={})
+
+    def test_negative_nonce_raises(self):
+        with pytest.raises(ValueError, match="nonce must be non-negative"):
+            L2Tx(sender=b"\x01" * 20, nonce=-1, data={})
+
+    def test_negative_value_raises(self):
+        with pytest.raises(ValueError, match="value must be non-negative"):
+            L2Tx(sender=b"\x01" * 20, nonce=0, data={}, value=-100)
+
+
 class TestL2State:
     def test_basic_state(self):
         state = L2State({"a": 1, "b": 2})

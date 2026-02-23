@@ -159,6 +159,30 @@ class TestSequencer:
         assert "nonce too high" in error
         assert seq.pending_tx_count == 0
 
+    def test_multi_sender_independent_nonces(self):
+        stf = PythonRuntime(_counter_stf)
+        store = L2StateStore()
+        seq = Sequencer(stf=stf, state_store=store)
+
+        sender_a = b"\x01" * 20
+        sender_b = b"\x02" * 20
+
+        # Both senders start at nonce 0
+        assert seq.submit_tx(L2Tx(sender=sender_a, nonce=0, data={})) is None
+        assert seq.submit_tx(L2Tx(sender=sender_b, nonce=0, data={})) is None
+
+        seq.tick()
+        seq.force_seal()
+
+        # Both advance independently to nonce 1
+        assert seq.submit_tx(L2Tx(sender=sender_a, nonce=1, data={})) is None
+        assert seq.submit_tx(L2Tx(sender=sender_b, nonce=1, data={})) is None
+
+        # Cross-contamination: sender_a nonce 0 should fail
+        error = seq.submit_tx(L2Tx(sender=sender_a, nonce=0, data={}))
+        assert error is not None
+        assert "nonce too low" in error
+
     def test_validate_tx_rejection(self):
         def validator(state, tx):
             if tx.value > 100:

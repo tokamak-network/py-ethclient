@@ -8,7 +8,7 @@ A Python L2 development platform for building application-specific ZK rollups. D
 # Install
 pip install -e ".[dev]"
 
-# Unit tests (802 tests)
+# Unit tests (815 tests)
 pytest
 
 # Test a specific module
@@ -16,7 +16,7 @@ pytest tests/test_rlp.py
 pytest tests/test_l2_sequencer.py -v
 
 # Run the L2 rollup
-ethclient l2 start --stf my_stf.py
+ethclient l2 start --config l2.json
 
 # Run the L1 node
 ethclient --network mainnet --port 30303
@@ -153,7 +153,7 @@ py-ethclient/                    # ~29,700 LOC (19,789 source + 9,929 test)
 │       ├── engine_api.py        # Engine API V1/V2/V3 handlers
 │       ├── engine_types.py      # Engine API request/response types
 │       └── zk_api.py            # zk_ namespace (verifyGroth16, deployVerifier, verifyOnChain)
-├── tests/                       # pytest unit tests (802 tests)
+├── tests/                       # pytest unit tests (815 tests)
 │   ├── test_l2_types.py         # L2 types, state, serialization
 │   ├── test_l2_sequencer.py     # Sequencer, mempool, batch assembly
 │   ├── test_l2_prover.py        # Groth16 proof backend
@@ -251,7 +251,7 @@ User Python STF → Rollup.submit_tx() → Sequencer (mempool + ordering)
 ### Unit Tests (offline)
 
 ```bash
-pytest                           # All tests (802)
+pytest                           # All tests (815)
 pytest tests/test_l2_*.py        # L2 rollup tests (72)
 pytest tests/test_zk_*.py        # ZK toolkit tests (57)
 pytest tests/test_bridge_*.py    # Bridge tests (63)
@@ -430,10 +430,10 @@ IDLE → ACCOUNT_DOWNLOAD → STORAGE_DOWNLOAD → BYTECODE_DOWNLOAD → TRIE_HE
 ### L2 Commands
 
 ```bash
-ethclient l2 init --name my-rollup --stf stf.py   # Scaffold L2 project
-ethclient l2 start --stf stf.py                    # Start sequencer
-ethclient l2 prove --batch-id 0                     # Generate Groth16 proof
-ethclient l2 submit --batch-id 0                    # Submit to L1
+ethclient l2 init --name my-rollup                 # Scaffold L2 project
+ethclient l2 start --config l2.json                 # Start sequencer
+ethclient l2 prove --config l2.json                 # Generate Groth16 proof
+ethclient l2 submit --config l2.json                # Submit to L1
 ```
 
 ### L1 Node Commands

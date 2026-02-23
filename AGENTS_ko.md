@@ -8,7 +8,7 @@
 # 설치
 pip install -e ".[dev]"
 
-# 단위 테스트 (802개)
+# 단위 테스트 (815개)
 pytest
 
 # 특정 모듈 테스트
@@ -16,7 +16,7 @@ pytest tests/test_rlp.py
 pytest tests/test_l2_sequencer.py -v
 
 # L2 롤업 실행
-ethclient l2 start --stf my_stf.py
+ethclient l2 start --config l2.json
 
 # L1 노드 실행
 ethclient --network mainnet --port 30303
@@ -153,7 +153,7 @@ py-ethclient/                    # ~29,700 LOC (소스 19,789 + 테스트 9,929)
 │       ├── engine_api.py        # Engine API V1/V2/V3 핸들러
 │       ├── engine_types.py      # Engine API 요청/응답 타입
 │       └── zk_api.py            # zk_ 네임스페이스 (verifyGroth16, deployVerifier, verifyOnChain)
-├── tests/                       # pytest 단위 테스트 (802개)
+├── tests/                       # pytest 단위 테스트 (815개)
 │   ├── test_l2_types.py         # L2 타입, 상태, 직렬화
 │   ├── test_l2_sequencer.py     # 시퀀서, 멤풀, 배치 조립
 │   ├── test_l2_prover.py        # Groth16 증명 백엔드
@@ -251,7 +251,7 @@ main.py                         ↓
 ### 단위 테스트 (오프라인)
 
 ```bash
-pytest                           # 전체 (802개)
+pytest                           # 전체 (815개)
 pytest tests/test_l2_*.py        # L2 롤업 테스트 (72개)
 pytest tests/test_zk_*.py        # ZK 툴킷 테스트 (57개)
 pytest tests/test_bridge_*.py    # 브릿지 테스트 (63개)
@@ -431,10 +431,10 @@ IDLE → ACCOUNT_DOWNLOAD → STORAGE_DOWNLOAD → BYTECODE_DOWNLOAD → TRIE_HE
 ### L2 커맨드
 
 ```bash
-ethclient l2 init --name my-rollup --stf stf.py   # L2 프로젝트 스캐폴딩
-ethclient l2 start --stf stf.py                    # 시퀀서 시작
-ethclient l2 prove --batch-id 0                     # Groth16 증명 생성
-ethclient l2 submit --batch-id 0                    # L1에 제출
+ethclient l2 init --name my-rollup                 # L2 프로젝트 스캐폴딩
+ethclient l2 start --config l2.json                 # 시퀀서 시작
+ethclient l2 prove --config l2.json                 # Groth16 증명 생성
+ethclient l2 submit --config l2.json                # L1에 제출
 ```
 
 ### L1 노드 커맨드

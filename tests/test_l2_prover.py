@@ -124,6 +124,65 @@ class TestGroth16ProofBackend:
         valid = prover.verify(proof, old_root, wrong_root, tx_commitment)
         assert not valid
 
+    def test_wrong_old_root_rejected(self):
+        prover = Groth16ProofBackend()
+        stf = PythonRuntime(_noop_stf)
+        prover.setup(stf, max_txs_per_batch=4)
+
+        old_root = b"\x11" * 32
+        new_root = b"\x22" * 32
+        txs = [L2Tx(sender=b"\x01" * 20, nonce=0, data={"v": "a"})]
+        tx_commitment = b"\x33" * 32
+
+        proof = prover.prove(old_root, new_root, txs, tx_commitment)
+
+        # Tamper with the old root
+        wrong_old = b"\x88" * 32
+        valid = prover.verify(proof, wrong_old, new_root, tx_commitment)
+        assert not valid
+
+    def test_wrong_tx_commitment_rejected(self):
+        prover = Groth16ProofBackend()
+        stf = PythonRuntime(_noop_stf)
+        prover.setup(stf, max_txs_per_batch=4)
+
+        old_root = b"\x11" * 32
+        new_root = b"\x22" * 32
+        txs = [L2Tx(sender=b"\x01" * 20, nonce=0, data={"v": "a"})]
+        tx_commitment = b"\x33" * 32
+
+        proof = prover.prove(old_root, new_root, txs, tx_commitment)
+
+        # Tamper with the tx commitment
+        wrong_commit = b"\x77" * 32
+        valid = prover.verify(proof, old_root, new_root, wrong_commit)
+        assert not valid
+
+    def test_product_zero_raises(self):
+        """If the accumulated product is zero, prove() should raise ValueError."""
+        from unittest.mock import patch
+
+        prover = Groth16ProofBackend()
+        stf = PythonRuntime(_noop_stf)
+        prover.setup(stf, max_txs_per_batch=4)
+
+        old_root = b"\x11" * 32
+        new_root = b"\x22" * 32
+        txs = [L2Tx(sender=b"\x01" * 20, nonce=0, data={"v": "a"})]
+        tx_commitment = b"\x33" * 32
+
+        # Patch _to_field to return 0 for the old_root, making product start at 0
+        original_to_field = _to_field
+
+        def zero_old_root(data):
+            if data == old_root:
+                return 0
+            return original_to_field(data)
+
+        with patch("ethclient.l2.prover._to_field", side_effect=zero_old_root):
+            with pytest.raises(ValueError, match="accumulated product is zero"):
+                prover.prove(old_root, new_root, txs, tx_commitment)
+
     def test_verification_key_accessible_after_setup(self):
         prover = Groth16ProofBackend()
         stf = PythonRuntime(_noop_stf)

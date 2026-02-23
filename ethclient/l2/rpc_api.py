@@ -25,7 +25,13 @@ def register_l2_api(rpc: RPCServer, rollup: Rollup) -> None:
             return {"error": f"invalid numeric field: {e}"}
 
         data = tx_data.get("data", {})
-        tx_type = L2TxType(tx_data.get("txType", 0))
+        if not isinstance(data, dict):
+            return {"error": "data must be a dict"}
+
+        try:
+            tx_type = L2TxType(tx_data.get("txType", 0))
+        except ValueError as e:
+            return {"error": f"invalid txType: {e}"}
 
         tx = L2Tx(
             sender=sender,

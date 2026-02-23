@@ -104,10 +104,12 @@ class Groth16ProofBackend(ProofBackend):
 
         # Balance factor: makes old_root * prod(all) = new_root * tx_commitment
         target = _field(new_root_int * tx_commit_int)
-        if product != 0:
-            balance = _field(target * pow(product, FIELD_MODULUS - 2, FIELD_MODULUS))
-        else:
-            balance = 0
+        if product == 0:
+            raise ValueError(
+                "Cannot construct proof: accumulated product is zero in the field. "
+                "This means old_state_root or a tx hash maps to zero mod p."
+            )
+        balance = _field(target * pow(product, FIELD_MODULUS - 2, FIELD_MODULUS))
         private[f"tx_{len(transactions)}"] = balance
 
         # Remaining slots: 1 (multiplication identity)

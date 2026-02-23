@@ -153,6 +153,51 @@ class TestFullCycleBalanceTransfer:
         assert rollup.state.get("alice") == 100
 
 
+class TestStatePersistence:
+    """Verify state consistency across multiple batches."""
+
+    def test_state_persists_across_batches(self):
+        rollup = Rollup(stf=balance_stf)
+        rollup.setup()
+
+        sender = b"\x01" * 20
+
+        # Batch 0: mint 500 to alice
+        rollup.submit_tx(L2Tx(
+            sender=sender, nonce=0,
+            data={"op": "mint", "to": "alice", "amount": "500"},
+        ))
+        batch0 = rollup.produce_batch()
+        receipt0 = rollup.prove_and_submit(batch0)
+        assert receipt0.verified
+
+        # Batch 1: mint 300 to bob
+        rollup.submit_tx(L2Tx(
+            sender=sender, nonce=1,
+            data={"op": "mint", "to": "bob", "amount": "300"},
+        ))
+        batch1 = rollup.produce_batch()
+        receipt1 = rollup.prove_and_submit(batch1)
+        assert receipt1.verified
+
+        # Batch 2: transfer 100 from alice to bob
+        rollup.submit_tx(L2Tx(
+            sender=sender, nonce=2,
+            data={"op": "transfer", "from": "alice", "to": "bob", "amount": "100"},
+        ))
+        batch2 = rollup.produce_batch()
+        receipt2 = rollup.prove_and_submit(batch2)
+        assert receipt2.verified
+
+        # Final state: alice=400, bob=400
+        assert rollup.state["alice"] == 400
+        assert rollup.state["bob"] == 400
+
+        # Chain continuity
+        assert batch1.old_state_root == batch0.new_state_root
+        assert batch2.old_state_root == batch1.new_state_root
+
+
 class TestRollupWithDefaults:
     """Test that Rollup works with all defaults (no STF provided)."""
 

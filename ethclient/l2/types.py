@@ -30,6 +30,12 @@ class L2Tx:
     timestamp: int = 0
 
     def __post_init__(self) -> None:
+        if len(self.sender) != 20:
+            raise ValueError(f"sender must be 20 bytes, got {len(self.sender)}")
+        if self.nonce < 0:
+            raise ValueError(f"nonce must be non-negative, got {self.nonce}")
+        if self.value < 0:
+            raise ValueError(f"value must be non-negative, got {self.value}")
         if self.timestamp == 0:
             self.timestamp = int(time.time())
 

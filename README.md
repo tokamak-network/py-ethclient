@@ -4,8 +4,8 @@
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-802%20passing-brightgreen)](#testing)
-[![LOC](https://img.shields.io/badge/LOC-19%2C789-blue)](#project-stats)
+[![Tests](https://img.shields.io/badge/tests-815%20passing-brightgreen)](#testing)
+[![LOC](https://img.shields.io/badge/LOC-19%2C804-blue)](#project-stats)
 
 py-ethclient is a Python L2 development platform for building **application-specific ZK rollups**. Define your state transition function as a plain Python function, and py-ethclient handles the rest — sequencing, batching, Groth16 proving, and L1 verification.
 
@@ -49,7 +49,7 @@ All core protocol logic — RLP encoding, Merkle Patricia Trie, EVM execution, R
 - **Engine API V1/V2/V3** — `forkchoiceUpdated`, `getPayload`, `newPayload` with JWT authentication for consensus layer integration
 - **Persistent Storage** — LMDB-backed disk backend with hybrid overlay pattern for atomic state commits
 - **Multi-Network** — Mainnet, Sepolia, and Holesky with per-network genesis and fork configurations
-- **802 Tests** — Comprehensive test suite covering all protocol layers from RLP to ZK proving to L2 rollup to end-to-end integration
+- **815 Tests** — Comprehensive test suite covering all protocol layers from RLP to ZK proving to L2 rollup to end-to-end integration
 - **Docker Support** — Ready-to-use Docker Compose setup for quick deployment
 
 ## Why py-ethclient?
@@ -570,7 +570,7 @@ curl -X POST http://localhost:8545 \
 ## Testing
 
 ```bash
-# Run all tests (802 tests)
+# Run all tests (815 tests)
 pytest
 
 # Run L2 rollup tests
@@ -581,6 +581,7 @@ pytest tests/test_l2_sequencer.py        # Sequencer, mempool, batch assembly
 pytest tests/test_l2_prover.py           # Groth16 proof backend
 pytest tests/test_l2_l1.py               # L1 backend, proof verification
 pytest tests/test_l2_rpc.py              # L2 RPC API (l2_* methods)
+pytest tests/test_l2_state.py            # State store boundary checks, determinism
 pytest tests/test_l2_integration.py      # Full cycle: STF → batch → prove → L1 verify
 
 # Run L1 client tests
@@ -796,14 +797,15 @@ class L2Hook(ExecutionHook):
 
 | Test File | LOC | Tests | Covers |
 |---|---:|---:|---|
-| `test_l2_types.py` | 139 | 17 | L2 tx types, encoding/decoding, state snapshots |
+| `test_l2_types.py` | 153 | 20 | L2 tx types, encoding/decoding, state snapshots, input validation |
 | `test_l2_da.py` | 56 | 8 | Data availability provider |
 | `test_l2_runtime.py` | 99 | 9 | Python STF runtime wrapper |
-| `test_l2_sequencer.py` | 174 | 11 | Sequencer, mempool, batch assembly, auto-seal, nonce gap |
-| `test_l2_prover.py` | 134 | 10 | Groth16 proof backend, field truncation |
+| `test_l2_sequencer.py` | 198 | 12 | Sequencer, mempool, batch assembly, auto-seal, nonce gap, multi-sender |
+| `test_l2_prover.py` | 193 | 17 | Groth16 proof backend, field truncation, tampering rejection |
 | `test_l2_l1.py` | 86 | 6 | L1 backend, proof verification, batch tracking |
-| `test_l2_rpc.py` | 119 | 12 | L2 RPC API (l2_* methods) |
-| `test_l2_integration.py` | 229 | 12 | Full cycle: counter STF, balance transfer, multi-batch |
+| `test_l2_rpc.py` | 133 | 14 | L2 RPC API (l2_* methods), input validation |
+| `test_l2_state.py` | 32 | 3 | State store boundary checks, state root determinism |
+| `test_l2_integration.py` | 274 | 13 | Full cycle: counter STF, balance transfer, multi-batch, state persistence |
 | `test_rlp.py` | 206 | 56 | RLP encoding/decoding |
 | `test_trie.py` | 213 | 26 | Merkle Patricia Trie |
 | `test_trie_proofs.py` | 254 | 23 | Trie proof generation/verification, range proofs |
@@ -826,7 +828,7 @@ class L2Hook(ExecutionHook):
 | `test_integration.py` | 272 | 14 | Cross-module integration |
 | `test_disk_backend.py` | 543 | 31 | LMDB persistence, flush, overlay, state root consistency |
 | `integration/` | 68 | 6 | Archive mode, chaindata, Fusaka compliance |
-| **Total** | **9,929** | **802** | |
+| **Total** | **10,117** | **815** | |
 
 ## FAQ
 

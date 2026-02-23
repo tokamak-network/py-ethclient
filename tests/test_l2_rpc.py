@@ -109,6 +109,20 @@ class TestL2RPC:
         assert "error" in result
         assert "not found" in result["error"]
 
+    def test_send_transaction_invalid_tx_type(self):
+        rpc, rollup = _make_rpc_rollup()
+        handler = rpc._methods["l2_sendTransaction"]
+        result = handler({"sender": "0x" + "01" * 20, "nonce": 0, "data": {}, "txType": 99})
+        assert "error" in result
+        assert "invalid txType" in result["error"]
+
+    def test_send_transaction_non_dict_data(self):
+        rpc, rollup = _make_rpc_rollup()
+        handler = rpc._methods["l2_sendTransaction"]
+        result = handler({"sender": "0x" + "01" * 20, "nonce": 0, "data": "not-a-dict"})
+        assert "error" in result
+        assert "data must be a dict" in result["error"]
+
     def test_chain_info(self):
         rpc, rollup = _make_rpc_rollup()
         handler = rpc._methods["l2_chainInfo"]

@@ -2,7 +2,7 @@
 
 > A Python L2 development platform for building application-specific ZK rollups. Define your State Transition Function as a plain Python function — the framework handles sequencing, batching, Groth16 proving, and L1 verification. Built on a fully independent Ethereum L1 execution client with EVM, RLPx, eth/68, snap/1, full+snap sync, Engine API, L1↔L2 bridge, and Groth16 ZK toolkit — all in pure Python.
 
-py-ethclient is the only Ethereum execution client written in Python. It is a fully independent implementation inspired by ethrex (Rust), connecting directly to the Ethereum peer-to-peer network via devp2p/RLPx. The project contains 19,789 lines of source code across 75 files with 802 tests covering all protocol layers.
+py-ethclient is the only Ethereum execution client written in Python. It is a fully independent implementation inspired by ethrex (Rust), connecting directly to the Ethereum peer-to-peer network via devp2p/RLPx. The project contains 19,804 lines of source code across 75 files with 815 tests covering all protocol layers.
 
 ## Why py-ethclient?
 

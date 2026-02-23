@@ -45,6 +45,8 @@ class L2StateStore:
             return
         if snapshot_id is None:
             snapshot_id = len(self._snapshots) - 1
+        if snapshot_id < 0 or snapshot_id >= len(self._snapshots):
+            raise IndexError(f"Invalid snapshot_id {snapshot_id}, have {len(self._snapshots)} snapshots")
         self._state = self._snapshots[snapshot_id]
         self._snapshots = self._snapshots[:snapshot_id]
 

@@ -391,13 +391,8 @@ def prove(
             proof_b_g1 = _g1_add(proof_b_g1, _g1_mul(pk.b_g1_query[j], witness[j]))
     proof_b_g1 = _g1_add(proof_b_g1, _g1_mul(pk.delta_g1.to_py_ecc(), s))
 
-    # ── Compute H(tau) for the quotient polynomial ──
+    # ── Compute h(x) = (A(x)*B(x) - C(x)) / t(x) ──
     u, v, w_poly, domain = _r1cs_to_qap(r1cs)
-    h_tau = _compute_h_evals(r1cs, witness, u, v, w_poly, domain, 0)  # placeholder
-
-    # Actually compute h as polynomial coefficients via evaluation
-    # h(x) = (A(x)*B(x) - C(x)) / t(x) — we need h_query commitments
-    # Use h_query points with the right coefficients
     h_coeffs = _compute_h_coefficients(r1cs, witness, u, v, w_poly, domain)
 
     h_commitment = Z1

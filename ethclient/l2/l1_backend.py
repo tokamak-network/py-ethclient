@@ -7,7 +7,7 @@ from typing import Optional
 
 from ethclient.common.crypto import keccak256
 from ethclient.l2.interfaces import L1Backend
-from ethclient.l2.prover import _truncate_to_field
+from ethclient.l2.prover import _to_field
 from ethclient.zk import groth16
 from ethclient.zk.types import Proof, VerificationKey
 
@@ -42,9 +42,9 @@ class InMemoryL1Backend(L1Backend):
         if self._vk is None:
             raise RuntimeError("Verifier not deployed. Call deploy_verifier() first.")
 
-        old_root_int = _truncate_to_field(old_root)
-        new_root_int = _truncate_to_field(new_root)
-        tx_commit_int = _truncate_to_field(tx_commitment)
+        old_root_int = _to_field(old_root)
+        new_root_int = _to_field(new_root)
+        tx_commit_int = _to_field(tx_commitment)
 
         public_inputs = [old_root_int, new_root_int, tx_commit_int]
         valid = groth16.verify(self._vk, proof, public_inputs)

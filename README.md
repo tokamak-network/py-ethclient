@@ -4,8 +4,8 @@
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-785%20passing-brightgreen)](#testing)
-[![LOC](https://img.shields.io/badge/LOC-19%2C655-blue)](#project-stats)
+[![Tests](https://img.shields.io/badge/tests-802%20passing-brightgreen)](#testing)
+[![LOC](https://img.shields.io/badge/LOC-19%2C789-blue)](#project-stats)
 
 py-ethclient is a Python L2 development platform for building **application-specific ZK rollups**. Define your state transition function as a plain Python function, and py-ethclient handles the rest — sequencing, batching, Groth16 proving, and L1 verification.
 
@@ -49,7 +49,7 @@ All core protocol logic — RLP encoding, Merkle Patricia Trie, EVM execution, R
 - **Engine API V1/V2/V3** — `forkchoiceUpdated`, `getPayload`, `newPayload` with JWT authentication for consensus layer integration
 - **Persistent Storage** — LMDB-backed disk backend with hybrid overlay pattern for atomic state commits
 - **Multi-Network** — Mainnet, Sepolia, and Holesky with per-network genesis and fork configurations
-- **785 Tests** — Comprehensive test suite covering all protocol layers from RLP to ZK proving to L2 rollup to end-to-end integration
+- **802 Tests** — Comprehensive test suite covering all protocol layers from RLP to ZK proving to L2 rollup to end-to-end integration
 - **Docker Support** — Ready-to-use Docker Compose setup for quick deployment
 
 ## Why py-ethclient?
@@ -189,6 +189,15 @@ ethclient l2 init --name my-rollup
 # This creates:
 #   l2.json      — rollup configuration
 #   stf.py       — State Transition Function template
+
+# Start the rollup node (loads stf.py, starts RPC server)
+ethclient l2 start --config l2.json --rpc-port 9545
+
+# Generate ZK proofs for all sealed batches
+ethclient l2 prove --config l2.json
+
+# Submit proven batches to L1
+ethclient l2 submit --config l2.json
 ```
 
 ### L2 RPC API
@@ -437,9 +446,9 @@ ethclient --genesis ./genesis.json --port 30303
 | Command | Description |
 |---|---|
 | `ethclient l2 init --name <name>` | Scaffold a new rollup project (creates l2.json + stf.py) |
-| `ethclient l2 start --config <path>` | Start the L2 rollup node |
-| `ethclient l2 prove --batch <n>` | Generate ZK proof for a batch |
-| `ethclient l2 submit --batch <n>` | Submit proven batch to L1 |
+| `ethclient l2 start --config <path>` | Start the L2 rollup node (loads STF, starts RPC server) |
+| `ethclient l2 prove --config <path>` | Generate ZK proofs for all sealed batches |
+| `ethclient l2 submit --config <path>` | Submit proven batches to L1 |
 
 **L1 Node Options**
 
@@ -561,7 +570,7 @@ curl -X POST http://localhost:8545 \
 ## Testing
 
 ```bash
-# Run all tests (785 tests)
+# Run all tests (802 tests)
 pytest
 
 # Run L2 rollup tests
@@ -571,6 +580,7 @@ pytest tests/test_l2_runtime.py          # Python STF runtime wrapper
 pytest tests/test_l2_sequencer.py        # Sequencer, mempool, batch assembly
 pytest tests/test_l2_prover.py           # Groth16 proof backend
 pytest tests/test_l2_l1.py               # L1 backend, proof verification
+pytest tests/test_l2_rpc.py              # L2 RPC API (l2_* methods)
 pytest tests/test_l2_integration.py      # Full cycle: STF → batch → prove → L1 verify
 
 # Run L1 client tests
@@ -770,7 +780,7 @@ class L2Hook(ExecutionHook):
 
 | Module | Files | LOC | Description |
 |---|---:|---:|---|
-| `l2/` | 14 | 1,276 | App-specific ZK rollup: STF, sequencer, prover, L1 backend, rollup orchestrator, RPC, CLI |
+| `l2/` | 14 | 1,415 | App-specific ZK rollup: STF, sequencer, prover, L1 backend, rollup orchestrator, RPC, CLI |
 | `common/` | 6 | 2,374 | RLP, types, trie (+ proofs), crypto, config |
 | `vm/` | 8 | 2,703 | EVM, opcodes, precompiles, gas |
 | `storage/` | 4 | 1,431 | Store interface, in-memory & LMDB backends |
@@ -780,7 +790,7 @@ class L2Hook(ExecutionHook):
 | `bridge/` | 6 | 1,056 | CrossDomainMessenger, BridgeWatcher, BridgeEnvironment, force inclusion, escape hatch |
 | `rpc/` | 6 | 1,838 | JSON-RPC server, eth API, Engine API, ZK API |
 | `main.py` | 1 | 648 | CLI entry point |
-| **Total** | **75** | **19,655** | |
+| **Total** | **75** | **19,789** | |
 
 ### Test Code
 
@@ -789,9 +799,10 @@ class L2Hook(ExecutionHook):
 | `test_l2_types.py` | 139 | 17 | L2 tx types, encoding/decoding, state snapshots |
 | `test_l2_da.py` | 56 | 8 | Data availability provider |
 | `test_l2_runtime.py` | 99 | 9 | Python STF runtime wrapper |
-| `test_l2_sequencer.py` | 162 | 10 | Sequencer, mempool, batch assembly, auto-seal |
-| `test_l2_prover.py` | 91 | 10 | Groth16 proof backend, field truncation |
+| `test_l2_sequencer.py` | 174 | 11 | Sequencer, mempool, batch assembly, auto-seal, nonce gap |
+| `test_l2_prover.py` | 134 | 10 | Groth16 proof backend, field truncation |
 | `test_l2_l1.py` | 86 | 6 | L1 backend, proof verification, batch tracking |
+| `test_l2_rpc.py` | 119 | 12 | L2 RPC API (l2_* methods) |
 | `test_l2_integration.py` | 229 | 12 | Full cycle: counter STF, balance transfer, multi-batch |
 | `test_rlp.py` | 206 | 56 | RLP encoding/decoding |
 | `test_trie.py` | 213 | 26 | Merkle Patricia Trie |
@@ -815,7 +826,7 @@ class L2Hook(ExecutionHook):
 | `test_integration.py` | 272 | 14 | Cross-module integration |
 | `test_disk_backend.py` | 543 | 31 | LMDB persistence, flush, overlay, state root consistency |
 | `integration/` | 68 | 6 | Archive mode, chaindata, Fusaka compliance |
-| **Total** | **9,755** | **785** | |
+| **Total** | **9,929** | **802** | |
 
 ## FAQ
 
@@ -851,8 +862,6 @@ py-ethclient supports EIP-155 (replay protection), EIP-1559 (dynamic fees), EIP-
 
 ## Current Limitations
 
-- **L2 CLI** — `l2 start`, `l2 prove`, `l2 submit` subcommands are scaffolded but not fully wired (use the Python API directly)
-- **L2 RPC** — `register_l2_api()` exists but is not yet auto-started from the CLI
 - **Engine API** — V1/V2/V3 implemented; block production flow operational but ongoing optimization
 - **eth_getLogs** — Stub implementation; log filtering not yet implemented
 - **contractAddress** — Transaction receipt does not yet derive the contract address for CREATE transactions

@@ -59,8 +59,11 @@ class Sequencer:
         expected_nonce = self._nonces.get(tx.sender, 0)
         if tx.nonce < expected_nonce:
             return f"nonce too low: got {tx.nonce}, expected {expected_nonce}"
+        if tx.nonce > expected_nonce:
+            return f"nonce too high: got {tx.nonce}, expected {expected_nonce}"
 
         self._mempool.append(tx)
+        self._nonces[tx.sender] = tx.nonce + 1
         return None
 
     def tick(self) -> list[STFResult]:

@@ -116,6 +116,29 @@ class Rollup:
             raise RuntimeError("Must call setup() before prove_and_submit()")
         return self._submitter.process_batch(batch)
 
+    def get_sealed_batches(self) -> list[Batch]:
+        """Return all sealed batches."""
+        return self._sequencer.sealed_batches
+
+    def get_batch(self, batch_number: int) -> Optional[Batch]:
+        """Find a sealed batch by number."""
+        for batch in self._sequencer.sealed_batches:
+            if batch.number == batch_number:
+                return batch
+        return None
+
+    def prove_batch(self, batch: Batch) -> Batch:
+        """Prove a single batch (without submitting)."""
+        if self._submitter is None:
+            raise RuntimeError("Must call setup() before prove_batch()")
+        return self._submitter.prove_batch(batch)
+
+    def submit_batch(self, batch: Batch) -> BatchReceipt:
+        """Submit a proven batch to L1."""
+        if self._submitter is None:
+            raise RuntimeError("Must call setup() before submit_batch()")
+        return self._submitter.submit_batch(batch)
+
     def chain_info(self) -> dict:
         """Return info about the rollup chain."""
         return {

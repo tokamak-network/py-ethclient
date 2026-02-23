@@ -8,7 +8,7 @@ A Python L2 development platform for building application-specific ZK rollups. D
 # Install
 pip install -e ".[dev]"
 
-# Unit tests (785 tests)
+# Unit tests (802 tests)
 pytest
 
 # Test a specific module
@@ -77,7 +77,7 @@ watch -n 5 '
 ## Project Structure
 
 ```
-py-ethclient/                    # ~29,400 LOC (19,655 source + 9,755 test)
+py-ethclient/                    # ~29,700 LOC (19,789 source + 9,929 test)
 ├── ethclient/
 │   ├── main.py                  # CLI entry point (argparse, asyncio event loop)
 │   ├── l2/                      # L2 Rollup Framework (14 files, 1,276 LOC)
@@ -153,7 +153,7 @@ py-ethclient/                    # ~29,400 LOC (19,655 source + 9,755 test)
 │       ├── engine_api.py        # Engine API V1/V2/V3 handlers
 │       ├── engine_types.py      # Engine API request/response types
 │       └── zk_api.py            # zk_ namespace (verifyGroth16, deployVerifier, verifyOnChain)
-├── tests/                       # pytest unit tests (785 tests)
+├── tests/                       # pytest unit tests (802 tests)
 │   ├── test_l2_types.py         # L2 types, state, serialization
 │   ├── test_l2_sequencer.py     # Sequencer, mempool, batch assembly
 │   ├── test_l2_prover.py        # Groth16 proof backend
@@ -251,7 +251,7 @@ User Python STF → Rollup.submit_tx() → Sequencer (mempool + ordering)
 ### Unit Tests (offline)
 
 ```bash
-pytest                           # All tests (785)
+pytest                           # All tests (802)
 pytest tests/test_l2_*.py        # L2 rollup tests (72)
 pytest tests/test_zk_*.py        # ZK toolkit tests (57)
 pytest tests/test_bridge_*.py    # Bridge tests (63)

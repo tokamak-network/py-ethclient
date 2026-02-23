@@ -15,7 +15,7 @@ class TestInMemoryL1Backend:
     def _setup_prover(self):
         prover = Groth16ProofBackend()
         stf = PythonRuntime(_noop_stf)
-        prover.setup(stf, max_txs_per_batch=64)
+        prover.setup(stf, max_txs_per_batch=4)
         return prover
 
     def test_deploy_verifier(self):

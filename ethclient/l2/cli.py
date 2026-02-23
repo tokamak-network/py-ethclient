@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
+import importlib.util
 import json
 import logging
-import os
+import sys
 from pathlib import Path
-from typing import Optional
+
+from ethclient.l2.config import L2Config
+from ethclient.l2.rollup import Rollup
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,44 @@ def _handle_init(args: argparse.Namespace) -> None:
     print(f"  STF:    {stf_path}")
 
 
+def _load_stf(stf_path: Path):
+    """Dynamically load apply_tx from an STF module file."""
+    if not stf_path.exists():
+        print(f"STF file not found: {stf_path}")
+        sys.exit(1)
+
+    spec = importlib.util.spec_from_file_location("stf_module", stf_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    if not hasattr(module, "apply_tx"):
+        print(f"STF file must define apply_tx(): {stf_path}")
+        sys.exit(1)
+
+    return module.apply_tx
+
+
+def _load_rollup(config_arg: str) -> tuple[dict, Rollup]:
+    """Load config and create a setup'd Rollup instance."""
+    config_path = Path(config_arg)
+    if not config_path.exists():
+        print(f"Config file not found: {config_path}")
+        print("Run 'ethclient l2 init' first.")
+        sys.exit(1)
+
+    config_data = json.loads(config_path.read_text())
+
+    stf_path = config_path.parent / "stf.py"
+    stf = _load_stf(stf_path)
+
+    fields = {k for k in L2Config.__dataclass_fields__}
+    l2_config = L2Config(**{k: v for k, v in config_data.items() if k in fields})
+    rollup = Rollup(stf=stf, config=l2_config)
+    rollup.setup()
+
+    return config_data, rollup
+
+
 def _handle_start(args: argparse.Namespace) -> None:
     """Start L2 sequencer + RPC server."""
     config_path = Path(args.config)
@@ -94,20 +134,67 @@ def _handle_start(args: argparse.Namespace) -> None:
         return
 
     config_data = json.loads(config_path.read_text())
-    rpc_port = getattr(args, "rpc_port", config_data.get("rpc_port", 9545))
 
-    print(f"Starting L2 rollup '{config_data.get('name', 'unknown')}'")
-    print(f"  RPC port: {rpc_port}")
-    print("  (Start logic uses Rollup + RPCServer — see rollup.py for full integration)")
+    stf_path = config_path.parent / "stf.py"
+    stf = _load_stf(stf_path)
+
+    fields = {k for k in L2Config.__dataclass_fields__}
+    l2_config = L2Config(**{k: v for k, v in config_data.items() if k in fields})
+    rollup = Rollup(stf=stf, config=l2_config)
+    rollup.setup()
+
+    from ethclient.rpc.server import RPCServer
+    from ethclient.l2.rpc_api import register_l2_api
+
+    rpc = RPCServer()
+    register_l2_api(rpc, rollup)
+
+    import uvicorn
+
+    rpc_port = getattr(args, "rpc_port", config_data.get("rpc_port", 9545))
+    logger.info("L2 rollup '%s' listening on :%d", l2_config.name, rpc_port)
+    uvicorn.run(rpc.app, host="0.0.0.0", port=rpc_port, log_level="info")
 
 
 def _handle_prove(args: argparse.Namespace) -> None:
     """Generate proofs for pending batches."""
-    print("Generating ZK proofs for pending batches...")
-    print("  (Use the Rollup API for full proving pipeline)")
+    _, rollup = _load_rollup(args.config)
+
+    sealed = rollup.get_sealed_batches()
+    if not sealed:
+        print("No sealed batches to prove.")
+        return
+
+    count = 0
+    for batch in sealed:
+        if not batch.proven:
+            rollup.prove_batch(batch)
+            count += 1
+            print(f"  Batch #{batch.number} proven ({len(batch.transactions)} txs)")
+
+    if count == 0:
+        print("All batches already proven.")
+    else:
+        print(f"Proved {count} batch(es).")
 
 
 def _handle_submit(args: argparse.Namespace) -> None:
     """Submit proven batches to L1."""
-    print("Submitting proven batches to L1...")
-    print("  (Use the Rollup API for full submission pipeline)")
+    _, rollup = _load_rollup(args.config)
+
+    sealed = rollup.get_sealed_batches()
+    if not sealed:
+        print("No sealed batches to submit.")
+        return
+
+    count = 0
+    for batch in sealed:
+        if batch.proven and not batch.submitted:
+            receipt = rollup.submit_batch(batch)
+            count += 1
+            print(f"  Batch #{batch.number} submitted, verified={receipt.verified}")
+
+    if count == 0:
+        print("No proven batches pending submission.")
+    else:
+        print(f"Submitted {count} batch(es).")

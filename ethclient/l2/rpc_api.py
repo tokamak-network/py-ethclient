@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 from ethclient.l2.rollup import Rollup
 from ethclient.l2.types import L2Tx, L2TxType
@@ -13,9 +13,17 @@ def register_l2_api(rpc: RPCServer, rollup: Rollup) -> None:
     """Register l2_* RPC methods on the server."""
 
     def l2_sendTransaction(tx_data: dict) -> dict:
-        sender = hex_to_bytes(tx_data.get("sender", "0x" + "00" * 20))
-        nonce = int(tx_data.get("nonce", "0x0"), 16) if isinstance(tx_data.get("nonce"), str) else tx_data.get("nonce", 0)
-        value = int(tx_data.get("value", "0x0"), 16) if isinstance(tx_data.get("value"), str) else tx_data.get("value", 0)
+        try:
+            sender = hex_to_bytes(tx_data.get("sender", "0x" + "00" * 20))
+        except (ValueError, AttributeError) as e:
+            return {"error": f"invalid sender: {e}"}
+
+        try:
+            nonce = int(tx_data.get("nonce", "0x0"), 16) if isinstance(tx_data.get("nonce"), str) else tx_data.get("nonce", 0)
+            value = int(tx_data.get("value", "0x0"), 16) if isinstance(tx_data.get("value"), str) else tx_data.get("value", 0)
+        except (ValueError, TypeError) as e:
+            return {"error": f"invalid numeric field: {e}"}
+
         data = tx_data.get("data", {})
         tx_type = L2TxType(tx_data.get("txType", 0))
 
@@ -38,22 +46,25 @@ def register_l2_api(rpc: RPCServer, rollup: Rollup) -> None:
         return bytes_to_hex(rollup.state_root)
 
     def l2_getBatch(batch_number: int) -> Optional[dict]:
-        for batch in rollup._sequencer.sealed_batches:
-            if batch.number == batch_number:
-                return {
-                    "number": batch.number,
-                    "txCount": len(batch.transactions),
-                    "oldStateRoot": bytes_to_hex(batch.old_state_root),
-                    "newStateRoot": bytes_to_hex(batch.new_state_root),
-                    "sealed": batch.sealed,
-                    "proven": batch.proven,
-                    "submitted": batch.submitted,
-                    "verified": batch.verified,
-                }
-        return None
+        batch = rollup.get_batch(batch_number)
+        if batch is None:
+            return None
+        return {
+            "number": batch.number,
+            "txCount": len(batch.transactions),
+            "oldStateRoot": bytes_to_hex(batch.old_state_root),
+            "newStateRoot": bytes_to_hex(batch.new_state_root),
+            "sealed": batch.sealed,
+            "proven": batch.proven,
+            "submitted": batch.submitted,
+            "verified": batch.verified,
+        }
 
     def l2_produceBatch() -> dict:
-        batch = rollup.produce_batch()
+        try:
+            batch = rollup.produce_batch()
+        except RuntimeError as e:
+            return {"error": str(e)}
         return {
             "number": batch.number,
             "txCount": len(batch.transactions),
@@ -62,16 +73,19 @@ def register_l2_api(rpc: RPCServer, rollup: Rollup) -> None:
         }
 
     def l2_proveAndSubmit(batch_number: int) -> dict:
-        for batch in rollup._sequencer.sealed_batches:
-            if batch.number == batch_number:
-                receipt = rollup.prove_and_submit(batch)
-                return {
-                    "batchNumber": receipt.batch_number,
-                    "l1TxHash": bytes_to_hex(receipt.l1_tx_hash),
-                    "verified": receipt.verified,
-                    "stateRoot": bytes_to_hex(receipt.state_root),
-                }
-        return {"error": f"Batch #{batch_number} not found"}
+        batch = rollup.get_batch(batch_number)
+        if batch is None:
+            return {"error": f"Batch #{batch_number} not found"}
+        try:
+            receipt = rollup.prove_and_submit(batch)
+        except (RuntimeError, ValueError) as e:
+            return {"error": str(e)}
+        return {
+            "batchNumber": receipt.batch_number,
+            "l1TxHash": bytes_to_hex(receipt.l1_tx_hash),
+            "verified": receipt.verified,
+            "stateRoot": bytes_to_hex(receipt.state_root),
+        }
 
     def l2_chainInfo() -> dict:
         return rollup.chain_info()

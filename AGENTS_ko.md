@@ -8,7 +8,7 @@
 # 설치
 pip install -e ".[dev]"
 
-# 단위 테스트 (785개)
+# 단위 테스트 (802개)
 pytest
 
 # 특정 모듈 테스트
@@ -77,7 +77,7 @@ watch -n 5 '
 ## 프로젝트 구조
 
 ```
-py-ethclient/                    # ~29,400 LOC (소스 19,655 + 테스트 9,755)
+py-ethclient/                    # ~29,700 LOC (소스 19,789 + 테스트 9,929)
 ├── ethclient/
 │   ├── main.py                  # CLI 진입점 (argparse, asyncio 이벤트 루프)
 │   ├── l2/                      # L2 롤업 프레임워크 (14파일, 1,276 LOC)
@@ -153,7 +153,7 @@ py-ethclient/                    # ~29,400 LOC (소스 19,655 + 테스트 9,755)
 │       ├── engine_api.py        # Engine API V1/V2/V3 핸들러
 │       ├── engine_types.py      # Engine API 요청/응답 타입
 │       └── zk_api.py            # zk_ 네임스페이스 (verifyGroth16, deployVerifier, verifyOnChain)
-├── tests/                       # pytest 단위 테스트 (785개)
+├── tests/                       # pytest 단위 테스트 (802개)
 │   ├── test_l2_types.py         # L2 타입, 상태, 직렬화
 │   ├── test_l2_sequencer.py     # 시퀀서, 멤풀, 배치 조립
 │   ├── test_l2_prover.py        # Groth16 증명 백엔드
@@ -251,7 +251,7 @@ main.py                         ↓
 ### 단위 테스트 (오프라인)
 
 ```bash
-pytest                           # 전체 (785개)
+pytest                           # 전체 (802개)
 pytest tests/test_l2_*.py        # L2 롤업 테스트 (72개)
 pytest tests/test_zk_*.py        # ZK 툴킷 테스트 (57개)
 pytest tests/test_bridge_*.py    # 브릿지 테스트 (63개)

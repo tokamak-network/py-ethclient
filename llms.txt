@@ -2,7 +2,7 @@
 
 > A Python L2 development platform for building application-specific ZK rollups. Define your State Transition Function as a plain Python function — the framework handles sequencing, batching, Groth16 proving, and L1 verification. Built on a fully independent Ethereum L1 execution client with EVM, RLPx, eth/68, snap/1, full+snap sync, Engine API, L1↔L2 bridge, and Groth16 ZK toolkit — all in pure Python.
 
-py-ethclient contains 19,655 lines of source code across 75 files with 785 tests covering all layers from RLP to ZK proving to L2 rollup.
+py-ethclient contains 19,789 lines of source code across 75 files with 802 tests covering all layers from RLP to ZK proving to L2 rollup.
 
 ## L2 Rollup Framework
 

@@ -147,6 +147,18 @@ class TestSequencer:
         # Batch 1's old root should be batch 0's new root
         assert batch1.old_state_root == batch0.new_state_root
 
+    def test_nonce_gap_rejected(self):
+        stf = PythonRuntime(_counter_stf)
+        store = L2StateStore()
+        seq = Sequencer(stf=stf, state_store=store)
+
+        sender = b"\x01" * 20
+        # Skip nonce 0, submit nonce 1 — should fail
+        error = seq.submit_tx(L2Tx(sender=sender, nonce=1, data={}))
+        assert error is not None
+        assert "nonce too high" in error
+        assert seq.pending_tx_count == 0
+
     def test_validate_tx_rejection(self):
         def validator(state, tx):
             if tx.value > 100:

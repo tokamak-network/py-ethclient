@@ -4,8 +4,8 @@
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-815%20passing-brightgreen)](#testing)
-[![LOC](https://img.shields.io/badge/LOC-19%2C804-blue)](#project-stats)
+[![Tests](https://img.shields.io/badge/tests-943%20passing-brightgreen)](#testing)
+[![LOC](https://img.shields.io/badge/LOC-21%2C442-blue)](#project-stats)
 
 py-ethclient is a Python L2 development platform for building **application-specific ZK rollups**. Define your state transition function as a plain Python function, and py-ethclient handles the rest — sequencing, batching, Groth16 proving, and L1 verification.
 
@@ -49,7 +49,7 @@ All core protocol logic — RLP encoding, Merkle Patricia Trie, EVM execution, R
 - **Engine API V1/V2/V3** — `forkchoiceUpdated`, `getPayload`, `newPayload` with JWT authentication for consensus layer integration
 - **Persistent Storage** — LMDB-backed disk backend with hybrid overlay pattern for atomic state commits
 - **Multi-Network** — Mainnet, Sepolia, and Holesky with per-network genesis and fork configurations
-- **815 Tests** — Comprehensive test suite covering all protocol layers from RLP to ZK proving to L2 rollup to end-to-end integration
+- **943 Tests** — Comprehensive test suite covering all protocol layers from RLP to ZK proving to L2 rollup to end-to-end integration
 - **Docker Support** — Ready-to-use Docker Compose setup for quick deployment
 
 ## Why py-ethclient?
@@ -570,18 +570,25 @@ curl -X POST http://localhost:8545 \
 ## Testing
 
 ```bash
-# Run all tests (815 tests)
+# Run all tests (943 tests)
 pytest
 
 # Run L2 rollup tests
 pytest tests/test_l2_types.py            # L2 types, encoding, state snapshots
 pytest tests/test_l2_da.py               # Data availability provider
+pytest tests/test_l2_da_providers.py     # Production DA providers (S3, Calldata, Blob)
 pytest tests/test_l2_runtime.py          # Python STF runtime wrapper
 pytest tests/test_l2_sequencer.py        # Sequencer, mempool, batch assembly
+pytest tests/test_l2_sequencer_hardening.py # Sequencer input validation, defensive checks
 pytest tests/test_l2_prover.py           # Groth16 proof backend
+pytest tests/test_l2_native_prover.py    # Native prover (rapidsnark/snarkjs subprocess)
 pytest tests/test_l2_l1.py               # L1 backend, proof verification
+pytest tests/test_l2_eth_l1_backend.py   # Real Ethereum L1 backend (JSON-RPC)
 pytest tests/test_l2_rpc.py              # L2 RPC API (l2_* methods)
 pytest tests/test_l2_state.py            # State store boundary checks, determinism
+pytest tests/test_l2_persistent_state.py # LMDB persistent state, overlay, WAL
+pytest tests/test_l2_health.py           # Health/ready endpoints
+pytest tests/test_l2_middleware.py       # RPC middleware (API key, rate limit, request size)
 pytest tests/test_l2_integration.py      # Full cycle: STF → batch → prove → L1 verify
 
 # Run L1 client tests
@@ -628,12 +635,22 @@ ethclient/
 │   ├── state.py                     # L2StateStore (Trie-based Merkle state roots)
 │   ├── runtime.py                   # PythonRuntime (wraps callable → STF)
 │   ├── da.py                        # LocalDAProvider (in-memory DA)
+│   ├── da_s3.py                     # S3DAProvider (AWS S3 DA)
+│   ├── da_calldata.py               # CalldataDAProvider (EIP-1559 L1 calldata DA)
+│   ├── da_blob.py                   # BlobDAProvider (EIP-4844 blob DA)
 │   ├── sequencer.py                 # Sequencer (mempool, nonce tracking, batch assembly)
 │   ├── prover.py                    # Groth16ProofBackend (circuit → proof → verify)
+│   ├── native_prover.py             # NativeProverBackend (rapidsnark/snarkjs subprocess)
 │   ├── l1_backend.py                # InMemoryL1Backend (verifier simulation)
+│   ├── eth_l1_backend.py            # EthL1Backend (real Ethereum L1 via JSON-RPC)
+│   ├── eth_rpc.py                   # Lightweight Ethereum JSON-RPC client
+│   ├── persistent_state.py          # L2PersistentStateStore (LMDB state, overlay, WAL)
 │   ├── submitter.py                 # BatchSubmitter (prove → submit → verify pipeline)
 │   ├── rollup.py                    # Rollup orchestrator (main user-facing API)
 │   ├── rpc_api.py                   # l2_* JSON-RPC method registration
+│   ├── health.py                    # /health, /ready, /metrics endpoints
+│   ├── metrics.py                   # L2MetricsCollector (operational metrics)
+│   ├── middleware.py                # APIKey, RateLimit, RequestSize middleware
 │   └── cli.py                       # CLI: ethclient l2 {init|start|prove|submit}
 ├── common/                          # Core foundation modules
 │   ├── rlp.py                       # RLP encoding/decoding
@@ -662,6 +679,7 @@ ethclient/
 │   ├── groth16.py                   # Groth16 prover, verifier, debug verifier
 │   ├── evm_verifier.py              # EVM verifier bytecode generator + executor
 │   ├── snarkjs_compat.py            # snarkjs JSON format import/export
+│   ├── r1cs_export.py               # R1CS binary export for snarkjs/circom compat
 │   └── types.py                     # G1Point, G2Point, Proof, VerificationKey
 ├── bridge/                          # L1↔L2 General State Bridge
 │   ├── types.py                     # CrossDomainMessage, RelayResult, ForceInclusionEntry
@@ -781,17 +799,17 @@ class L2Hook(ExecutionHook):
 
 | Module | Files | LOC | Description |
 |---|---:|---:|---|
-| `l2/` | 14 | 1,415 | App-specific ZK rollup: STF, sequencer, prover, L1 backend, rollup orchestrator, RPC, CLI |
-| `common/` | 6 | 2,374 | RLP, types, trie (+ proofs), crypto, config |
-| `vm/` | 8 | 2,703 | EVM, opcodes, precompiles, gas |
+| `l2/` | 24 | 3,024 | App-specific ZK rollup: STF, sequencer, prover, L1 backend, rollup orchestrator, RPC, CLI, production DA (S3/Calldata/Blob), native prover, LMDB state, middleware |
+| `common/` | 6 | 2,282 | RLP, types, trie (+ proofs), crypto, config |
+| `vm/` | 8 | 2,690 | EVM, opcodes, precompiles, gas |
 | `storage/` | 4 | 1,431 | Store interface, in-memory & LMDB backends |
-| `blockchain/` | 4 | 1,353 | Block validation, mempool, fork choice, simulate_call |
-| `networking/` | 19 | 5,117 | RLPx, discovery, eth/68, snap/1, protocol registry, sync, server |
-| `zk/` | 6 | 1,844 | Groth16 circuit builder, prover, verifier, EVM verifier, snarkjs compat |
-| `bridge/` | 6 | 1,056 | CrossDomainMessenger, BridgeWatcher, BridgeEnvironment, force inclusion, escape hatch |
-| `rpc/` | 6 | 1,838 | JSON-RPC server, eth API, Engine API, ZK API |
-| `main.py` | 1 | 648 | CLI entry point |
-| **Total** | **75** | **19,789** | |
+| `blockchain/` | 4 | 1,291 | Block validation, mempool, fork choice, simulate_call |
+| `networking/` | 19 | 5,075 | RLPx, discovery, eth/68, snap/1, protocol registry, sync, server |
+| `zk/` | 7 | 1,929 | Groth16 circuit builder, prover, verifier, EVM verifier, snarkjs compat, R1CS export |
+| `bridge/` | 6 | 1,241 | CrossDomainMessenger, BridgeWatcher, BridgeEnvironment, force inclusion, escape hatch |
+| `rpc/` | 6 | 1,832 | JSON-RPC server, eth API, Engine API, ZK API |
+| `main.py` | 1 | 647 | CLI entry point |
+| **Total** | **86** | **21,442** | |
 
 ### Test Code
 
@@ -799,14 +817,21 @@ class L2Hook(ExecutionHook):
 |---|---:|---:|---|
 | `test_l2_types.py` | 153 | 20 | L2 tx types, encoding/decoding, state snapshots, input validation |
 | `test_l2_da.py` | 56 | 8 | Data availability provider |
+| `test_l2_da_providers.py` | 611 | 40 | Production DA providers (S3, Calldata, Blob) |
 | `test_l2_runtime.py` | 99 | 9 | Python STF runtime wrapper |
 | `test_l2_sequencer.py` | 198 | 12 | Sequencer, mempool, batch assembly, auto-seal, nonce gap, multi-sender |
+| `test_l2_sequencer_hardening.py` | 173 | 12 | Sequencer input validation, defensive checks |
 | `test_l2_prover.py` | 193 | 17 | Groth16 proof backend, field truncation, tampering rejection |
+| `test_l2_native_prover.py` | 243 | 14 | Native prover backend (rapidsnark/snarkjs subprocess) |
 | `test_l2_l1.py` | 86 | 6 | L1 backend, proof verification, batch tracking |
+| `test_l2_eth_l1_backend.py` | 229 | 12 | Real Ethereum L1 backend (EIP-1559 tx, EVMVerifier) |
 | `test_l2_rpc.py` | 133 | 14 | L2 RPC API (l2_* methods), input validation |
 | `test_l2_state.py` | 32 | 3 | State store boundary checks, state root determinism |
+| `test_l2_persistent_state.py` | 269 | 34 | LMDB persistent state, overlay, WAL, batch/proof persistence |
+| `test_l2_health.py` | 56 | 3 | Health/ready endpoints |
+| `test_l2_middleware.py` | 141 | 13 | RPC middleware (API key, rate limit, request size) |
 | `test_l2_integration.py` | 274 | 13 | Full cycle: counter STF, balance transfer, multi-batch, state persistence |
-| `test_rlp.py` | 206 | 56 | RLP encoding/decoding |
+| `test_rlp.py` | 207 | 56 | RLP encoding/decoding |
 | `test_trie.py` | 213 | 26 | Merkle Patricia Trie |
 | `test_trie_proofs.py` | 254 | 23 | Trie proof generation/verification, range proofs |
 | `test_crypto.py` | 113 | 14 | keccak256, ECDSA, addresses |
@@ -824,11 +849,11 @@ class L2Hook(ExecutionHook):
 | `test_bridge_messenger.py` | 225 | 11 | Bridge messenger send/relay, replay protection |
 | `test_bridge_e2e.py` | 174 | 10 | Bridge E2E: deposit, withdraw, roundtrip, state relay |
 | `test_bridge_censorship.py` | 270 | 14 | Force inclusion + escape hatch (anti-censorship) |
-| `test_bridge_proof_relay.py` | 470 | 28 | Proof-based relay handlers (EVM, Merkle, ZK, TinyDB, Direct) |
+| `test_bridge_proof_relay.py` | 585 | 28 | Proof-based relay handlers (EVM, Merkle, ZK, TinyDB, Direct) |
 | `test_integration.py` | 272 | 14 | Cross-module integration |
 | `test_disk_backend.py` | 543 | 31 | LMDB persistence, flush, overlay, state root consistency |
 | `integration/` | 68 | 6 | Archive mode, chaindata, Fusaka compliance |
-| **Total** | **10,117** | **815** | |
+| **Total** | **11,839** | **943** | |
 
 ## FAQ
 

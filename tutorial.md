@@ -41,6 +41,16 @@
   - [5.4 플러거블 컴포넌트](#54-플러거블-컴포넌트)
   - [5.5 L2 CLI로 프로젝트 스캐폴딩](#55-l2-cli로-프로젝트-스캐폴딩)
   - [5.6 전체 코드](#56-전체-코드)
+- [Part 6: 프로덕션 배포](#part-6-프로덕션-배포)
+  - [6.1 프로덕션 아키텍처](#61-프로덕션-아키텍처)
+  - [6.2 LMDB 영속 상태](#62-lmdb-영속-상태)
+  - [6.3 DA Providers — S3, Calldata, Blob](#63-da-providers--s3-calldata-blob)
+  - [6.4 Native Prover — rapidsnark/snarkjs](#64-native-prover--rapidsnarksnarkjs)
+  - [6.5 실제 L1 연동 — EthL1Backend](#65-실제-l1-연동--ethl1backend)
+  - [6.6 RPC 서버와 미들웨어](#66-rpc-서버와-미들웨어)
+  - [6.7 CLI 워크플로우](#67-cli-워크플로우)
+  - [6.8 Crash Recovery](#68-crash-recovery)
+  - [6.9 전체 프로덕션 설정](#69-전체-프로덕션-설정)
 
 ---
 
@@ -1611,4 +1621,520 @@ python rollup_tutorial.py
 > - `StateTransitionFunction`을 직접 구현해 보세요 (ABC 상속)
 > - `DAProvider`를 파일 시스템이나 외부 저장소로 교체해 보세요
 > - `l2_*` RPC 메서드를 사용해 HTTP로 롤업과 상호작용해 보세요
-> - [Part 1](#part-1-hello-world-zk)의 ZK 툴킷과 결합하여 커스텀 circuit을 사용해 보세요
+> - [Part 6](#part-6-프로덕션-배포)에서 프로덕션 배포를 배워보세요
+
+---
+
+## Part 6: 프로덕션 배포
+
+> "개발 모드에서 한 줄도 안 바꾸고 `L2Config`만 교체하면 프로덕션으로 전환된다."
+
+Part 5에서는 인메모리 백엔드로 롤업의 기본 동작을 배웠습니다. Part 6에서는 **실제 프로덕션 환경**에서 필요한 모든 컴포넌트를 다룹니다.
+
+### 6.1 프로덕션 아키텍처
+
+개발 모드와 프로덕션 모드의 차이는 **`L2Config`의 4가지 백엔드 설정**뿐입니다:
+
+```
+개발 (Part 5)                      프로덕션 (Part 6)
+─────────────                      ──────────────────
+state_backend = "memory"     →     state_backend = "lmdb"
+da_provider   = "local"      →     da_provider   = "blob" | "calldata" | "s3"
+prover_backend = "python"    →     prover_backend = "native"
+l1_backend    = "memory"     →     l1_backend    = "eth_rpc"
+```
+
+전체 프로덕션 스택:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Client                                                              │
+│    curl -H "X-API-Key: ..." http://localhost:9545/                   │
+└──────────┬───────────────────────────────────────────────────────────┘
+           │ HTTP
+┌──────────▼───────────────────────────────────────────────────────────┐
+│  RPC Server (FastAPI + uvicorn)                                      │
+│                                                                      │
+│  ┌─ Middleware ──────────────────────────────────────────────────┐   │
+│  │  APIKeyMiddleware → RateLimitMiddleware → RequestSizeLimit    │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  ┌─ Endpoints ──────────────────────────────────────────────────┐   │
+│  │  l2_submitTx │ l2_getState │ l2_getBatch │ /health │ /metrics│   │
+│  └──────────────────────────────────────────────────────────────┘   │
+└──────────┬───────────────────────────────────────────────────────────┘
+           │
+┌──────────▼───────────────────────────────────────────────────────────┐
+│  Rollup Orchestrator                                                 │
+│                                                                      │
+│  ┌─ Sequencer ────┐  ┌─ DA Provider ────┐  ┌─ Prover ────────────┐ │
+│  │ Mempool        │  │ S3 / Calldata /  │  │ rapidsnark          │ │
+│  │ Nonce tracking │  │ Blob (EIP-4844)  │  │ (Python fallback)   │ │
+│  │ Auto-seal      │  └──────────────────┘  └─────────────────────┘ │
+│  └────────────────┘                                                  │
+│                                                                      │
+│  ┌─ State Store ──┐  ┌─ L1 Backend ─────────────────────────────┐  │
+│  │ LMDB           │  │ EthL1Backend (EIP-1559 tx)               │  │
+│  │ Overlay + WAL  │  │ EVMVerifier 컨트랙트 배포 + 검증          │  │
+│  └────────────────┘  └──────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### 6.2 LMDB 영속 상태
+
+개발 모드의 `L2StateStore`는 인메모리 dict입니다 — 프로세스가 종료되면 모든 상태가 사라집니다. `L2PersistentStateStore`는 LMDB를 사용하여 상태를 디스크에 영속화합니다.
+
+```python
+from ethclient.l2 import Rollup, L2Config
+
+# ━━━ LMDB 활성화 — config 한 줄 ━━━
+config = L2Config(
+    state_backend="lmdb",     # "memory" → "lmdb"
+    data_dir="./my-rollup-data",
+)
+
+def counter_stf(state, tx):
+    count = state.get("count", 0)
+    if tx.data.get("action") == "increment":
+        state["count"] = count + 1
+        return {"new_count": count + 1}
+
+rollup = Rollup(stf=counter_stf, config=config)
+rollup.setup()
+```
+
+STF 코드는 **한 줄도 바꿀 필요 없습니다**. `state["count"]` 같은 dict 인터페이스가 그대로 동작합니다.
+
+**내부 동작:**
+
+```
+┌── STF ───────────────────────────────────┐
+│  state["count"] = 42                     │  ← 일반 dict 문법
+└──────────────────────────────────────────┘
+           │
+           ▼
+┌── L2PersistentState (overlay dict) ──────┐
+│  overlay = {"count": 42}                 │  ← 메모리에서 빠르게 처리
+│                                           │
+│  state.get("key")                        │
+│    → overlay에 있으면 반환                 │
+│    → 없으면 LMDB에서 read-through         │
+└──────────────────────────────────────────┘
+           │ flush()
+           ▼
+┌── LMDB (디스크) ─────────────────────────┐
+│  l2_state   — 상태 키-값                  │
+│  l2_batches — 봉인된 배치                  │
+│  l2_proofs  — 증명 데이터                  │
+│  l2_meta    — 카운터, 논스 등              │
+│  l2_wal     — Write-Ahead Log             │
+└──────────────────────────────────────────┘
+```
+
+**Snapshot/Rollback:**
+
+STF가 예외를 발생시키면 Sequencer가 자동으로 상태를 롤백합니다. LMDB 모드에서도 동일하게 동작합니다:
+
+```python
+# Sequencer 내부 (자동으로 처리됨)
+snapshot_id = state_store.snapshot()    # overlay 복사본 저장
+try:
+    stf(state, tx)                      # STF 실행
+    state_store.commit()                # 성공 시 snapshot 폐기
+except Exception:
+    state_store.rollback(snapshot_id)   # 실패 시 overlay 복원
+```
+
+### 6.3 DA Providers — S3, Calldata, Blob
+
+배치 데이터를 어디에 저장할 것인가? 3가지 프로덕션 DA Provider가 제공됩니다.
+
+| Provider | 비용 | 가용성 | 적합한 용도 |
+|---|---|---|---|
+| `S3DAProvider` | AWS 비용 | 높음 (S3 SLA) | 프라이빗 롤업, 테스트 |
+| `CalldataDAProvider` | L1 gas (16 gas/byte) | 영구 (L1 history) | 소규모 배치, 강한 보증 |
+| `BlobDAProvider` | L1 blob gas (저렴) | ~18일 (pruned) | 대규모 배치, 비용 최적화 |
+
+#### S3 DA
+
+```python
+config = L2Config(
+    da_provider="s3",
+    s3_bucket="my-rollup-batches",
+    s3_prefix="mainnet/batches/",
+    s3_region="ap-northeast-2",
+    # s3_endpoint_url="http://localhost:9000",  # MinIO 등 호환 스토리지
+)
+```
+
+배치 데이터가 S3에 `mainnet/batches/00000000`, `mainnet/batches/00000001`, ... 형태로 저장됩니다. Commitment은 `keccak256(batch_number || data)`입니다.
+
+#### Calldata DA (EIP-1559)
+
+```python
+config = L2Config(
+    da_provider="calldata",
+    l1_rpc_url="https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",
+    l1_private_key="abcdef...",  # hex, 0x 없이
+    l1_chain_id=1,
+)
+```
+
+배치 데이터가 EIP-1559 (type-2) 트랜잭션의 calldata로 L1에 게시됩니다.
+
+- **장점**: L1에 영구 기록, 가장 강한 DA 보증
+- **단점**: 비용이 높음 (16 gas/byte 비zero + 4 gas/byte zero)
+- Gas 자동 추정: `21000 + calldata_gas + 5000 overhead`
+
+#### Blob DA (EIP-4844)
+
+```python
+config = L2Config(
+    da_provider="blob",
+    l1_rpc_url="https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",
+    l1_private_key="abcdef...",
+    l1_chain_id=1,
+    beacon_url="http://localhost:5052",  # Beacon API for blob retrieval
+)
+```
+
+EIP-4844 blob 트랜잭션(type-3)으로 데이터를 게시합니다.
+
+- **장점**: calldata 대비 10~100배 저렴
+- **단점**: blob 데이터는 ~18일 후 pruning됨 (이후 beacon archive 노드 필요)
+- 최대 blob 크기: 126,972 bytes (4096 필드 엘리먼트 × 31 usable bytes - 4 byte header)
+- KZG commitment + proof가 자동 생성됩니다 (ckzg 라이브러리)
+
+**Blob 인코딩 구조:**
+
+```
+┌─ Blob (131,072 bytes = 4096 × 32) ──────────────────────────┐
+│  Element 0: [0x00] [4-byte length header] [27 bytes data]    │
+│  Element 1: [0x00] [31 bytes data]                           │
+│  Element 2: [0x00] [31 bytes data]                           │
+│  ...                                                          │
+│  Element N: [0x00] [31 bytes data + padding]                 │
+│  Element N+1..4095: [0x00] [31 bytes zero padding]           │
+└──────────────────────────────────────────────────────────────┘
+
+각 32-byte 필드 엘리먼트의 첫 바이트는 0x00 (BLS12-381 필드 안전)
+```
+
+### 6.4 Native Prover — rapidsnark/snarkjs
+
+순수 Python Groth16 prover는 교육/프로토타이핑에 적합하지만, 프로덕션에서는 C++/WASM 기반 prover가 필요합니다.
+
+`NativeProverBackend`는 rapidsnark 또는 snarkjs를 subprocess로 실행하고, **실패 시 자동으로 Python fallback**합니다.
+
+```python
+config = L2Config(
+    prover_backend="native",
+    prover_binary="rapidsnark",    # rapidsnark 바이너리 경로
+    prover_working_dir="./proofs", # R1CS, zkey, witness 파일 디렉토리
+)
+```
+
+**Setup 과정 (자동):**
+
+```
+1. Circuit 생성 (max_txs_per_batch 개의 tx signal)
+2. R1CS 바이너리 내보내기 → circuit.r1cs
+3. snarkjs powersoftau (Phase 1) → pot.ptau
+4. snarkjs groth16 setup (Phase 2) → circuit.zkey + vkey.json
+5. 실패 시 → Python groth16.setup() fallback
+```
+
+**Prove 과정:**
+
+```
+1. Witness 생성 → witness.json
+2. rapidsnark circuit.zkey witness.json proof.json public.json
+   (또는 snarkjs groth16 prove ...)
+3. proof.json 파싱 → Proof 객체
+4. 실패 시 → Python groth16.prove() fallback
+```
+
+**Verify**는 항상 Python에서 실행됩니다 (충분히 빠르고, 외부 의존성 불필요).
+
+> **참고**: rapidsnark은 `brew install rapidsnark` 또는 소스 빌드로 설치합니다. snarkjs는 `npm install -g snarkjs`로 설치합니다. 둘 다 없어도 Python fallback이 동작합니다.
+
+### 6.5 실제 L1 연동 — EthL1Backend
+
+`InMemoryL1Backend`는 groth16.verify()를 직접 호출합니다. `EthL1Backend`는 **실제 이더리움 네트워크에 verifier 컨트랙트를 배포하고 on-chain 검증**을 수행합니다.
+
+```python
+config = L2Config(
+    l1_backend="eth_rpc",
+    l1_rpc_url="https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY",
+    l1_private_key="abcdef...",
+    l1_chain_id=11155111,  # Sepolia
+)
+```
+
+**동작 흐름:**
+
+```
+rollup.setup()
+  │
+  ├─ prover.setup()                        # Groth16 trusted setup
+  │
+  └─ l1.deploy_verifier(vk)               # Verifier 컨트랙트 배포
+       │
+       ├─ EVMVerifier(vk).bytecode         # vk 하드코딩된 바이트코드 생성
+       ├─ EIP-1559 tx (to=None, data=bytecode)
+       ├─ gas_limit = 5,000,000
+       └─ → contract_address (20 bytes)
+
+rollup.prove_and_submit(batch)
+  │
+  ├─ prover.prove(...)                     # Groth16 proof 생성
+  │
+  └─ l1.submit_batch(...)                  # On-chain 검증
+       │
+       ├─ EVMVerifier.encode_calldata(proof, public_inputs)
+       ├─ EIP-1559 tx (to=verifier_contract, data=calldata)
+       ├─ gas_limit = 500,000
+       └─ receipt.status == 1 → verified!
+```
+
+**공개 입력**: `[old_state_root, new_state_root, tx_commitment]` — 3개의 256-bit 정수가 verifier 컨트랙트에 전달됩니다.
+
+### 6.6 RPC 서버와 미들웨어
+
+`ethclient l2 start` 명령은 FastAPI 기반 RPC 서버를 시작합니다. 3개 미들웨어가 자동으로 장착됩니다.
+
+**API Key 인증:**
+
+```python
+config = L2Config(
+    api_keys=["key-alpha-1234", "key-beta-5678"],
+)
+```
+
+```bash
+# 인증된 요청
+curl -H "X-API-Key: key-alpha-1234" \
+     -d '{"method": "l2_submitTx", ...}' \
+     http://localhost:9545/
+
+# 쿼리 파라미터도 가능
+curl http://localhost:9545/?api_key=key-alpha-1234
+
+# 인증 실패 → 401
+curl http://localhost:9545/
+# {"error": "Invalid or missing API key"}
+```
+
+`/health`, `/ready`, `/metrics` 엔드포인트는 인증 없이 접근 가능합니다.
+
+**Rate Limiting (토큰 버킷):**
+
+```python
+config = L2Config(
+    rate_limit_rps=10.0,    # 초당 10 요청
+    rate_limit_burst=50,    # 버스트 허용량 50
+)
+```
+
+IP별로 토큰 버킷이 생성됩니다. 초당 `rps`개의 토큰이 채워지고, 최대 `burst`개까지 누적됩니다. 토큰이 부족하면 429 응답:
+
+```json
+{"error": "Rate limit exceeded"}
+```
+
+**Request Size Limit:**
+
+```python
+config = L2Config(
+    max_request_size=1_048_576,  # 1 MB (기본값)
+)
+```
+
+`Content-Length`가 초과하면 413 응답:
+
+```json
+{"error": "Request too large (max 1048576 bytes)"}
+```
+
+**Health/Ready/Metrics 엔드포인트:**
+
+```bash
+# Health check (항상 200)
+curl http://localhost:9545/health
+# {"status": "ok"}
+
+# Readiness (setup 완료 시 200, 아니면 503)
+curl http://localhost:9545/ready
+# {"status": "ready", "chain_id": 42170, "state_root": "0x...",
+#  "pending_txs": 5, "sealed_batches": 3}
+
+# Metrics (JSON)
+curl http://localhost:9545/metrics
+# {"l2_mempool_size": 5, "l2_sealed_batches_total": 3,
+#  "l2_proven_batches_total": 2, "l2_submitted_batches_total": 1, ...}
+```
+
+### 6.7 CLI 워크플로우
+
+CLI 4개 명령으로 전체 라이프사이클을 관리합니다:
+
+```bash
+# ━━━ 1. 프로젝트 생성 ━━━
+ethclient l2 init --name my-dex-rollup
+
+# 생성되는 파일:
+#   l2.json  — 롤업 설정 (L2Config 필드)
+#   stf.py   — State Transition Function 템플릿
+
+# ━━━ 2. 설정 수정 ━━━
+# l2.json을 열어 프로덕션 설정으로 변경:
+```
+
+```json
+{
+  "name": "my-dex-rollup",
+  "chain_id": 42170,
+  "max_txs_per_batch": 128,
+  "batch_timeout": 30,
+  "rpc_port": 9545,
+
+  "state_backend": "lmdb",
+  "data_dir": "./data",
+
+  "da_provider": "blob",
+  "l1_rpc_url": "https://eth-sepolia.g.alchemy.com/v2/KEY",
+  "l1_private_key": "YOUR_PRIVATE_KEY_HEX",
+  "l1_chain_id": 11155111,
+  "beacon_url": "http://localhost:5052",
+
+  "prover_backend": "native",
+  "prover_binary": "rapidsnark",
+
+  "l1_backend": "eth_rpc",
+
+  "api_keys": ["prod-key-1234"],
+  "rate_limit_rps": 50.0,
+  "rate_limit_burst": 200,
+  "enable_metrics": true
+}
+```
+
+```bash
+# ━━━ 3. stf.py 수정 ━━━
+# 비즈니스 로직 구현 (Part 5의 balance_stf 등)
+
+# ━━━ 4. 시퀀서 + RPC 서버 시작 ━━━
+ethclient l2 start --config l2.json
+# → Trusted setup 수행
+# → L1 verifier 컨트랙트 배포
+# → Middleware 장착
+# → uvicorn 0.0.0.0:9545 시작
+
+# ━━━ 5. 증명 생성 (별도 프로세스) ━━━
+ethclient l2 prove --config l2.json
+# → 봉인된 배치를 순회하며 Groth16 proof 생성
+
+# ━━━ 6. L1 제출 (별도 프로세스) ━━━
+ethclient l2 submit --config l2.json
+# → 증명 완료된 배치를 L1에 제출
+# → On-chain 검증 결과 출력
+```
+
+**운영 패턴**: `start`는 상시 실행, `prove`와 `submit`은 cron이나 별도 worker로 주기적 실행합니다.
+
+### 6.8 Crash Recovery
+
+LMDB 모드에서는 **Write-Ahead Log (WAL)**를 통해 크래시 복구가 가능합니다.
+
+```python
+rollup = Rollup(stf=my_stf, config=config)
+
+# 프로세스 재시작 후 복구
+rollup.recover()
+```
+
+WAL에 기록되는 이벤트:
+
+| entry_type | 시점 | 데이터 |
+|---|---|---|
+| `tx_applied` | STF 실행 성공 후 | 트랜잭션 정보 |
+| `batch_sealed` | 배치 봉인 후 | 배치 번호 + 상태 루트 |
+| `batch_proven` | 증명 생성 후 | 배치 번호 + proof |
+| `batch_submitted` | L1 제출 후 | 배치 번호 + tx_hash |
+
+`recover()`는 WAL을 순서대로 재생하여 마지막 일관된 상태로 복원합니다. 복구 완료 후 WAL은 truncate됩니다.
+
+### 6.9 전체 프로덕션 설정
+
+개발과 프로덕션의 전체 비교:
+
+```python
+from ethclient.l2 import Rollup, L2Config
+
+# ━━━ STF는 동일 — 환경에 무관 ━━━
+def balance_stf(state, tx):
+    action = tx.data.get("action")
+    if action == "mint":
+        addr = tx.data["to"]
+        state[addr] = state.get(addr, 0) + tx.data["amount"]
+        return {"minted": tx.data["amount"]}
+    elif action == "transfer":
+        src, dst = tx.data["from"], tx.data["to"]
+        amount = tx.data["amount"]
+        if state.get(src, 0) < amount:
+            raise ValueError("insufficient balance")
+        state[src] -= amount
+        state[dst] = state.get(dst, 0) + amount
+        return {"transferred": amount}
+
+# ━━━ 개발 모드 (Part 5와 동일) ━━━
+dev_rollup = Rollup(stf=balance_stf)
+
+# ━━━ 프로덕션 모드 — config만 교체 ━━━
+prod_config = L2Config(
+    name="my-dex-rollup",
+    chain_id=42170,
+    max_txs_per_batch=128,
+    batch_timeout=30,
+    rpc_port=9545,
+
+    # 영속 상태
+    state_backend="lmdb",
+    data_dir="./data",
+
+    # Blob DA (EIP-4844)
+    da_provider="blob",
+    l1_rpc_url="https://eth-sepolia.g.alchemy.com/v2/KEY",
+    l1_private_key="YOUR_HEX_KEY",
+    l1_chain_id=11155111,
+    beacon_url="http://localhost:5052",
+
+    # Native prover
+    prover_backend="native",
+    prover_binary="rapidsnark",
+    prover_working_dir="./proofs",
+
+    # 실제 L1
+    l1_backend="eth_rpc",
+
+    # 미들웨어
+    api_keys=["prod-key-1234", "prod-key-5678"],
+    rate_limit_rps=50.0,
+    rate_limit_burst=200,
+    max_request_size=2_097_152,  # 2 MB
+    enable_metrics=True,
+)
+
+prod_rollup = Rollup(stf=balance_stf, config=prod_config)
+```
+
+**백엔드 자동 선택 요약:**
+
+| Config 필드 | 개발 (기본값) | 프로덕션 옵션 |
+|---|---|---|
+| `state_backend` | `"memory"` → `L2StateStore` | `"lmdb"` → `L2PersistentStateStore` |
+| `da_provider` | `"local"` → `LocalDAProvider` | `"s3"` / `"calldata"` / `"blob"` |
+| `prover_backend` | `"python"` → `Groth16ProofBackend` | `"native"` → `NativeProverBackend` |
+| `l1_backend` | `"memory"` → `InMemoryL1Backend` | `"eth_rpc"` → `EthL1Backend` |
+
+> **핵심**: STF 코드는 환경에 독립적입니다. 같은 `balance_stf` 함수가 인메모리 테스트에서도, Sepolia에서도, 메인넷에서도 동일하게 동작합니다. 이것이 py-ethclient L2 프레임워크의 **플러거블 아키텍처**가 제공하는 가치입니다.

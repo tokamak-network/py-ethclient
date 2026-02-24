@@ -2,7 +2,7 @@
 
 > A Python L2 development platform for building application-specific ZK rollups. Define your State Transition Function as a plain Python function — the framework handles sequencing, batching, Groth16 proving, and L1 verification. Built on a fully independent Ethereum L1 execution client with EVM, RLPx, eth/68, snap/1, full+snap sync, Engine API, L1↔L2 bridge, and Groth16 ZK toolkit — all in pure Python.
 
-py-ethclient contains 19,804 lines of source code across 75 files with 815 tests covering all layers from RLP to ZK proving to L2 rollup.
+py-ethclient contains 21,442 lines of source code across 86 files with 943 tests covering all layers from RLP to ZK proving to L2 rollup.
 
 ## L2 Rollup Framework
 
@@ -18,6 +18,12 @@ py-ethclient contains 19,804 lines of source code across 75 files with 815 tests
 - [Submitter](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/submitter.py): BatchSubmitter — prove → submit → verify pipeline
 - [L2 RPC API](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/rpc_api.py): 7 l2_* JSON-RPC methods
 - [L2 CLI](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/cli.py): ethclient l2 {init|start|prove|submit}
+- [Production DA Providers](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/da_s3.py): S3DAProvider, CalldataDAProvider (EIP-1559), BlobDAProvider (EIP-4844)
+- [Native Prover](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/native_prover.py): NativeProverBackend — subprocess-based Groth16 via rapidsnark/snarkjs
+- [Real L1 Backend](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/eth_l1_backend.py): EthL1Backend — real Ethereum L1 via JSON-RPC
+- [Persistent State](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/persistent_state.py): L2PersistentStateStore — LMDB state, overlay, WAL
+- [RPC Middleware](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/middleware.py): APIKeyMiddleware, RateLimitMiddleware, RequestSizeLimitMiddleware
+- [Health Endpoints](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/health.py): /health, /ready, /metrics
 
 ## ZK Toolkit
 
@@ -26,6 +32,7 @@ py-ethclient contains 19,804 lines of source code across 75 files with 815 tests
 - [EVM Verifier](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/zk/evm_verifier.py): Auto-generated EVM bytecode for on-chain Groth16 verification
 - [snarkjs Compat](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/zk/snarkjs_compat.py): Import/export snarkjs JSON format
 - [ZK Types](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/zk/types.py): G1Point, G2Point, Proof, VerificationKey
+- [R1CS Export](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/zk/r1cs_export.py): R1CS binary export for snarkjs/circom compatibility
 
 ## L1↔L2 Bridge
 

@@ -8,7 +8,7 @@
 # 설치
 pip install -e ".[dev]"
 
-# 단위 테스트 (815개)
+# 단위 테스트 (943개)
 pytest
 
 # 특정 모듈 테스트
@@ -77,10 +77,10 @@ watch -n 5 '
 ## 프로젝트 구조
 
 ```
-py-ethclient/                    # ~29,700 LOC (소스 19,789 + 테스트 9,929)
+py-ethclient/                    # ~33,200 LOC (소스 21,442 + 테스트 11,839)
 ├── ethclient/
 │   ├── main.py                  # CLI 진입점 (argparse, asyncio 이벤트 루프)
-│   ├── l2/                      # L2 롤업 프레임워크 (14파일, 1,276 LOC)
+│   ├── l2/                      # L2 롤업 프레임워크 (24파일, 3,024 LOC)
 │   │   ├── rollup.py            # 메인 API — STF, Sequencer, Prover, L1Backend 래핑
 │   │   ├── types.py             # L2Tx, L2TxType, L2State, STFResult, Batch, BatchReceipt
 │   │   ├── interfaces.py        # 4개 플러거블 ABC — STF, DAProvider, L1Backend, ProofBackend
@@ -93,12 +93,23 @@ py-ethclient/                    # ~29,700 LOC (소스 19,789 + 테스트 9,929)
 │   │   ├── submitter.py         # BatchSubmitter — 증명 → 제출 → 검증 파이프라인
 │   │   ├── rpc_api.py           # 7개 l2_* JSON-RPC 메서드
 │   │   ├── cli.py               # ethclient l2 {init|start|prove|submit}
-│   │   └── config.py            # L2 체인 설정
-│   ├── zk/                      # ZK 툴킷 (6파일)
+│   │   ├── config.py            # L2 체인 설정
+│   │   ├── da_s3.py              # S3 DA 프로바이더
+│   │   ├── da_calldata.py        # Calldata DA 프로바이더 (EIP-1559)
+│   │   ├── da_blob.py            # Blob DA 프로바이더 (EIP-4844)
+│   │   ├── native_prover.py      # NativeProverBackend (rapidsnark/snarkjs)
+│   │   ├── eth_l1_backend.py     # 실제 이더리움 L1 백엔드 (JSON-RPC)
+│   │   ├── eth_rpc.py            # 경량 이더리움 JSON-RPC 클라이언트
+│   │   ├── persistent_state.py   # LMDB 기반 L2 상태 (오버레이, WAL)
+│   │   ├── health.py             # /health, /ready, /metrics 엔드포인트
+│   │   ├── metrics.py            # L2 메트릭 수집기
+│   │   └── middleware.py         # API key 인증, rate limit, request size
+│   ├── zk/                      # ZK 툴킷 (7파일)
 │   │   ├── circuit.py           # 연산자 오버로딩 기반 R1CS 회로 빌더
 │   │   ├── groth16.py           # 완전한 Groth16 파이프라인 — R1CS → QAP → 셋업 → 증명 → 검증
 │   │   ├── evm_verifier.py      # 온체인 검증용 EVM 바이트코드 자동 생성
 │   │   ├── snarkjs_compat.py    # snarkjs JSON 포맷 임포트/익스포트
+│   │   ├── r1cs_export.py       # R1CS 익스포트 유틸리티
 │   │   └── types.py             # G1Point, G2Point, Proof, VerificationKey
 │   ├── bridge/                  # L1↔L2 브릿지 (5파일)
 │   │   ├── messenger.py         # Optimism 스타일 CrossDomainMessenger
@@ -153,7 +164,7 @@ py-ethclient/                    # ~29,700 LOC (소스 19,789 + 테스트 9,929)
 │       ├── engine_api.py        # Engine API V1/V2/V3 핸들러
 │       ├── engine_types.py      # Engine API 요청/응답 타입
 │       └── zk_api.py            # zk_ 네임스페이스 (verifyGroth16, deployVerifier, verifyOnChain)
-├── tests/                       # pytest 단위 테스트 (815개)
+├── tests/                       # pytest 단위 테스트 (943개)
 │   ├── test_l2_types.py         # L2 타입, 상태, 직렬화
 │   ├── test_l2_sequencer.py     # 시퀀서, 멤풀, 배치 조립
 │   ├── test_l2_prover.py        # Groth16 증명 백엔드
@@ -251,8 +262,8 @@ main.py                         ↓
 ### 단위 테스트 (오프라인)
 
 ```bash
-pytest                           # 전체 (815개)
-pytest tests/test_l2_*.py        # L2 롤업 테스트 (72개)
+pytest                           # 전체 (943개)
+pytest tests/test_l2_*.py        # L2 롤업 테스트 (230개)
 pytest tests/test_zk_*.py        # ZK 툴킷 테스트 (57개)
 pytest tests/test_bridge_*.py    # 브릿지 테스트 (63개)
 pytest tests/test_rlp.py         # 특정 모듈
@@ -264,7 +275,7 @@ pytest --tb=short                # 짧은 트레이스백
 
 | 파일 | 테스트 수 | 커버하는 모듈 |
 |------|--------:|-------------|
-| **L2 롤업** | **72** | |
+| **L2 롤업** | **230** | |
 | test_l2_types.py | 17 | L2 타입, 상태, 직렬화 |
 | test_l2_sequencer.py | 10 | 시퀀서, 멤풀, 배치 조립 |
 | test_l2_prover.py | 10 | Groth16 증명 백엔드 |
@@ -272,6 +283,13 @@ pytest --tb=short                # 짧은 트레이스백
 | test_l2_da.py | 8 | DA 프로바이더, 커밋먼트 |
 | test_l2_runtime.py | 9 | Python 런타임, STF 래핑 |
 | test_l2_integration.py | 12 | 엔드투엔드 롤업 파이프라인 |
+| test_l2_da_providers.py | 40 | 프로덕션 DA 프로바이더 (S3, Calldata, Blob) |
+| test_l2_sequencer_hardening.py | 12 | 시퀀서 입력 검증, 방어적 체크 |
+| test_l2_native_prover.py | 14 | 네이티브 프로버 (rapidsnark/snarkjs) |
+| test_l2_eth_l1_backend.py | 12 | 실제 이더리움 L1 백엔드 |
+| test_l2_persistent_state.py | 34 | LMDB 영속 상태, 오버레이 |
+| test_l2_health.py | 3 | Health/ready 엔드포인트 |
+| test_l2_middleware.py | 13 | RPC 미들웨어 |
 | **ZK 툴킷** | **57** | |
 | test_zk_circuit.py | 26 | R1CS 회로 빌더 |
 | test_zk_groth16.py | 18 | Groth16 셋업/증명/검증 |
@@ -513,7 +531,7 @@ CLI: `ethclient --network sepolia --bootnodes enode://...`
 
 ## 코드 수정 시 체크리스트
 
-1. `l2/` 수정 시 → `test_l2_*.py` 실행 (72개)
+1. `l2/` 수정 시 → `test_l2_*.py` 실행 (230개)
 2. `l2/sequencer.py` 수정 시 → `test_l2_sequencer.py`, `test_l2_integration.py` 실행
 3. `l2/prover.py` 수정 시 → `test_l2_prover.py`, `test_l2_integration.py` 실행
 4. `zk/` 수정 시 → `test_zk_*.py` 실행 (57개)

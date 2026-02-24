@@ -8,7 +8,7 @@ A Python L2 development platform for building application-specific ZK rollups. D
 # Install
 pip install -e ".[dev]"
 
-# Unit tests (815 tests)
+# Unit tests (943 tests)
 pytest
 
 # Test a specific module
@@ -77,10 +77,10 @@ watch -n 5 '
 ## Project Structure
 
 ```
-py-ethclient/                    # ~29,700 LOC (19,789 source + 9,929 test)
+py-ethclient/                    # ~33,200 LOC (21,442 source + 11,839 test)
 ├── ethclient/
 │   ├── main.py                  # CLI entry point (argparse, asyncio event loop)
-│   ├── l2/                      # L2 Rollup Framework (14 files, 1,276 LOC)
+│   ├── l2/                      # L2 Rollup Framework (24 files, 3,024 LOC)
 │   │   ├── rollup.py            # Main API — wraps STF, Sequencer, Prover, L1Backend
 │   │   ├── types.py             # L2Tx, L2TxType, L2State, STFResult, Batch, BatchReceipt
 │   │   ├── interfaces.py        # 4 pluggable ABCs — STF, DAProvider, L1Backend, ProofBackend
@@ -93,12 +93,23 @@ py-ethclient/                    # ~29,700 LOC (19,789 source + 9,929 test)
 │   │   ├── submitter.py         # BatchSubmitter — prove → submit → verify pipeline
 │   │   ├── rpc_api.py           # 7 l2_* JSON-RPC methods
 │   │   ├── cli.py               # ethclient l2 {init|start|prove|submit}
-│   │   └── config.py            # L2 chain configuration
-│   ├── zk/                      # ZK Toolkit (6 files)
+│   │   ├── config.py            # L2 chain configuration
+│   │   ├── da_s3.py              # S3 DA provider
+│   │   ├── da_calldata.py        # Calldata DA provider (EIP-1559)
+│   │   ├── da_blob.py            # Blob DA provider (EIP-4844)
+│   │   ├── native_prover.py      # NativeProverBackend (rapidsnark/snarkjs)
+│   │   ├── eth_l1_backend.py     # Real Ethereum L1 backend (JSON-RPC)
+│   │   ├── eth_rpc.py            # Lightweight Ethereum JSON-RPC client
+│   │   ├── persistent_state.py   # LMDB-backed L2 state (overlay, WAL)
+│   │   ├── health.py             # /health, /ready, /metrics endpoints
+│   │   ├── metrics.py            # L2 metrics collector
+│   │   └── middleware.py         # API key auth, rate limit, request size
+│   ├── zk/                      # ZK Toolkit (7 files)
 │   │   ├── circuit.py           # R1CS circuit builder with operator overloading
 │   │   ├── groth16.py           # Full Groth16 pipeline — R1CS → QAP → setup → prove → verify
 │   │   ├── evm_verifier.py      # Auto-generated EVM bytecode for on-chain verification
 │   │   ├── snarkjs_compat.py    # Import/export snarkjs JSON format
+│   │   ├── r1cs_export.py       # R1CS export utilities
 │   │   └── types.py             # G1Point, G2Point, Proof, VerificationKey
 │   ├── bridge/                  # L1↔L2 Bridge (5 files)
 │   │   ├── messenger.py         # CrossDomainMessenger with Optimism-style relay
@@ -153,7 +164,7 @@ py-ethclient/                    # ~29,700 LOC (19,789 source + 9,929 test)
 │       ├── engine_api.py        # Engine API V1/V2/V3 handlers
 │       ├── engine_types.py      # Engine API request/response types
 │       └── zk_api.py            # zk_ namespace (verifyGroth16, deployVerifier, verifyOnChain)
-├── tests/                       # pytest unit tests (815 tests)
+├── tests/                       # pytest unit tests (943 tests)
 │   ├── test_l2_types.py         # L2 types, state, serialization
 │   ├── test_l2_sequencer.py     # Sequencer, mempool, batch assembly
 │   ├── test_l2_prover.py        # Groth16 proof backend
@@ -251,8 +262,8 @@ User Python STF → Rollup.submit_tx() → Sequencer (mempool + ordering)
 ### Unit Tests (offline)
 
 ```bash
-pytest                           # All tests (815)
-pytest tests/test_l2_*.py        # L2 rollup tests (72)
+pytest                           # All tests (943)
+pytest tests/test_l2_*.py        # L2 rollup tests (230)
 pytest tests/test_zk_*.py        # ZK toolkit tests (57)
 pytest tests/test_bridge_*.py    # Bridge tests (63)
 pytest tests/test_rlp.py         # Specific module
@@ -264,7 +275,7 @@ Test coverage by file:
 
 | File | Tests | Covers |
 |------|------:|--------|
-| **L2 Rollup** | **72** | |
+| **L2 Rollup** | **230** | |
 | test_l2_types.py | 17 | L2 types, state, serialization |
 | test_l2_sequencer.py | 10 | Sequencer, mempool, batch assembly |
 | test_l2_prover.py | 10 | Groth16 proof backend |
@@ -272,6 +283,13 @@ Test coverage by file:
 | test_l2_da.py | 8 | DA provider, commitments |
 | test_l2_runtime.py | 9 | Python runtime, STF wrapping |
 | test_l2_integration.py | 12 | End-to-end rollup pipeline |
+| test_l2_da_providers.py | 40 | Production DA providers (S3, Calldata, Blob) |
+| test_l2_sequencer_hardening.py | 12 | Sequencer input validation, defensive checks |
+| test_l2_native_prover.py | 14 | Native prover (rapidsnark/snarkjs) |
+| test_l2_eth_l1_backend.py | 12 | Real Ethereum L1 backend |
+| test_l2_persistent_state.py | 34 | LMDB persistent state, overlay |
+| test_l2_health.py | 3 | Health/ready endpoints |
+| test_l2_middleware.py | 13 | RPC middleware |
 | **ZK Toolkit** | **57** | |
 | test_zk_circuit.py | 26 | R1CS circuit builder |
 | test_zk_groth16.py | 18 | Groth16 setup/prove/verify |
@@ -512,7 +530,7 @@ CLI: `ethclient --network sepolia --bootnodes enode://...`
 
 ## Post-Change Checklist
 
-1. `l2/` changed → run `test_l2_*.py` (72 tests)
+1. `l2/` changed → run `test_l2_*.py` (230 tests)
 2. `l2/sequencer.py` changed → run `test_l2_sequencer.py`, `test_l2_integration.py`
 3. `l2/prover.py` changed → run `test_l2_prover.py`, `test_l2_integration.py`
 4. `zk/` changed → run `test_zk_*.py` (57 tests)

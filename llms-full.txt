@@ -2,7 +2,7 @@
 
 > A Python L2 development platform for building application-specific ZK rollups. Define your State Transition Function as a plain Python function — the framework handles sequencing, batching, Groth16 proving, and L1 verification. Built on a fully independent Ethereum L1 execution client with EVM, RLPx, eth/68, snap/1, full+snap sync, Engine API, L1↔L2 bridge, and Groth16 ZK toolkit — all in pure Python.
 
-py-ethclient is the only Ethereum execution client written in Python. It is a fully independent implementation inspired by ethrex (Rust), connecting directly to the Ethereum peer-to-peer network via devp2p/RLPx. The project contains 19,804 lines of source code across 75 files with 815 tests covering all protocol layers.
+py-ethclient is the only Ethereum execution client written in Python. It is a fully independent implementation inspired by ethrex (Rust), connecting directly to the Ethereum peer-to-peer network via devp2p/RLPx. The project contains 21,442 lines of source code across 86 files with 943 tests covering all protocol layers.
 
 ## Why py-ethclient?
 
@@ -51,6 +51,26 @@ The L2 module provides a complete application-specific ZK rollup framework with 
 
 - [L2 CLI](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/cli.py): Subcommand "l2" with init (scaffolds l2.json + stf.py), start, prove, submit.
 
+- [S3 DA Provider](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/da_s3.py): S3DAProvider(DAProvider) — stores batch data in S3 bucket. Configurable bucket, prefix, region, endpoint_url. Commitment = keccak256(batch_number_8bytes || data). Requires boto3 (optional dependency).
+
+- [Calldata DA Provider](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/da_calldata.py): CalldataDAProvider(DAProvider) — posts batch data as calldata in EIP-1559 (type-2) L1 transactions. Uses EthRPCClient for JSON-RPC transport, ecdsa_sign for signing. Commitment = keccak256(batch_number_8bytes || data). Configurable receipt_timeout.
+
+- [Blob DA Provider](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/da_blob.py): BlobDAProvider(DAProvider) — stores batch data as EIP-4844 blobs on L1. Blob encoding: 4-byte length header + data packed into 31-byte chunks (high byte = 0x00 for BLS modulus safety). 4096 field elements per blob, max ~126,972 bytes per blob. Uses KZG commitments via ckzg trusted setup.
+
+- [Native Prover](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/native_prover.py): NativeProverBackend(ProofBackend) — subprocess-based Groth16 proving via rapidsnark/snarkjs CLI. Witness computation in Python, proof generation delegated to native binaries. Working directory: circuit.r1cs, witness.json, proving_key.zkey, proof.json. Falls back to Python prover if native binaries unavailable. Uses R1CS export and snarkjs compat for format interop.
+
+- [Real L1 Backend](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/eth_l1_backend.py): EthL1Backend(L1Backend) — real Ethereum L1 backend via JSON-RPC. Deploys Groth16 verifier contract on-chain, submits batch proofs as EIP-1559 transactions, verifies on-chain via EVMVerifier calldata encoding. Configurable gas_multiplier, receipt_timeout. Uses EthRPCClient for transport.
+
+- [Persistent State](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/persistent_state.py): L2PersistentState(dict) — LMDB-backed state with overlay pattern. STF writes to overlay dict, reads fall through to LMDB. flush() atomically commits overlay to disk. L2PersistentStateStore — manages state root via Trie, persists batches, proofs, nonces, and metadata. WAL (write-ahead log) for crash recovery. Transparent dict interface for STF compatibility.
+
+- [Eth RPC Client](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/eth_rpc.py): EthRPCClient — lightweight Ethereum JSON-RPC client using urllib (no external dependencies). Methods: get_nonce, send_raw_transaction, get_transaction_receipt, get_gas_price, etc. EthRPCError for JSON-RPC/transport failures.
+
+- [Metrics Collector](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/metrics.py): L2MetricsCollector — collects operational metrics from the rollup. Tracks mempool size, sealed/proven/submitted batch counts, tx submitted/failed totals, prove/submit durations (average).
+
+- [Health Endpoints](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/health.py): register_health_endpoints(app, rollup) — /health returns {"status": "ok"}, /ready returns readiness with chain_id, state_root, pending_txs, sealed_batches (503 if not setup). /metrics endpoint registered in CLI via L2MetricsCollector.
+
+- [Middleware](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/l2/middleware.py): APIKeyMiddleware — X-API-Key header validation, bypasses /health /ready /metrics. RateLimitMiddleware — IP-based token bucket rate limiting with configurable capacity and rate. RequestSizeLimitMiddleware — rejects oversized request bodies (default 1MB). All Starlette BaseHTTPMiddleware.
+
 ## ZK Toolkit (ethclient/zk/)
 
 - [Circuit Builder](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/zk/circuit.py): Circuit, Signal, R1CS classes. Python operator overloading for R1CS definition. Signal __mul__ auto-creates constraints. constrain(lhs, rhs) optimizes. compute_witness() via constraint propagation. Field: BN128 curve_order.
@@ -62,6 +82,8 @@ The L2 module provides a complete application-specific ZK rollup framework with 
 - [snarkjs Compat](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/zk/snarkjs_compat.py): Round-trip import/export of snarkjs vkey.json and proof.json. G2 FQ2 order: snarkjs uses [imaginary, real] (c1, c0).
 
 - [ZK Types](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/zk/types.py): G1Point, G2Point, Proof, VerificationKey, ProvingKey dataclasses.
+
+- [R1CS Export](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/zk/r1cs_export.py): R1CS binary format export for snarkjs/circom toolchain compatibility. export_r1cs_binary(circuit) → bytes (.r1cs binary with header, constraints, wire mapping sections). export_witness_json(circuit, witness) → JSON for snarkjs/rapidsnark. Format follows iden3 r1cs_bin_format spec.
 
 ## L1↔L2 Bridge (ethclient/bridge/)
 

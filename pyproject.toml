@@ -5,8 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "py-ethclient"
 version = "0.1.0"
-description = "Python Ethereum L1 execution client"
+description = "Python L2 development platform for application-specific ZK rollups — STF, Groth16, L1↔L2 bridge, and full Ethereum execution client"
+authors = [{name = "Tokamak Network"}]
+license = {text = "MIT"}
 requires-python = ">=3.12"
+keywords = ["ethereum", "l2", "rollup", "zk-rollup", "groth16", "zk-proof", "evm", "bridge", "python", "blockchain"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Security :: Cryptography",
+]
 dependencies = [
     "pycryptodome>=3.20",
     "coincurve>=20.0",
@@ -29,6 +41,12 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["ethclient*"]
+
+[project.urls]
+Homepage = "https://github.com/tokamak-network/py-ethclient"
+Repository = "https://github.com/tokamak-network/py-ethclient"
+Documentation = "https://github.com/tokamak-network/py-ethclient/blob/main/README.md"
+Issues = "https://github.com/tokamak-network/py-ethclient/issues"
 
 [project.scripts]
 ethclient = "ethclient.main:main"

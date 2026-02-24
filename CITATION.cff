@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
 title: "py-ethclient"
-abstract: "A Python Ethereum Layer 1 execution client built from scratch — EVM, RLPx, eth/68, snap/1, full sync, snap sync, Engine API, and JSON-RPC."
+abstract: "A Python L2 development platform for building application-specific ZK rollups with Groth16 proving, L1↔L2 bridge, and full Ethereum L1 execution client — EVM, RLPx, eth/68, snap/1, full+snap sync, Engine API, and JSON-RPC."
 authors:
   - name: "Tokamak Network"
 url: "https://github.com/tokamak-network/py-ethclient"
@@ -19,3 +19,11 @@ keywords:
   - snap-sync
   - engine-api
   - json-rpc
+  - zk-rollup
+  - groth16
+  - zero-knowledge-proof
+  - layer-2
+  - bridge
+  - app-specific-rollup
+  - state-transition-function
+  - data-availability

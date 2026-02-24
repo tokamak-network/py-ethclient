@@ -5,10 +5,7 @@ store them in MemoryBackend, and verify tx/receipt lookup via RPC layer.
 
 import asyncio
 import os
-import sys
 import time
-
-sys.path.insert(0, os.path.dirname(__file__))
 
 from ethclient.common import rlp
 from ethclient.common.types import (

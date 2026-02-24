@@ -197,7 +197,10 @@ py-ethclient/                    # ~33,200 LOC (소스 21,442 + 테스트 11,839
 │   ├── archive_mode_test.py     # 아카이브 모드 RPC
 │   ├── chaindata_test.py        # 체인데이터 영속성
 │   └── fusaka_compliance_test.py # Fusaka 포크 호환
-├── test_full_sync.py            # 라이브 메인넷 검증 테스트 (별도 실행)
+├── tests/live/                  # 라이브 네트워크 테스트 (실제 피어 필요)
+│   ├── test_full_sync.py        # 메인넷 검증 sync
+│   ├── test_tx_lookup.py        # Sepolia tx hash 조회
+│   └── test_mainnet_discovery.py # 메인넷 discv4 discovery
 ├── Dockerfile                   # Ubuntu 기반 컨테이너 이미지
 ├── docker-compose.yml           # 원커맨드 배포
 └── pyproject.toml               # Python 3.12+, 의존성 정의
@@ -319,7 +322,7 @@ pytest --tb=short                # 짧은 트레이스백
 ### 라이브 네트워크 테스트
 
 ```bash
-python3 test_full_sync.py        # 메인넷 피어 연결 + 블록 검증
+python3 tests/live/test_full_sync.py   # 메인넷 피어 연결 + 블록 검증
 ```
 
 검증 항목: 헤더 체인 링크, 트랜잭션 루트 (MPT), ECDSA sender 복구, EIP-1559 base fee, 모든 5가지 tx 타입 (Legacy/AccessList/FeeMarket/Blob/SetCode).
@@ -541,8 +544,8 @@ CLI: `ethclient --network sepolia --bootnodes enode://...`
 8. `common/trie.py` 수정 시 → `test_trie.py`, `test_trie_proofs.py` 실행
 9. `vm/` 수정 시 → `test_evm.py`, `test_zk_evm.py` 실행
 10. `networking/` 수정 시 → `test_p2p.py`, `test_protocol_registry.py`, `test_snap_messages.py` 실행
-11. `networking/sync/` 수정 시 → `test_snap_sync.py` + `test_full_sync.py` 실행
+11. `networking/sync/` 수정 시 → `test_snap_sync.py` + `tests/live/test_full_sync.py` 실행
 12. `blockchain/` 수정 시 → `test_blockchain.py` + `test_integration.py` + `test_rpc.py` 실행
 13. `rpc/` 수정 시 → `test_rpc.py` 실행
 14. 새 하드포크 지원 시 → `config.py`에 포크 블록/타임스탬프 추가, `types.py`에 새 필드 추가
-15. 전체 회귀 테스트: `pytest && python3 test_full_sync.py`
+15. 전체 회귀 테스트: `pytest && python3 tests/live/test_full_sync.py`

@@ -197,7 +197,10 @@ py-ethclient/                    # ~33,200 LOC (21,442 source + 11,839 test)
 │   ├── archive_mode_test.py     # Archive mode RPC semantics
 │   ├── chaindata_test.py        # Chaindata persistence
 │   └── fusaka_compliance_test.py # Fusaka fork compliance
-├── test_full_sync.py            # Live mainnet verification test (standalone)
+├── tests/live/                  # Live network tests (require real peers)
+│   ├── test_full_sync.py        # Mainnet verification sync
+│   ├── test_tx_lookup.py        # Sepolia tx hash lookup
+│   └── test_mainnet_discovery.py # Mainnet discv4 discovery
 ├── Dockerfile                   # Ubuntu-based container image
 ├── docker-compose.yml           # One-command deployment
 └── pyproject.toml               # Python 3.12+, dependency definitions
@@ -319,7 +322,7 @@ Test coverage by file:
 ### Live Network Test
 
 ```bash
-python3 test_full_sync.py        # Mainnet peer connection + block verification
+python3 tests/live/test_full_sync.py   # Mainnet peer connection + block verification
 ```
 
 Verifies: header chain links, transaction roots (MPT), ECDSA sender recovery, EIP-1559 base fee, all 5 tx types (Legacy/AccessList/FeeMarket/Blob/SetCode).
@@ -540,8 +543,8 @@ CLI: `ethclient --network sepolia --bootnodes enode://...`
 8. `common/trie.py` changed → run `test_trie.py`, `test_trie_proofs.py`
 9. `vm/` changed → run `test_evm.py`, `test_zk_evm.py`
 10. `networking/` changed → run `test_p2p.py`, `test_protocol_registry.py`, `test_snap_messages.py`
-11. `networking/sync/` changed → run `test_snap_sync.py` + `test_full_sync.py`
+11. `networking/sync/` changed → run `test_snap_sync.py` + `tests/live/test_full_sync.py`
 12. `blockchain/` changed → run `test_blockchain.py` + `test_integration.py` + `test_rpc.py`
 13. `rpc/` changed → run `test_rpc.py`
 14. New hardfork support → add fork block/timestamp to `config.py`, add new fields to `types.py`
-15. Full regression: `pytest && python3 test_full_sync.py`
+15. Full regression: `pytest && python3 tests/live/test_full_sync.py`

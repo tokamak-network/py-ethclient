@@ -7,10 +7,7 @@ then connects via TCP for RLPx handshake + block verification.
 
 import asyncio
 import os
-import sys
 import time
-
-sys.path.insert(0, os.path.dirname(__file__))
 
 from coincurve import PrivateKey
 

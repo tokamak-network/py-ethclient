@@ -156,6 +156,19 @@ rollup = Rollup(
 )
 ```
 
+### Example Apps
+
+4 ready-to-run example apps demonstrate real-world use cases on the rollup framework:
+
+| Example | Description | Run |
+|---|---|---|
+| **ERC20 Token** | Mint, transfer, burn with admin control | `python examples/l2_token.py` |
+| **Name Service** | ENS-style domain register, update, transfer | `python examples/l2_nameservice.py` |
+| **Voting** | Proposal creation, weighted voting, quorum-based finalization | `python examples/l2_voting.py` |
+| **Rock-Paper-Scissors** | Commit-reveal game with betting and settlement | `python examples/l2_rps_game.py` |
+
+Each example follows the same pattern: define an STF → wrap with `PythonRuntime` → create `Rollup` → submit txs → produce batches → prove and verify on L1.
+
 ### Balance Transfer Example
 
 ```python
@@ -713,6 +726,10 @@ ethclient/
 │   ├── engine_types.py              # Engine API request/response types
 │   └── zk_api.py                    # zk_ namespace RPC handlers
 └── examples/
+    ├── l2_token.py                  # L2 ERC20 token (mint/transfer/burn)
+    ├── l2_nameservice.py            # L2 ENS-style name service
+    ├── l2_voting.py                 # L2 governance (proposal/vote/finalize)
+    ├── l2_rps_game.py               # L2 commit-reveal rock-paper-scissors
     ├── zk_notebook_demo.py          # ZK toolkit end-to-end demo
     ├── bridge_relay_modes.py        # Proof-based relay modes comparison demo
     └── general_state_bridge.py      # L2 bridge end-to-end demo

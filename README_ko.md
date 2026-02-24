@@ -156,6 +156,19 @@ rollup = Rollup(
 )
 ```
 
+### 예제 앱
+
+롤업 프레임워크의 실전 활용법을 보여주는 4개 예제 앱:
+
+| 예제 | 설명 | 실행 |
+|---|---|---|
+| **ERC20 토큰** | Mint, transfer, burn + 관리자 권한 | `python examples/l2_token.py` |
+| **네임 서비스** | ENS 스타일 도메인 등록, 수정, 이전 | `python examples/l2_nameservice.py` |
+| **투표/거버넌스** | 제안 생성, 가중 투표, 정족수 기반 확정 | `python examples/l2_voting.py` |
+| **가위바위보** | Commit-reveal 방식 게임 + 베팅/정산 | `python examples/l2_rps_game.py` |
+
+모든 예제가 동일한 패턴: STF 정의 → `PythonRuntime` 래핑 → `Rollup` 생성 → tx 제출 → batch 생성 → L1 증명/검증.
+
 ### 잔액 이체 예제
 
 ```python
@@ -713,6 +726,10 @@ ethclient/
 │   ├── engine_types.py              # Engine API 요청/응답 타입
 │   └── zk_api.py                    # zk_ 네임스페이스 RPC 핸들러
 └── examples/
+    ├── l2_token.py                  # L2 ERC20 토큰 (mint/transfer/burn)
+    ├── l2_nameservice.py            # L2 ENS 스타일 네임 서비스
+    ├── l2_voting.py                 # L2 거버넌스 (제안/투표/확정)
+    ├── l2_rps_game.py               # L2 commit-reveal 가위바위보
     ├── zk_notebook_demo.py          # ZK 툴킷 end-to-end 데모
     ├── bridge_relay_modes.py        # Proof 기반 릴레이 모드 비교 데모
     └── general_state_bridge.py      # L2 브릿지 end-to-end 데모

@@ -36,7 +36,10 @@ class EthRPCClient:
         req = urllib.request.Request(
             self._url,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "py-ethclient/1.0",
+            },
         )
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:

@@ -37,6 +37,10 @@ from ethclient.l2.runtime import PythonRuntime
 from ethclient.l2.sequencer import Sequencer
 from ethclient.l2.prover import Groth16ProofBackend
 from ethclient.l2.da import LocalDAProvider
+from ethclient.l2.da_s3 import S3DAProvider
+from ethclient.l2.da_calldata import CalldataDAProvider
+from ethclient.l2.da_blob import BlobDAProvider
+from ethclient.l2.eth_rpc import EthRPCClient, EthRPCError
 from ethclient.l2.l1_backend import InMemoryL1Backend
 from ethclient.l2.submitter import BatchSubmitter
 from ethclient.l2.rollup import Rollup
@@ -58,6 +62,11 @@ __all__ = [
     "Sequencer",
     "Groth16ProofBackend",
     "LocalDAProvider",
+    "S3DAProvider",
+    "CalldataDAProvider",
+    "BlobDAProvider",
+    "EthRPCClient",
+    "EthRPCError",
     "InMemoryL1Backend",
     "BatchSubmitter",
     "Rollup",

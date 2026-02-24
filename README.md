@@ -28,6 +28,7 @@ All core protocol logic — RLP encoding, Merkle Patricia Trie, EVM execution, R
 - [Quick Start](#quick-start)
 - [JSON-RPC API](#json-rpc-api)
 - [Testing](#testing)
+- [Claude Code Skills](#claude-code-skills)
 - [Architecture](#architecture)
 - [Dependencies](#dependencies)
 - [Implementation Details](#implementation-details)
@@ -634,6 +635,30 @@ pytest tests/test_integration.py         # End-to-end integration
 
 # Verbose output
 pytest -v
+```
+
+## Claude Code Skills
+
+This project includes 7 [Claude Code](https://claude.com/claude-code) skills that provide domain-specific guidance. Invoke them with `/<skill-name>` in Claude Code.
+
+| Skill | Command | Description |
+|-------|---------|-------------|
+| L2 Rollup | `/l2-rollup <app name or use case>` | Create app-specific ZK rollups — STF definition, PythonRuntime, Rollup lifecycle |
+| ZK Circuit | `/zk-circuit <circuit or verification target>` | Build arithmetic circuits & Groth16 proofs — setup, prove, verify, EVM on-chain |
+| Bridge | `/bridge <use case or direction>` | L1↔L2 bridge — CrossDomainMessenger, force inclusion, escape hatch |
+| Sepolia Deploy | `/sepolia-deploy <app or contract>` | Deploy to Sepolia testnet — EthL1Backend, EIP-1559 tx, on-chain verification |
+| Test | `/test <module or feature>` | Run & write tests — pytest commands, patterns, coverage |
+| L1 Node | `/l1-node <task or question>` | L1 Ethereum node — EVM, eth/68, snap/1, Engine API, P2P |
+| Debug P2P | `/debug-p2p <error message or symptom>` | Debug P2P networking — RLPx, devp2p, sync issues |
+
+### Example Usage
+
+```bash
+# In Claude Code, type:
+/l2-rollup token transfer app
+/zk-circuit merkle proof verification
+/bridge L1→L2 deposit
+/test l2 sequencer
 ```
 
 ## Architecture

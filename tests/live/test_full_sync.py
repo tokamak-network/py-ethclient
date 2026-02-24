@@ -5,10 +5,7 @@ decode transactions, verify tx/ommers roots, and display statistics.
 
 import asyncio
 import os
-import sys
 import time
-
-sys.path.insert(0, os.path.dirname(__file__))
 
 from ethclient.common import rlp
 from ethclient.common.types import (

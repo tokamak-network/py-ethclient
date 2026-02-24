@@ -145,9 +145,43 @@ def _handle_start(args: argparse.Namespace) -> None:
 
     from ethclient.rpc.server import RPCServer
     from ethclient.l2.rpc_api import register_l2_api
+    from ethclient.l2.health import register_health_endpoints
+    from ethclient.l2.metrics import L2MetricsCollector
+    from ethclient.l2.middleware import (
+        APIKeyMiddleware,
+        RateLimitMiddleware,
+        RequestSizeLimitMiddleware,
+    )
+    from starlette.middleware.cors import CORSMiddleware
 
     rpc = RPCServer()
     register_l2_api(rpc, rollup)
+    register_health_endpoints(rpc.app, rollup)
+
+    if l2_config.enable_metrics:
+        metrics = L2MetricsCollector(rollup)
+
+        @rpc.app.get("/metrics")
+        async def get_metrics():
+            return metrics.collect()
+
+    if l2_config.api_keys:
+        rpc.app.add_middleware(APIKeyMiddleware, api_keys=set(l2_config.api_keys))
+    rpc.app.add_middleware(
+        RateLimitMiddleware,
+        rps=l2_config.rate_limit_rps,
+        burst=l2_config.rate_limit_burst,
+    )
+    rpc.app.add_middleware(
+        RequestSizeLimitMiddleware,
+        max_bytes=l2_config.max_request_size,
+    )
+    rpc.app.add_middleware(
+        CORSMiddleware,
+        allow_origins=l2_config.cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     import uvicorn
 

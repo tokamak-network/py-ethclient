@@ -58,12 +58,12 @@ class Rollup:
             raise TypeError(f"stf must be callable or StateTransitionFunction, got {type(stf)}")
 
         self._da = da or LocalDAProvider()
-        self._l1 = l1 or InMemoryL1Backend()
-        self._prover = prover or Groth16ProofBackend()
+        self._l1 = l1 or self._create_l1_backend()
+        self._prover = prover or self._create_prover_backend()
 
         # Initialize state from STF genesis
         genesis = self._stf.genesis_state()
-        self._state_store = L2StateStore(genesis)
+        self._state_store = self._create_state_store(genesis)
 
         # Build sequencer
         self._sequencer = Sequencer(
@@ -149,3 +149,60 @@ class Rollup:
             "pending_txs": self._sequencer.pending_tx_count,
             "sealed_batches": len(self._sequencer.sealed_batches),
         }
+
+    def _create_state_store(self, genesis: dict):
+        """Create state store based on config."""
+        if self._config.state_backend == "lmdb":
+            from pathlib import Path
+            from ethclient.l2.persistent_state import L2PersistentStateStore
+            return L2PersistentStateStore(Path(self._config.data_dir), initial_state=genesis)
+        return L2StateStore(genesis)
+
+    def _create_l1_backend(self) -> L1Backend:
+        """Create L1 backend based on config."""
+        if self._config.l1_backend == "eth_rpc":
+            from ethclient.l2.eth_l1_backend import EthL1Backend
+            pk = bytes.fromhex(self._config.l1_private_key) if self._config.l1_private_key else b""
+            return EthL1Backend(
+                rpc_url=self._config.l1_rpc_url,
+                private_key=pk,
+                chain_id=self._config.l1_chain_id,
+            )
+        return InMemoryL1Backend()
+
+    def _create_prover_backend(self) -> ProofBackend:
+        """Create prover backend based on config."""
+        if self._config.prover_backend == "native":
+            from ethclient.l2.native_prover import NativeProverBackend
+            return NativeProverBackend(
+                prover_binary=self._config.prover_binary,
+                working_dir=self._config.prover_working_dir or None,
+            )
+        return Groth16ProofBackend()
+
+    def recover(self) -> None:
+        """Replay WAL entries for crash recovery (requires LMDB state backend)."""
+        from ethclient.l2.persistent_state import L2PersistentStateStore
+        if not isinstance(self._state_store, L2PersistentStateStore):
+            return
+        entries = self._state_store.wal_replay()
+        if not entries:
+            return
+        max_seq = 0
+        for entry in entries:
+            self._apply_wal_entry(entry)
+            max_seq = max(max_seq, entry.sequence)
+        self._state_store.wal_truncate(max_seq)
+
+    def _apply_wal_entry(self, entry) -> None:
+        """Apply a single WAL entry during recovery."""
+        from ethclient.l2.persistent_state import WALEntry
+        if entry.entry_type == "batch_sealed":
+            batch = Batch.decode(entry.data)
+            self._sequencer._sealed_batches.append(batch)
+        elif entry.entry_type == "batch_submitted":
+            batch_number = int.from_bytes(entry.data[:8], "big")
+            for b in self._sequencer._sealed_batches:
+                if b.number == batch_number:
+                    b.submitted = True
+                    break

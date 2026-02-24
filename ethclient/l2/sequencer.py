@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 from ethclient.l2.interfaces import DAProvider, StateTransitionFunction
@@ -33,6 +34,8 @@ class Sequencer:
         self._sealed_batches: list[Batch] = []
         self._nonces: dict[bytes, int] = {}  # sender -> next expected nonce
         self._pre_batch_root: bytes = state_store.compute_state_root()
+        self._last_batch_time: float = time.monotonic()
+        self._batch_timeout: float = float(self._config.batch_timeout)
 
     @property
     def mempool(self) -> list[L2Tx]:
@@ -52,6 +55,9 @@ class Sequencer:
 
     def submit_tx(self, tx: L2Tx) -> Optional[str]:
         """Submit a transaction. Returns error string or None on success."""
+        if len(self._mempool) >= self._config.mempool_max_size:
+            return "mempool full"
+
         error = self._stf.validate_tx(self._state_store.state, tx)
         if error:
             return error
@@ -81,6 +87,9 @@ class Sequencer:
 
             if result.success:
                 self._state_store.commit()
+                if not self._current_batch_txs:
+                    # Reset timeout when first tx enters the current batch
+                    self._last_batch_time = time.monotonic()
                 self._current_batch_txs.append(tx)
             else:
                 self._state_store.rollback(snap)
@@ -91,6 +100,10 @@ class Sequencer:
 
         if len(self._current_batch_txs) >= self._config.max_txs_per_batch:
             self._seal_batch()
+        elif self._current_batch_txs:
+            elapsed = time.monotonic() - self._last_batch_time
+            if elapsed >= self._batch_timeout:
+                self._seal_batch()
 
         return results
 
@@ -121,6 +134,7 @@ class Sequencer:
         self._current_batch_txs = []
         self._batch_counter += 1
         self._pre_batch_root = new_root
+        self._last_batch_time = time.monotonic()
 
         logger.info("Sealed batch #%d with %d txs", batch.number, len(batch.transactions))
         return batch

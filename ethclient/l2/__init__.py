@@ -43,6 +43,9 @@ from ethclient.l2.da_blob import BlobDAProvider
 from ethclient.l2.eth_rpc import EthRPCClient, EthRPCError
 from ethclient.l2.l1_backend import InMemoryL1Backend
 from ethclient.l2.submitter import BatchSubmitter
+from ethclient.l2.persistent_state import L2PersistentStateStore, L2PersistentState, WALEntry
+from ethclient.l2.eth_l1_backend import EthL1Backend
+from ethclient.l2.native_prover import NativeProverBackend
 from ethclient.l2.rollup import Rollup
 
 __all__ = [
@@ -69,5 +72,10 @@ __all__ = [
     "EthRPCError",
     "InMemoryL1Backend",
     "BatchSubmitter",
+    "EthL1Backend",
+    "NativeProverBackend",
+    "L2PersistentStateStore",
+    "L2PersistentState",
+    "WALEntry",
     "Rollup",
 ]

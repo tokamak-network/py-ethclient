@@ -34,3 +34,24 @@ class L2Config:
     s3_prefix: str = "batches/"
     s3_region: str = ""
     s3_endpoint_url: str = ""
+
+    # State backend: "memory" | "lmdb"
+    state_backend: str = "memory"
+    data_dir: str = "./l2data"
+
+    # Prover backend: "python" | "native"
+    prover_backend: str = "python"
+    prover_binary: str = "rapidsnark"
+    prover_working_dir: str = ""
+
+    # L1 backend: "memory" | "eth_rpc"
+    l1_backend: str = "memory"
+
+    # Sequencer hardening
+    mempool_max_size: int = 10000
+    api_keys: list[str] = field(default_factory=list)
+    rate_limit_rps: float = 10.0
+    rate_limit_burst: int = 50
+    max_request_size: int = 1_048_576  # 1 MB
+    cors_origins: list[str] = field(default_factory=lambda: ["*"])
+    enable_metrics: bool = True

@@ -234,6 +234,37 @@ Runtime: pycryptodome (AES, SHA-256, RIPEMD-160), coincurve (secp256k1 ECDSA), e
 
 Dev: pytest, pytest-asyncio.
 
+## Examples (examples/)
+
+19 self-contained examples organized into apps (business logic STF) and infra (production features):
+
+### App Examples (examples/apps/) — 9 examples
+- [l2_token.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_token.py): ERC20 token — mint, transfer, burn, admin control. STF pattern: basic CRUD with balance tracking.
+- [l2_nameservice.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_nameservice.py): ENS-style domain register, update, transfer. STF pattern: ownership model.
+- [l2_voting.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_voting.py): Governance — proposal creation, weighted voting, quorum-based finalization. STF pattern: time-based state transitions.
+- [l2_rps_game.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_rps_game.py): Rock-paper-scissors with commit-reveal and betting. STF pattern: 2-phase protocol.
+- [l2_dex.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_dex.py): Constant product AMM (x*y=k) with LP tokens, 0.3% fee, slippage checks. STF pattern: mathematical invariant verification.
+- [l2_nft_marketplace.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_nft_marketplace.py): NFT mint/list/buy/transfer with 5% creator royalties and collections. STF pattern: nested state (owners, listings, collections).
+- [l2_multisig.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_multisig.py): N-of-M multisig — propose, approve, auto-execute at threshold. STF pattern: multi-step workflow with authorization.
+- [l2_escrow.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_escrow.py): 3-party escrow (buyer, seller, arbiter) with state machine. STF pattern: finite state machine (Created→Funded→Released/Refunded/Disputed).
+- [l2_prediction_market.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_prediction_market.py): Prediction markets with oracle resolution and proportional payout. STF pattern: pool-based proportional math.
+
+### Infra Examples (examples/infra/) — 10 examples
+- [l2_rpc_server.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/l2_rpc_server.py): L2 RPC server with 7 l2_* methods + APIKey, RateLimit, RequestSize middleware + /health, /ready, /metrics endpoints.
+- [l2_persistent_state.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/l2_persistent_state.py): LMDB persistence — batch creation → flush → crash simulation → WAL recovery → continued operation.
+- [l2_da_providers.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/l2_da_providers.py): DA layer comparison — LocalDAProvider (memory), CalldataDAProvider (EIP-1559), BlobDAProvider (EIP-4844 blob encode/decode + KZG).
+- [l2_censorship_resistance.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/l2_censorship_resistance.py): Force inclusion (sequencer censorship bypass) + escape hatch (L2 down → L1 fund recovery).
+- [l2_multi_batch_ops.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/l2_multi_batch_ops.py): 15-batch operations loop with prove/submit separation, batch chaining verification, query API demo.
+- [l2_config_fullstack.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/l2_config_fullstack.py): L2Config full-stack wiring — all backend options, NativeProver fallback, JSON config, CLI usage.
+- [general_state_bridge.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/general_state_bridge.py): L1↔L2 general state bridge end-to-end with Merkle proof.
+- [bridge_relay_modes.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/bridge_relay_modes.py): 5 relay modes comparison — EVM, Merkle, ZK, TinyDB, Direct.
+- [zk_notebook_demo.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/zk_notebook_demo.py): Groth16 end-to-end — circuit definition → trusted setup → prove → verify → EVM on-chain.
+- [zk_note_settle.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/zk_note_settle.py): ZK proof-based note settlement.
+
+### Sepolia Live (examples/) — 2 examples
+- [l2_sepolia_hello.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/l2_sepolia_hello.py): Sepolia testnet live deployment.
+- [l2_sepolia_all.py](https://github.com/tokamak-network/py-ethclient/blob/main/examples/l2_sepolia_all.py): Sepolia 4-app batch deployment.
+
 ## FAQ
 
 Q: Can I build an application-specific rollup with py-ethclient?

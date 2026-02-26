@@ -20,6 +20,8 @@ All core protocol logic — RLP encoding, Merkle Patricia Trie, EVM execution, R
 - [Key Features](#key-features)
 - [Why py-ethclient?](#why-py-ethclient)
 - [L2 Rollup Framework](#l2-rollup-framework)
+  - [Example Apps](#example-apps)
+  - [Infrastructure Examples](#infrastructure-examples)
 - [L2 Bridge](#l2-bridge)
 - [ZK Toolkit](#zk-toolkit)
 - [Requirements](#requirements)
@@ -159,14 +161,36 @@ rollup = Rollup(
 
 ### Example Apps
 
-4 ready-to-run example apps demonstrate real-world use cases on the rollup framework:
+9 ready-to-run app examples demonstrate real-world use cases on the rollup framework:
 
 | Example | Description | Run |
 |---|---|---|
-| **ERC20 Token** | Mint, transfer, burn with admin control | `python examples/l2_token.py` |
-| **Name Service** | ENS-style domain register, update, transfer | `python examples/l2_nameservice.py` |
-| **Voting** | Proposal creation, weighted voting, quorum-based finalization | `python examples/l2_voting.py` |
-| **Rock-Paper-Scissors** | Commit-reveal game with betting and settlement | `python examples/l2_rps_game.py` |
+| **ERC20 Token** | Mint, transfer, burn with admin control | `python examples/apps/l2_token.py` |
+| **Name Service** | ENS-style domain register, update, transfer | `python examples/apps/l2_nameservice.py` |
+| **Voting** | Proposal creation, weighted voting, quorum-based finalization | `python examples/apps/l2_voting.py` |
+| **Rock-Paper-Scissors** | Commit-reveal game with betting and settlement | `python examples/apps/l2_rps_game.py` |
+| **DEX (AMM)** | Constant product AMM with LP tokens, 0.3% fee, slippage checks | `python examples/apps/l2_dex.py` |
+| **NFT Marketplace** | Mint, list, buy, transfer with 5% creator royalties | `python examples/apps/l2_nft_marketplace.py` |
+| **Multisig Wallet** | N-of-M approval, propose/approve/execute workflow | `python examples/apps/l2_multisig.py` |
+| **Escrow** | 3-party escrow with state machine (Created→Funded→Released/Refunded) | `python examples/apps/l2_escrow.py` |
+| **Prediction Market** | Create markets, bet, oracle resolution, proportional payout | `python examples/apps/l2_prediction_market.py` |
+
+### Infrastructure Examples
+
+10 infrastructure examples demonstrate production features:
+
+| Example | Description | Run |
+|---|---|---|
+| **RPC Server** | JSON-RPC server with APIKey/RateLimit/RequestSize middleware | `python examples/infra/l2_rpc_server.py` |
+| **Persistent State** | LMDB persistence + crash recovery via WAL replay | `python examples/infra/l2_persistent_state.py` |
+| **DA Providers** | Local vs Calldata (EIP-1559) vs Blob (EIP-4844) comparison | `python examples/infra/l2_da_providers.py` |
+| **Censorship Resistance** | Force inclusion + escape hatch when sequencer censors | `python examples/infra/l2_censorship_resistance.py` |
+| **Multi-Batch Ops** | 15-batch loop with prove/submit separation | `python examples/infra/l2_multi_batch_ops.py` |
+| **Config Full-Stack** | L2Config-based backend auto-wiring + NativeProver fallback | `python examples/infra/l2_config_fullstack.py` |
+| **State Bridge** | L1↔L2 general state bridge end-to-end | `python examples/infra/general_state_bridge.py` |
+| **Relay Modes** | EVM, Merkle, ZK proof, TinyDB, Direct relay comparison | `python examples/infra/bridge_relay_modes.py` |
+| **ZK Notebook** | Groth16 circuit → setup → prove → verify → EVM demo | `python examples/infra/zk_notebook_demo.py` |
+| **ZK Note Settle** | ZK proof-based note settlement | `python examples/infra/zk_note_settle.py` |
 
 Each example follows the same pattern: define an STF → wrap with `PythonRuntime` → create `Rollup` → submit txs → produce batches → prove and verify on L1.
 
@@ -302,7 +326,7 @@ env = BridgeEnvironment.with_zk_proof(vk)  # pass Groth16 verification key
 Run the full demo:
 
 ```bash
-python examples/general_state_bridge.py
+python examples/infra/general_state_bridge.py
 ```
 
 ## ZK Toolkit
@@ -360,7 +384,7 @@ assert result.success  # gas_used ≈ 210,000
 Run the full demo:
 
 ```bash
-python examples/zk_notebook_demo.py
+python examples/infra/zk_notebook_demo.py
 ```
 
 ## Requirements
@@ -751,13 +775,29 @@ ethclient/
 │   ├── engine_types.py              # Engine API request/response types
 │   └── zk_api.py                    # zk_ namespace RPC handlers
 └── examples/
-    ├── l2_token.py                  # L2 ERC20 token (mint/transfer/burn)
-    ├── l2_nameservice.py            # L2 ENS-style name service
-    ├── l2_voting.py                 # L2 governance (proposal/vote/finalize)
-    ├── l2_rps_game.py               # L2 commit-reveal rock-paper-scissors
-    ├── zk_notebook_demo.py          # ZK toolkit end-to-end demo
-    ├── bridge_relay_modes.py        # Proof-based relay modes comparison demo
-    └── general_state_bridge.py      # L2 bridge end-to-end demo
+    ├── apps/                            # L2 application STF examples
+    │   ├── l2_token.py                  # ERC20 token (mint/transfer/burn)
+    │   ├── l2_nameservice.py            # ENS-style name service
+    │   ├── l2_voting.py                 # Governance (proposal/vote/finalize)
+    │   ├── l2_rps_game.py               # Commit-reveal rock-paper-scissors
+    │   ├── l2_dex.py                    # AMM DEX (constant product, LP tokens)
+    │   ├── l2_nft_marketplace.py        # NFT marketplace with royalties
+    │   ├── l2_multisig.py               # N-of-M multisig wallet
+    │   ├── l2_escrow.py                 # 3-party escrow service
+    │   └── l2_prediction_market.py      # Prediction market with oracle
+    ├── infra/                           # Production infrastructure examples
+    │   ├── l2_rpc_server.py             # RPC server + middleware
+    │   ├── l2_persistent_state.py       # LMDB persistence + crash recovery
+    │   ├── l2_da_providers.py           # DA layer comparison (Local/Calldata/Blob)
+    │   ├── l2_censorship_resistance.py  # Force inclusion + escape hatch
+    │   ├── l2_multi_batch_ops.py        # Multi-batch operations loop
+    │   ├── l2_config_fullstack.py       # L2Config full-stack wiring
+    │   ├── general_state_bridge.py      # L1↔L2 bridge end-to-end
+    │   ├── bridge_relay_modes.py        # Relay modes comparison
+    │   ├── zk_notebook_demo.py          # ZK toolkit end-to-end
+    │   └── zk_note_settle.py            # ZK note settlement
+    ├── l2_sepolia_hello.py              # Sepolia live deployment
+    └── l2_sepolia_all.py                # Sepolia 4-app batch deployment
 ```
 
 ## Dependencies

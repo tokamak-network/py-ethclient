@@ -79,6 +79,19 @@ py-ethclient contains 21,442 lines of source code across 86 files with 943 tests
 - [Engine API](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/rpc/engine_api.py): V1/V2/V3 with JWT authentication
 - [ZK API](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/rpc/zk_api.py): zk_verifyGroth16, zk_deployVerifier, zk_verifyOnChain
 
+## Examples
+
+- [ERC20 Token App](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_token.py): Mint, transfer, burn with admin control
+- [DEX (AMM) App](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_dex.py): Constant product AMM with LP tokens and 0.3% fee
+- [NFT Marketplace App](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_nft_marketplace.py): Mint, list, buy with 5% creator royalties
+- [Multisig Wallet App](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_multisig.py): N-of-M approval workflow
+- [Prediction Market App](https://github.com/tokamak-network/py-ethclient/blob/main/examples/apps/l2_prediction_market.py): Oracle-resolved prediction markets
+- [RPC Server](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/l2_rpc_server.py): JSON-RPC + middleware (APIKey, RateLimit, RequestSize)
+- [Persistent State](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/l2_persistent_state.py): LMDB persistence + WAL crash recovery
+- [DA Providers](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/l2_da_providers.py): Local vs Calldata vs Blob DA comparison
+- [Censorship Resistance](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/l2_censorship_resistance.py): Force inclusion + escape hatch
+- [ZK Notebook](https://github.com/tokamak-network/py-ethclient/blob/main/examples/infra/zk_notebook_demo.py): Groth16 circuit → prove → verify → EVM
+
 ## Optional
 
 - [README](https://github.com/tokamak-network/py-ethclient/blob/main/README.md): Full documentation

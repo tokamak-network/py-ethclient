@@ -83,6 +83,9 @@ class EthRPCClient:
         result = self._call("eth_getTransactionByHash", ["0x" + tx_hash.hex()])
         return result
 
+    def get_block_number(self) -> int:
+        return int(self._call("eth_blockNumber"), 16)
+
     def get_receipt(self, tx_hash: bytes) -> Optional[dict]:
         result = self._call("eth_getTransactionReceipt", ["0x" + tx_hash.hex()])
         return result

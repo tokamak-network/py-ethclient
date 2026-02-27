@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from typing import Callable, Optional
 
-from ethclient.l2.config import L2Config
+from ethclient.l2.config import L2Config, resolve_hash_function
 from ethclient.l2.da import LocalDAProvider
 from ethclient.l2.interfaces import DAProvider, L1Backend, ProofBackend, StateTransitionFunction
 from ethclient.l2.l1_backend import InMemoryL1Backend
@@ -60,6 +62,7 @@ class Rollup:
         self._da = da or LocalDAProvider()
         self._l1 = l1 or self._create_l1_backend()
         self._prover = prover or self._create_prover_backend()
+        self._hash_fn = resolve_hash_function(self._config.hash_function)
 
         # Initialize state from STF genesis
         genesis = self._stf.genesis_state()
@@ -108,6 +111,9 @@ class Rollup:
         batch = self._sequencer.force_seal()
         if batch is None:
             raise RuntimeError("No transactions to batch")
+        # WAL: nonce checkpoint after seal
+        self._wal_write("nonce_checkpoint",
+                        json.dumps({k.hex(): v for k, v in self._sequencer._nonces.items()}).encode())
         return batch
 
     def prove_and_submit(self, batch: Batch) -> BatchReceipt:
@@ -131,7 +137,11 @@ class Rollup:
         """Prove a single batch (without submitting)."""
         if self._submitter is None:
             raise RuntimeError("Must call setup() before prove_batch()")
-        return self._submitter.prove_batch(batch)
+        result = self._submitter.prove_batch(batch)
+        # WAL: record proof (batch_number as 8 bytes + proof marker)
+        proof_marker = b"proven"
+        self._wal_write("batch_proven", batch.number.to_bytes(8, "big") + proof_marker)
+        return result
 
     def submit_batch(self, batch: Batch) -> BatchReceipt:
         """Submit a proven batch to L1."""
@@ -141,22 +151,26 @@ class Rollup:
 
     def chain_info(self) -> dict:
         """Return info about the rollup chain."""
-        return {
+        info = {
             "name": self._config.name,
             "chain_id": self._config.chain_id,
             "state_root": self._state_store.compute_state_root().hex(),
             "is_setup": self._is_setup,
             "pending_txs": self._sequencer.pending_tx_count,
             "sealed_batches": len(self._sequencer.sealed_batches),
+            "sequencer_alive": self._sequencer.is_alive,
+            "last_activity_seconds_ago": round(self._sequencer.last_activity_age, 2),
         }
+        return info
 
     def _create_state_store(self, genesis: dict):
         """Create state store based on config."""
+        hash_fn = self._hash_fn if self._config.hash_function != "keccak256" else None
         if self._config.state_backend == "lmdb":
             from pathlib import Path
             from ethclient.l2.persistent_state import L2PersistentStateStore
-            return L2PersistentStateStore(Path(self._config.data_dir), initial_state=genesis)
-        return L2StateStore(genesis)
+            return L2PersistentStateStore(Path(self._config.data_dir), initial_state=genesis, hash_fn=hash_fn)
+        return L2StateStore(genesis, hash_fn=hash_fn)
 
     def _create_l1_backend(self) -> L1Backend:
         """Create L1 backend based on config."""
@@ -167,6 +181,7 @@ class Rollup:
                 rpc_url=self._config.l1_rpc_url,
                 private_key=pk,
                 chain_id=self._config.l1_chain_id,
+                confirmations=self._config.l1_confirmations,
             )
         return InMemoryL1Backend()
 
@@ -179,6 +194,14 @@ class Rollup:
                 working_dir=self._config.prover_working_dir or None,
             )
         return Groth16ProofBackend()
+
+    def _wal_write(self, entry_type: str, data: bytes) -> None:
+        """Write a WAL entry if using LMDB state backend."""
+        from ethclient.l2.persistent_state import L2PersistentStateStore, WALEntry
+        if isinstance(self._state_store, L2PersistentStateStore):
+            entry = WALEntry(sequence=0, entry_type=entry_type, data=data,
+                             timestamp=int(time.time()))
+            self._state_store.wal_append(entry)
 
     def recover(self) -> None:
         """Replay WAL entries for crash recovery (requires LMDB state backend)."""
@@ -196,7 +219,6 @@ class Rollup:
 
     def _apply_wal_entry(self, entry) -> None:
         """Apply a single WAL entry during recovery."""
-        from ethclient.l2.persistent_state import WALEntry
         if entry.entry_type == "batch_sealed":
             batch = Batch.decode(entry.data)
             self._sequencer._sealed_batches.append(batch)
@@ -206,3 +228,18 @@ class Rollup:
                 if b.number == batch_number:
                     b.submitted = True
                     break
+        elif entry.entry_type == "batch_proven":
+            batch_number = int.from_bytes(entry.data[:8], "big")
+            proof_data = entry.data[8:]
+            for b in self._sequencer._sealed_batches:
+                if b.number == batch_number:
+                    b.proven = True
+                    break
+            # Also persist proof data
+            from ethclient.l2.persistent_state import L2PersistentStateStore
+            if isinstance(self._state_store, L2PersistentStateStore) and proof_data:
+                self._state_store.put_proof(batch_number, proof_data)
+        elif entry.entry_type == "nonce_checkpoint":
+            nonce_data = json.loads(entry.data)
+            recovered = {bytes.fromhex(k): v for k, v in nonce_data.items()}
+            self._sequencer._nonces.update(recovered)

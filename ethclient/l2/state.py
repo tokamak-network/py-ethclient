@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ethclient.common.crypto import keccak256
 from ethclient.common.trie import Trie
 from ethclient.common import rlp
 from ethclient.l2.types import L2State
@@ -13,9 +12,10 @@ from ethclient.l2.types import L2State
 class L2StateStore:
     """Manages L2 state and computes Merkle state roots."""
 
-    def __init__(self, initial_state: Optional[dict] = None) -> None:
+    def __init__(self, initial_state: Optional[dict] = None, hash_fn=None) -> None:
         self._state = L2State(initial_state or {})
         self._snapshots: list[L2State] = []
+        self._hash_fn = hash_fn
 
     @property
     def state(self) -> L2State:
@@ -27,7 +27,7 @@ class L2StateStore:
 
     def compute_state_root(self) -> bytes:
         """Compute Merkle root from current state."""
-        trie = Trie()
+        trie = Trie(hash_fn=self._hash_fn)
         for key in sorted(self._state.keys()):
             k_bytes = _encode_key(key)
             v_bytes = _encode_value(self._state[key])

@@ -19,7 +19,8 @@ def register_health_endpoints(app: FastAPI, rollup: Rollup) -> None:
     async def ready():
         is_ready = rollup.is_setup
         info = rollup.chain_info()
-        status = "ready" if is_ready else "not_ready"
+        sequencer_alive = info.get("sequencer_alive", True)
+        status = "ready" if (is_ready and sequencer_alive) else "not_ready"
         return JSONResponse(
             content={
                 "status": status,
@@ -27,6 +28,8 @@ def register_health_endpoints(app: FastAPI, rollup: Rollup) -> None:
                 "state_root": info.get("state_root"),
                 "pending_txs": info.get("pending_txs"),
                 "sealed_batches": info.get("sealed_batches"),
+                "sequencer_alive": sequencer_alive,
+                "last_activity_seconds_ago": info.get("last_activity_seconds_ago"),
             },
-            status_code=200 if is_ready else 503,
+            status_code=200 if (is_ready and sequencer_alive) else 503,
         )

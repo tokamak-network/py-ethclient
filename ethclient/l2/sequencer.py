@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -36,6 +37,9 @@ class Sequencer:
         self._pre_batch_root: bytes = state_store.compute_state_root()
         self._last_batch_time: float = time.monotonic()
         self._batch_timeout: float = float(self._config.batch_timeout)
+        self._lock = threading.Lock()
+        self._last_activity: float = time.monotonic()
+        self._liveness_threshold: float = float(self._config.batch_timeout) * 10
 
     @property
     def mempool(self) -> list[L2Tx]:
@@ -53,59 +57,73 @@ class Sequencer:
     def current_batch_size(self) -> int:
         return len(self._current_batch_txs)
 
+    @property
+    def is_alive(self) -> bool:
+        """Check if the sequencer is alive (had recent activity)."""
+        return time.monotonic() - self._last_activity < self._liveness_threshold
+
+    @property
+    def last_activity_age(self) -> float:
+        """Seconds since last activity."""
+        return time.monotonic() - self._last_activity
+
     def submit_tx(self, tx: L2Tx) -> Optional[str]:
         """Submit a transaction. Returns error string or None on success."""
-        if len(self._mempool) >= self._config.mempool_max_size:
-            return "mempool full"
+        with self._lock:
+            if len(self._mempool) >= self._config.mempool_max_size:
+                return "mempool full"
 
-        error = self._stf.validate_tx(self._state_store.state, tx)
-        if error:
-            return error
+            error = self._stf.validate_tx(self._state_store.state, tx)
+            if error:
+                return error
 
-        expected_nonce = self._nonces.get(tx.sender, 0)
-        if tx.nonce < expected_nonce:
-            return f"nonce too low: got {tx.nonce}, expected {expected_nonce}"
-        if tx.nonce > expected_nonce:
-            return f"nonce too high: got {tx.nonce}, expected {expected_nonce}"
+            expected_nonce = self._nonces.get(tx.sender, 0)
+            if tx.nonce < expected_nonce:
+                return f"nonce too low: got {tx.nonce}, expected {expected_nonce}"
+            if tx.nonce > expected_nonce:
+                return f"nonce too high: got {tx.nonce}, expected {expected_nonce}"
 
-        self._mempool.append(tx)
-        self._nonces[tx.sender] = tx.nonce + 1
-        return None
+            self._mempool.append(tx)
+            self._nonces[tx.sender] = tx.nonce + 1
+            self._last_activity = time.monotonic()
+            return None
 
     def tick(self) -> list[STFResult]:
         """Process pending transactions and assemble into current batch."""
-        results = []
-        remaining: list[L2Tx] = []
+        with self._lock:
+            self._last_activity = time.monotonic()
+            results = []
+            remaining: list[L2Tx] = []
 
-        for tx in self._mempool:
+            for tx in self._mempool:
+                if len(self._current_batch_txs) >= self._config.max_txs_per_batch:
+                    remaining.append(tx)
+                    continue
+
+                snap = self._state_store.snapshot()
+                result = self._stf.apply_tx(self._state_store.state, tx)
+
+                if result.success:
+                    self._state_store.commit()
+                    if not self._current_batch_txs:
+                        # Reset timeout when first tx enters the current batch
+                        self._last_batch_time = time.monotonic()
+                    self._current_batch_txs.append(tx)
+                else:
+                    self._state_store.rollback(snap)
+
+                results.append(result)
+
+            self._mempool = remaining
+
             if len(self._current_batch_txs) >= self._config.max_txs_per_batch:
-                remaining.append(tx)
-                continue
-
-            snap = self._state_store.snapshot()
-            result = self._stf.apply_tx(self._state_store.state, tx)
-
-            if result.success:
-                self._state_store.commit()
-                if not self._current_batch_txs:
-                    # Reset timeout when first tx enters the current batch
-                    self._last_batch_time = time.monotonic()
-                self._current_batch_txs.append(tx)
-            else:
-                self._state_store.rollback(snap)
-
-            results.append(result)
-
-        self._mempool = remaining
-
-        if len(self._current_batch_txs) >= self._config.max_txs_per_batch:
-            self._seal_batch()
-        elif self._current_batch_txs:
-            elapsed = time.monotonic() - self._last_batch_time
-            if elapsed >= self._batch_timeout:
                 self._seal_batch()
+            elif self._current_batch_txs:
+                elapsed = time.monotonic() - self._last_batch_time
+                if elapsed >= self._batch_timeout:
+                    self._seal_batch()
 
-        return results
+            return results
 
     def force_seal(self) -> Optional[Batch]:
         """Force-seal the current batch even if not full."""

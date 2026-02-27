@@ -8,6 +8,7 @@ to LMDB. flush() atomically writes overlay to disk.
 from __future__ import annotations
 
 import json
+import logging
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -112,12 +113,23 @@ class L2PersistentState(dict):
         return snap
 
     def flush_to_lmdb(self) -> None:
-        """Write overlay to LMDB and clear it."""
-        with self._env.begin(db=self._db, write=True) as txn:
-            for key in self._deleted:
-                txn.delete(key.encode())
-            for key, value in self._overlay.items():
-                txn.put(key.encode(), _encode_state_value(value))
+        """Write overlay to LMDB and clear it (with automatic resize)."""
+        while True:
+            try:
+                with self._env.begin(db=self._db, write=True) as txn:
+                    for key in self._deleted:
+                        txn.delete(key.encode())
+                    for key, value in self._overlay.items():
+                        txn.put(key.encode(), _encode_state_value(value))
+                break
+            except lmdb.MapFullError:
+                import logging
+                curr = self._env.info()["map_size"]
+                new_size = curr * 2
+                logging.getLogger(__name__).warning(
+                    "LMDB map full, resizing %d -> %d bytes", curr, new_size
+                )
+                self._env.set_mapsize(new_size)
         self._overlay.clear()
         self._deleted.clear()
 
@@ -226,7 +238,7 @@ class L2PersistentStateStore:
     """
 
     def __init__(self, data_dir: Path, map_size: int = 256 * 1024 * 1024,
-                 initial_state: Optional[dict] = None) -> None:
+                 initial_state: Optional[dict] = None, hash_fn=None) -> None:
         self._data_dir = Path(data_dir)
         self._data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -243,13 +255,29 @@ class L2PersistentStateStore:
         self._db_meta = self._env.open_db(b"l2_meta")
         self._db_wal = self._env.open_db(b"l2_wal")
 
+        self._hash_fn = hash_fn
         self._state = L2PersistentState(self._env, self._db_state, initial_state)
         self._snapshots: list[L2PersistentState] = []
         self._wal_sequence = self._get_max_wal_sequence()
 
+    _logger = logging.getLogger(__name__)
+
     def close(self) -> None:
         """Close the LMDB environment."""
         self._env.close()
+
+    def _write_with_resize(self, db, key: bytes, value: bytes) -> None:
+        """Write a key-value pair, auto-resizing LMDB on MapFullError."""
+        while True:
+            try:
+                with self._env.begin(db=db, write=True) as txn:
+                    txn.put(key, value)
+                return
+            except lmdb.MapFullError:
+                curr = self._env.info()["map_size"]
+                new_size = curr * 2
+                self._logger.warning("LMDB map full, resizing %d -> %d bytes", curr, new_size)
+                self._env.set_mapsize(new_size)
 
     @property
     def state(self) -> L2PersistentState:
@@ -261,7 +289,7 @@ class L2PersistentStateStore:
 
     def compute_state_root(self) -> bytes:
         """Compute Merkle root from overlay + LMDB merged state."""
-        trie = Trie()
+        trie = Trie(hash_fn=self._hash_fn)
         for key in sorted(self._state.keys()):
             k_bytes = _encode_key(key)
             v_bytes = _encode_value(self._state[key])
@@ -296,8 +324,7 @@ class L2PersistentStateStore:
 
     def put_batch(self, batch: Batch) -> None:
         key = struct.pack(">Q", batch.number)
-        with self._env.begin(db=self._db_batches, write=True) as txn:
-            txn.put(key, batch.encode())
+        self._write_with_resize(self._db_batches, key, batch.encode())
 
     def get_batch(self, batch_number: int) -> Optional[Batch]:
         key = struct.pack(">Q", batch_number)
@@ -323,8 +350,7 @@ class L2PersistentStateStore:
 
     def put_proof(self, batch_number: int, proof_data: bytes) -> None:
         key = struct.pack(">Q", batch_number)
-        with self._env.begin(db=self._db_proofs, write=True) as txn:
-            txn.put(key, proof_data)
+        self._write_with_resize(self._db_proofs, key, proof_data)
 
     def get_proof(self, batch_number: int) -> Optional[bytes]:
         key = struct.pack(">Q", batch_number)
@@ -338,8 +364,7 @@ class L2PersistentStateStore:
             return txn.get(key.encode())
 
     def _put_meta(self, key: str, value: bytes) -> None:
-        with self._env.begin(db=self._db_meta, write=True) as txn:
-            txn.put(key.encode(), value)
+        self._write_with_resize(self._db_meta, key.encode(), value)
 
     def get_last_batch_number(self) -> int:
         raw = self._get_meta("last_batch_number")
@@ -390,8 +415,7 @@ class L2PersistentStateStore:
         self._wal_sequence += 1
         entry.sequence = self._wal_sequence
         key = struct.pack(">Q", entry.sequence)
-        with self._env.begin(db=self._db_wal, write=True) as txn:
-            txn.put(key, entry.encode())
+        self._write_with_resize(self._db_wal, key, entry.encode())
 
     def wal_replay(self) -> list[WALEntry]:
         entries = []

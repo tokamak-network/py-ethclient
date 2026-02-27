@@ -4,8 +4,8 @@
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-943%20passing-brightgreen)](#testing)
-[![LOC](https://img.shields.io/badge/LOC-21%2C442-blue)](#project-stats)
+[![Tests](https://img.shields.io/badge/tests-1031%20passing-brightgreen)](#testing)
+[![LOC](https://img.shields.io/badge/LOC-22%2C050-blue)](#project-stats)
 
 py-ethclient is a Python L2 development platform for building **application-specific ZK rollups**. Define your state transition function as a plain Python function, and py-ethclient handles the rest — sequencing, batching, Groth16 proving, and L1 verification.
 
@@ -52,7 +52,7 @@ All core protocol logic — RLP encoding, Merkle Patricia Trie, EVM execution, R
 - **Engine API V1/V2/V3** — `forkchoiceUpdated`, `getPayload`, `newPayload` with JWT authentication for consensus layer integration
 - **Persistent Storage** — LMDB-backed disk backend with hybrid overlay pattern for atomic state commits
 - **Multi-Network** — Mainnet, Sepolia, and Holesky with per-network genesis and fork configurations
-- **943 Tests** — Comprehensive test suite covering all protocol layers from RLP to ZK proving to L2 rollup to end-to-end integration
+- **1,031 Tests** — Comprehensive test suite covering all protocol layers from RLP to ZK proving to L2 rollup to end-to-end integration
 - **Docker Support** — Ready-to-use Docker Compose setup for quick deployment
 
 ## Why py-ethclient?
@@ -366,6 +366,7 @@ assert result.success  # gas_used ≈ 210,000
 | **Native Verifier** | Pairing-based verification with debug mode (intermediate pairing values) |
 | **EVM Verifier** | Auto-generated verifier bytecode using ecAdd/ecMul/ecPairing precompiles |
 | **Gas Profiler** | Per-precompile gas breakdown for on-chain cost optimization |
+| **Poseidon Hash** | ZK-friendly hash (~240 R1CS constraints vs ~150,000 for keccak256), with circuit encoding for in-proof Merkle trees |
 | **snarkjs Compat** | Import/export snarkjs JSON format (vkey, proof, public inputs) |
 | **ZK RPC API** | `zk_verifyGroth16`, `zk_deployVerifier`, `zk_verifyOnChain` endpoints |
 
@@ -608,7 +609,7 @@ curl -X POST http://localhost:8545 \
 ## Testing
 
 ```bash
-# Run all tests (943 tests)
+# Run all tests (1,031 tests)
 pytest
 
 # Run L2 rollup tests
@@ -628,6 +629,7 @@ pytest tests/test_l2_persistent_state.py # LMDB persistent state, overlay, WAL
 pytest tests/test_l2_health.py           # Health/ready endpoints
 pytest tests/test_l2_middleware.py       # RPC middleware (API key, rate limit, request size)
 pytest tests/test_l2_integration.py      # Full cycle: STF → batch → prove → L1 verify
+pytest tests/test_l2_framework_hardening.py # Framework hardening: config validation, thread safety, liveness, retry, L1 finality
 
 # Run L1 client tests
 pytest tests/test_rlp.py                 # RLP encoding/decoding
@@ -647,6 +649,7 @@ pytest tests/test_disk_backend.py        # LMDB persistent storage
 pytest tests/test_zk_circuit.py          # ZK circuit builder (R1CS)
 pytest tests/test_zk_groth16.py          # Groth16 prove/verify + snarkjs compat
 pytest tests/test_zk_evm.py              # EVM-based ZK verification
+pytest tests/test_poseidon.py            # Poseidon hash, circuit, trie, L2 integration
 
 # Run bridge tests
 pytest tests/test_bridge_messenger.py    # L2 bridge messenger send/relay
@@ -719,6 +722,7 @@ ethclient/
 │   ├── types.py                     # Block, BlockHeader, Transaction, Account, etc.
 │   ├── trie.py                      # Merkle Patricia Trie + proof generation/verification
 │   ├── crypto.py                    # keccak256, secp256k1 ECDSA, address derivation
+│   ├── hash.py                      # Poseidon hash (ZK-friendly, BN128 scalar field)
 │   └── config.py                    # Chain config, hardfork params, Genesis
 ├── vm/                              # EVM (Ethereum Virtual Machine)
 │   ├── evm.py                       # Main execution loop, transaction execution
@@ -739,6 +743,7 @@ ethclient/
 ├── zk/                              # ZK proving toolkit
 │   ├── circuit.py                   # R1CS circuit builder (Signal, Circuit, R1CS)
 │   ├── groth16.py                   # Groth16 prover, verifier, debug verifier
+│   ├── poseidon_circuit.py          # Poseidon hash R1CS encoding (~240 constraints)
 │   ├── evm_verifier.py              # EVM verifier bytecode generator + executor
 │   ├── snarkjs_compat.py            # snarkjs JSON format import/export
 │   ├── r1cs_export.py               # R1CS binary export for snarkjs/circom compat
@@ -881,17 +886,17 @@ class L2Hook(ExecutionHook):
 
 | Module | Files | LOC | Description |
 |---|---:|---:|---|
-| `l2/` | 24 | 3,024 | App-specific ZK rollup: STF, sequencer, prover, L1 backend, rollup orchestrator, RPC, CLI, production DA (S3/Calldata/Blob), native prover, LMDB state, middleware |
-| `common/` | 6 | 2,282 | RLP, types, trie (+ proofs), crypto, config |
+| `l2/` | 24 | 3,291 | App-specific ZK rollup: STF, sequencer, prover, L1 backend, rollup orchestrator, RPC, CLI, production DA (S3/Calldata/Blob), native prover, LMDB state, middleware |
+| `common/` | 7 | 2,444 | RLP, types, trie (+ proofs), crypto, Poseidon hash, config |
 | `vm/` | 8 | 2,690 | EVM, opcodes, precompiles, gas |
 | `storage/` | 4 | 1,431 | Store interface, in-memory & LMDB backends |
 | `blockchain/` | 4 | 1,291 | Block validation, mempool, fork choice, simulate_call |
 | `networking/` | 19 | 5,075 | RLPx, discovery, eth/68, snap/1, protocol registry, sync, server |
-| `zk/` | 7 | 1,929 | Groth16 circuit builder, prover, verifier, EVM verifier, snarkjs compat, R1CS export |
+| `zk/` | 8 | 2,062 | Groth16 circuit builder, prover, verifier, EVM verifier, Poseidon circuit, snarkjs compat, R1CS export |
 | `bridge/` | 6 | 1,241 | CrossDomainMessenger, BridgeWatcher, BridgeEnvironment, force inclusion, escape hatch |
 | `rpc/` | 6 | 1,832 | JSON-RPC server, eth API, Engine API, ZK API |
 | `main.py` | 1 | 647 | CLI entry point |
-| **Total** | **86** | **21,442** | |
+| **Total** | **88** | **22,050** | |
 
 ### Test Code
 
@@ -913,6 +918,7 @@ class L2Hook(ExecutionHook):
 | `test_l2_health.py` | 56 | 3 | Health/ready endpoints |
 | `test_l2_middleware.py` | 141 | 13 | RPC middleware (API key, rate limit, request size) |
 | `test_l2_integration.py` | 274 | 13 | Full cycle: counter STF, balance transfer, multi-batch, state persistence |
+| `test_l2_framework_hardening.py` | 629 | 44 | Framework hardening: config validation, thread safety, liveness, LMDB resize, WAL extension, retry, L1 finality |
 | `test_rlp.py` | 207 | 56 | RLP encoding/decoding |
 | `test_trie.py` | 213 | 26 | Merkle Patricia Trie |
 | `test_trie_proofs.py` | 254 | 23 | Trie proof generation/verification, range proofs |
@@ -928,6 +934,7 @@ class L2Hook(ExecutionHook):
 | `test_zk_circuit.py` | 292 | 26 | ZK circuit builder, R1CS, field arithmetic |
 | `test_zk_groth16.py` | 267 | 18 | Groth16 prove/verify, debug verify, snarkjs compat |
 | `test_zk_evm.py` | 162 | 13 | EVM verification, gas profiling, execution trace |
+| `test_poseidon.py` | 371 | 44 | Poseidon hash, circuit (R1CS), trie integration, L2 config/state/rollup |
 | `test_bridge_messenger.py` | 225 | 11 | Bridge messenger send/relay, replay protection |
 | `test_bridge_e2e.py` | 174 | 10 | Bridge E2E: deposit, withdraw, roundtrip, state relay |
 | `test_bridge_censorship.py` | 270 | 14 | Force inclusion + escape hatch (anti-censorship) |
@@ -935,7 +942,7 @@ class L2Hook(ExecutionHook):
 | `test_integration.py` | 272 | 14 | Cross-module integration |
 | `test_disk_backend.py` | 543 | 31 | LMDB persistence, flush, overlay, state root consistency |
 | `integration/` | 68 | 6 | Archive mode, chaindata, Fusaka compliance |
-| **Total** | **11,839** | **943** | |
+| **Total** | **12,839** | **1,031** | |
 
 ## FAQ
 

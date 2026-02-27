@@ -132,26 +132,29 @@ class Trie:
     """Merkle Patricia Trie with in-memory node storage.
 
     Keys and values are bytes. Internally keys are converted to nibble paths.
+    Accepts an optional hash_fn (bytes -> bytes) to use instead of keccak256.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, hash_fn=None) -> None:
         self._db: dict[bytes, bytes] = {}  # hash -> rlp-encoded node
         self._root: object = EMPTY_NODE  # root hash or inline node
+        self._hash_fn = hash_fn or keccak256
+        self._empty_root = self._hash_fn(rlp.encode(b""))
 
     @property
     def root_hash(self) -> bytes:
         """Get the 32-byte root hash."""
         if self._root == EMPTY_NODE:
-            return EMPTY_ROOT
+            return self._empty_root
         if isinstance(self._root, bytes) and len(self._root) == 32:
             return self._root
         # Inline node - hash it
         encoded = self._encode_node(self._root)
-        return keccak256(encoded) if len(encoded) >= 32 else keccak256(encoded)
+        return self._hash_fn(encoded)
 
     def get(self, key: bytes) -> Optional[bytes]:
         """Get value for key, or None if not found."""
-        path = nibbles_from_bytes(keccak256(key))
+        path = nibbles_from_bytes(self._hash_fn(key))
         return self._get(self._root, path)
 
     def get_raw(self, key: bytes) -> Optional[bytes]:
@@ -161,7 +164,7 @@ class Trie:
 
     def put(self, key: bytes, value: bytes) -> None:
         """Insert or update a key-value pair."""
-        path = nibbles_from_bytes(keccak256(key))
+        path = nibbles_from_bytes(self._hash_fn(key))
         self._root = self._put(self._root, path, value)
 
     def put_raw(self, key: bytes, value: bytes) -> None:
@@ -171,7 +174,7 @@ class Trie:
 
     def delete(self, key: bytes) -> None:
         """Delete a key."""
-        path = nibbles_from_bytes(keccak256(key))
+        path = nibbles_from_bytes(self._hash_fn(key))
         self._root = self._delete(self._root, path)
 
     def delete_raw(self, key: bytes) -> None:
@@ -306,7 +309,7 @@ class Trie:
         encoded = self._encode_node(node)
         if len(encoded) < 32:
             return encoded
-        h = keccak256(encoded)
+        h = self._hash_fn(encoded)
         self._db[h] = encoded
         return h
 

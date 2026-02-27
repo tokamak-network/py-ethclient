@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 from ethclient.l2.interfaces import L1Backend, ProofBackend
@@ -61,7 +62,21 @@ class BatchSubmitter:
         logger.info("Batch #%d submitted, verified=%s", batch.number, verified)
         return receipt
 
-    def process_batch(self, batch: Batch) -> BatchReceipt:
-        """Prove and submit a batch in one step."""
+    def process_batch(self, batch: Batch, max_retries: int = 3) -> BatchReceipt:
+        """Prove and submit a batch in one step, with retry on submit failure."""
         self.prove_batch(batch)
-        return self.submit_batch(batch)
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                return self.submit_batch(batch)
+            except Exception as e:
+                last_error = e
+                wait = min(2 ** attempt, 30)
+                logger.warning(
+                    "Batch #%d submit failed (attempt %d/%d): %s, retrying in %ds",
+                    batch.number, attempt + 1, max_retries, e, wait,
+                )
+                time.sleep(wait)
+        raise RuntimeError(
+            f"Batch #{batch.number} submit failed after {max_retries} retries"
+        ) from last_error

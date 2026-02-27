@@ -276,7 +276,7 @@ python examples/zk_note_settle.py      # ZK Note Settlement (DEX)
 | 한계 | 설명 | 해결 방법 |
 |---|---|---|
 | **부등식 불가** | `a >= b`를 R1CS로 직접 표현 불가 | 비트 분해(bit decomposition)로 range proof 구성 |
-| **해시 미지원** | SHA-256, Poseidon 등의 hash circuit 없음 | 곱셈 기반 커밋먼트로 대체 (tutorial 참조) |
+| **SHA-256 미지원** | SHA-256 hash circuit 없음 (Poseidon은 지원) | Poseidon 사용 또는 곱셈 기반 커밋먼트로 대체 |
 | **유한체 연산** | 모든 값은 BN128 scalar field (≈2^254) 위에서 동작 | 음수는 `p - |n|`으로 자동 변환됨 |
 | **단일 곱셈** | 하나의 `constrain()`에 곱셈은 1개만 | `a*b*c`는 중간 변수로 분해: `t = a*b`, `c.constrain(t*c, result)` |
 
@@ -297,7 +297,7 @@ python examples/zk_note_settle.py      # ZK Note Settlement (DEX)
 | PLONK / Halo2 | Groth16만 지원 |
 | Recursive proof | proof-of-proofs 미지원 |
 | Proof aggregation | 여러 proof를 하나로 집계하는 기능 없음 |
-| Poseidon hash | ZK-friendly 해시 함수 circuit 미구현 |
+| Poseidon hash | ~~미구현~~ → **구현 완료** (`poseidon_circuit.py`, ~240 R1CS constraints) |
 
 ### 프로덕션 경로
 
@@ -385,9 +385,10 @@ assert env.l2_store.get_balance(b"\x02" * 20) == 1500
 
 ```
 ethclient/zk/
-├── __init__.py           31 LOC    public API re-export
+├── __init__.py           33 LOC    public API re-export
 ├── circuit.py           480 LOC    R1CS circuit builder (Signal, Circuit, R1CS)
 ├── groth16.py           690 LOC    prover, verifier, debug verifier
+├── poseidon_circuit.py  100 LOC    Poseidon hash R1CS encoding (~240 constraints)
 ├── evm_verifier.py      328 LOC    EVM verifier bytecode 생성 + 실행
 ├── snarkjs_compat.py    129 LOC    snarkjs JSON import/export
 ├── types.py             186 LOC    G1Point, G2Point, Proof, VerificationKey 등
@@ -399,7 +400,8 @@ ethclient/rpc/
 tests/
 ├── test_zk_circuit.py   292 LOC    26 tests — circuit builder, R1CS, 필드 연산
 ├── test_zk_groth16.py   267 LOC    18 tests — prove/verify, debug, snarkjs 호환
-└── test_zk_evm.py       162 LOC    13 tests — EVM 검증, gas, trace
+├── test_zk_evm.py       162 LOC    13 tests — EVM 검증, gas, trace
+└── test_poseidon.py     371 LOC    44 tests — Poseidon 해시, circuit, trie, L2 통합
 
 examples/
 ├── zk_notebook_demo.py  128 LOC    전체 워크플로우 데모
@@ -408,11 +410,11 @@ examples/
 
 | 카테고리 | 파일 | LOC | 테스트 |
 |---|---:|---:|---:|
-| 소스 (zk/) | 6 | 1,844 | — |
+| 소스 (zk/) | 7 | 1,946 | — |
 | 소스 (rpc/) | 1 | 178 | — |
-| 테스트 | 3 | 721 | 57 |
+| 테스트 | 4 | 1,092 | 101 |
 | 예제 | 2 | 288 | — |
-| **합계** | **12** | **3,031** | **57** |
+| **합계** | **14** | **3,504** | **101** |
 
 ---
 

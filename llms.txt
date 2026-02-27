@@ -2,7 +2,7 @@
 
 > A Python L2 development platform for building application-specific ZK rollups. Define your State Transition Function as a plain Python function — the framework handles sequencing, batching, Groth16 proving, and L1 verification. Built on a fully independent Ethereum L1 execution client with EVM, RLPx, eth/68, snap/1, full+snap sync, Engine API, L1↔L2 bridge, and Groth16 ZK toolkit — all in pure Python.
 
-py-ethclient contains 21,442 lines of source code across 86 files with 943 tests covering all layers from RLP to ZK proving to L2 rollup.
+py-ethclient contains 22,050 lines of source code across 88 files with 1,031 tests covering all layers from RLP to ZK proving to L2 rollup.
 
 ## L2 Rollup Framework
 
@@ -32,6 +32,7 @@ py-ethclient contains 21,442 lines of source code across 86 files with 943 tests
 - [EVM Verifier](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/zk/evm_verifier.py): Auto-generated EVM bytecode for on-chain Groth16 verification
 - [snarkjs Compat](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/zk/snarkjs_compat.py): Import/export snarkjs JSON format
 - [ZK Types](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/zk/types.py): G1Point, G2Point, Proof, VerificationKey
+- [Poseidon Circuit](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/zk/poseidon_circuit.py): ZK-friendly Poseidon hash R1CS encoding (~240 constraints)
 - [R1CS Export](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/zk/r1cs_export.py): R1CS binary export for snarkjs/circom compatibility
 
 ## L1↔L2 Bridge
@@ -47,6 +48,7 @@ py-ethclient contains 21,442 lines of source code across 86 files with 943 tests
 - [Types](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/common/types.py): Block, BlockHeader, Transaction, Account, Receipt
 - [Merkle Patricia Trie](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/common/trie.py): Trie with proof generation/verification and range proofs
 - [Crypto](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/common/crypto.py): Keccak-256, secp256k1 ECDSA, address derivation
+- [Poseidon Hash](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/common/hash.py): ZK-friendly Poseidon hash over BN128 scalar field (sponge construction, t=3, RF=8, RP=57)
 - [Chain Config](https://github.com/tokamak-network/py-ethclient/blob/main/ethclient/common/config.py): Network configs, hardfork params, genesis handling
 
 ## EVM

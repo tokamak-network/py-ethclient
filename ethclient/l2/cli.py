@@ -6,6 +6,7 @@ import argparse
 import importlib.util
 import json
 import logging
+import signal
 import sys
 from pathlib import Path
 
@@ -184,6 +185,17 @@ def _handle_start(args: argparse.Namespace) -> None:
     )
 
     import uvicorn
+
+    def _shutdown_handler(signum, frame):
+        logger.info("Shutdown signal received (signal %d)", signum)
+        if hasattr(rollup, '_state_store') and hasattr(rollup._state_store, 'flush'):
+            rollup._state_store.flush()
+        if hasattr(rollup, '_state_store') and hasattr(rollup._state_store, 'close'):
+            rollup._state_store.close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    signal.signal(signal.SIGINT, _shutdown_handler)
 
     rpc_port = getattr(args, "rpc_port", config_data.get("rpc_port", 9545))
     logger.info("L2 rollup '%s' listening on :%d", l2_config.name, rpc_port)

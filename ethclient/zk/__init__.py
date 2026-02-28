@@ -2,6 +2,7 @@
 
 from ethclient.zk.circuit import Circuit, R1CS, Signal
 from ethclient.zk import groth16
+from ethclient.zk.poseidon_circuit import poseidon_circuit
 from ethclient.zk.types import (
     DebugResult,
     EVMResult,
@@ -19,6 +20,7 @@ __all__ = [
     "R1CS",
     "Signal",
     "groth16",
+    "poseidon_circuit",
     "G1Point",
     "G2Point",
     "Proof",

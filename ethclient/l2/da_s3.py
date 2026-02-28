@@ -50,15 +50,24 @@ class S3DAProvider(DAProvider):
         )
         return commitment
 
-    def retrieve_batch(self, batch_number: int) -> Optional[bytes]:
+    def retrieve_batch(self, batch_number: int, *, expected_commitment: bytes = None) -> Optional[bytes]:
         try:
             resp = self._client.get_object(
                 Bucket=self._bucket,
                 Key=self._key(batch_number),
             )
-            return resp["Body"].read()
+            data = resp["Body"].read()
         except Exception:
             return None
+        if data is not None and expected_commitment is not None:
+            import logging
+            actual = keccak256(batch_number.to_bytes(8, "big") + data)
+            if actual != expected_commitment:
+                logging.getLogger(__name__).warning(
+                    "DA commitment mismatch for batch #%d", batch_number
+                )
+                return None
+        return data
 
     def verify_commitment(self, batch_number: int, commitment: bytes) -> bool:
         data = self.retrieve_batch(batch_number)

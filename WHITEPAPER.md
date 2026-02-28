@@ -13,7 +13,7 @@ The dominant approach to ZK rollup construction — the zkEVM — re-executes ev
 
 This paper introduces *application-specific ZK rollups*, a framework in which the developer writes a plain-language State Transition Function (STF) that captures only the domain logic, and the rollup infrastructure automatically derives a compact ZK circuit whose constraint count scales as O(batch_size) rather than O(execution_complexity). We prove that this approach achieves the same security properties — validity, data availability, censorship resistance, and value safety — as a general-purpose zkEVM, while reducing circuit complexity by orders of magnitude.
 
-We present py-ethclient, a reference implementation comprising 21,442 lines of Python source across 86 modules, validated by 943 unit tests in 40 test files. The framework provides four pluggable abstract interfaces (StateTransitionFunction, DAProvider, ProofBackend, L1Backend), a Groth16 proof system over BN128 with EVM on-chain verification, three data availability strategies (local, calldata, EIP-4844 blob), LMDB-backed persistent state with crash recovery, an L1–L2 bridge with force inclusion and escape hatch, and a production-ready RPC server with middleware. We demonstrate the framework with nine complete example applications deployed and verified on the Ethereum Sepolia testnet.
+We present py-ethclient, a reference implementation comprising 21,884 lines of Python source across 88 modules, validated by 987 unit tests in 41 test files. The framework provides four pluggable abstract interfaces (StateTransitionFunction, DAProvider, ProofBackend, L1Backend), a Groth16 proof system over BN128 with EVM on-chain verification, a ZK-friendly Poseidon hash function with R1CS circuit encoding (~240 constraints), three data availability strategies (local, calldata, EIP-4844 blob), LMDB-backed persistent state with crash recovery, an L1–L2 bridge with force inclusion and escape hatch, and a production-ready RPC server with middleware. We demonstrate the framework with nine complete example applications deployed and verified on the Ethereum Sepolia testnet.
 
 ---
 
@@ -32,6 +32,11 @@ We present py-ethclient, a reference implementation comprising 21,442 lines of P
 11. [Conclusion](#11-conclusion)
 12. [References](#references)
 13. [Appendix](#appendix)
+    - [A. Full Interface Specifications](#a-full-interface-specifications)
+    - [B. Gas Cost Derivation](#b-gas-cost-derivation)
+    - [C. Groth16 Pairing Equation](#c-groth16-pairing-equation)
+    - [D. Design FAQ](#d-design-faq)
+    - [E. Architecture Configuration Tree](#e-architecture-configuration-tree)
 
 ---
 
@@ -64,7 +69,7 @@ This paper makes the following contributions:
 
 1. **Formal framework.** We define application-specific ZK rollups through four pluggable abstract interfaces and prove their security properties equivalent to general-purpose rollups under standard cryptographic assumptions.
 
-2. **Reference implementation.** py-ethclient provides a complete, working implementation in Python: 21,442 lines of source, 943 unit tests, Groth16 over BN128, EVM on-chain verification, three DA strategies, LMDB persistence, and an L1–L2 bridge.
+2. **Reference implementation.** py-ethclient provides a complete, working implementation in Python: 21,884 lines of source across 88 modules, 987 unit tests in 41 test files, Groth16 over BN128, EVM on-chain verification, ZK-friendly Poseidon hash with circuit encoding, three DA strategies, LMDB persistence, and an L1–L2 bridge.
 
 3. **Nine example applications.** Token, DEX, name service, voting, rock-paper-scissors, NFT marketplace, multisig wallet, escrow, and prediction market — all deployable as ZK rollups with Groth16 proofs verified on Ethereum.
 
@@ -542,6 +547,10 @@ This produces exactly **max_txs** R1CS constraints (one multiplication per chain
 
 **Soundness:** A malicious prover who changes any tx_hash_i must find a different set of private values satisfying the same constraint with the same public inputs. Under the binding property of keccak256 and the Knowledge of Exponent Assumption (KEA), this requires breaking either the hash function or the Groth16 proof system.
 
+**Note on pre-state / post-state tracking.** The sequencer maintains a `_pre_batch_root` field (`sequencer.py:36`) initialized at construction and updated after each seal. During `_seal_batch()` (`sequencer.py:116–140`), the old root is read from `_pre_batch_root` and the new root is computed from the current state via `compute_state_root()`. This yields the chain invariant: `Batch[k].new_state_root == Batch[k+1].old_state_root`. Critically, the state root is not a snapshot — it is computed on demand from the current dict-based state by building a fresh Merkle-Patricia Trie (`state.py:28–35`).
+
+> For alternative proof architectures where pre/post-state tracking works differently (per-transaction Merkle proofs, nullifier models), see Appendix D, FAQ 3–4.
+
 #### 4.3.2 128-bit Field Truncation
 
 State roots and transaction hashes are 256-bit keccak256 outputs, but BN128 field elements are 254 bits. The `_to_field` function (`ethclient/l2/prover.py:17–19`) performs modular reduction:
@@ -1013,7 +1022,7 @@ class L2Config:
     ...
 ```
 
-The Rollup constructor reads these fields and instantiates the appropriate backends automatically.
+The Rollup constructor reads these fields and instantiates the appropriate backends automatically. The four pluggable interfaces (STF, DA, ProofBackend, L1Backend) can be combined to produce a wide range of architectures — from trusted-sequencer development setups to fully trustless client-side proving systems. Appendix E provides a complete configuration tree enumerating all meaningful combinations and their security models.
 
 ### 6.4 Production Middleware
 
@@ -1085,14 +1094,61 @@ This is negligible for any practical application.
 
 ### 7.3 Sequencer Safety
 
-The sequencer provides several safety guarantees:
+The sequencer provides several safety guarantees when operating honestly:
 
 1. **Nonce ordering**: Strict sequential nonce enforcement (no gaps, no replays) at `sequencer.py:65-72`.
 2. **Atomic execution**: Snapshot/rollback ensures failed transactions leave no state residue at `sequencer.py:85-95`.
 3. **Mempool bounds**: Configurable `mempool_max_size` prevents memory exhaustion at `sequencer.py:58-59`.
 4. **Rate limiting**: Per-IP token bucket prevents API abuse.
 
-Note: The sequencer is currently centralized. A malicious sequencer can *censor* transactions (omit them from batches) but cannot *forge* state transitions (the ZK proof prevents this). Censorship is mitigated by the force inclusion mechanism (Section 5.3).
+Note: The sequencer is currently centralized. Censorship (omitting transactions from batches) is mitigated by the force inclusion mechanism (Section 5.3).
+
+### 7.3.1 Malicious Sequencer Analysis: What the Circuit Does and Does Not Protect
+
+A critical distinction must be made between **proof forgery** and **STF manipulation**. The execution-trace chain circuit prevents the former but not the latter.
+
+**What the circuit enforces:**
+
+```
+old_root × ∏ᵢ private_i ≡ new_root × tx_commitment  (mod p)
+```
+
+This proves: *"The prover knows private values that algebraically connect these three public inputs."* Under Groth16 soundness (KEA) and keccak256 collision resistance, no adversary can produce a valid proof for a given set of public inputs without knowing the corresponding private values.
+
+**What the circuit does NOT enforce:**
+
+- Whether `apply_tx(state, tx)` was executed correctly
+- Whether failed transactions were excluded from the batch
+- Whether balance checks, access control, or any STF logic was honored
+- Whether `new_state_root` is the honest result of applying the STF to `old_state_root`
+
+**Attack scenario 1 — Including failed transactions:**
+
+A malicious sequencer skips the rollback for failed transactions (`sequencer.py:94-95`), including them in the batch with their (incorrect) state effects. The resulting `new_state_root` reflects the corrupted state, but the proof remains mathematically valid because the circuit only checks the algebraic relationship between `old_root`, `new_root`, and `tx_commitment`. The L1 verifier accepts it.
+
+**Attack scenario 2 — Manipulating the STF:**
+
+A malicious sequencer replaces the STF with a different function (e.g., one that skips balance checks or mints tokens to the attacker), computes the resulting `new_state_root`, and generates a valid proof for the `(old_root, evil_new_root, tx_commitment)` triple. The L1 verifier accepts it because the proof is mathematically valid for those public inputs.
+
+**What protects against these attacks in the current architecture:**
+
+| Defense Layer | Mechanism | Trust Model |
+|---|---|---|
+| Groth16 proof | Prevents proof forgery for fixed public inputs | Trustless (mathematical) |
+| Data availability | Tx data on L1 (calldata/blob) allows anyone to re-execute | DA assumption |
+| Off-chain re-execution | Verifiers re-run STF on DA data, compare `new_root` | 1-of-N honest verifier |
+| Social consensus | Community detects mismatch, responds | Governance |
+
+The detection flow for STF manipulation:
+
+```
+1. Retrieve tx data from DA (calldata/blob — publicly available)
+2. Re-execute txs through the STF starting from old_root
+3. Compare computed new_root' with the batch's new_root
+4. Mismatch → sequencer manipulation detected
+```
+
+This is effectively an **optimistic verification model**: the ZK proof guarantees execution-trace binding, but STF correctness relies on off-chain re-execution and data availability. Section 10.2 presents three approaches that close this gap, all implementable within the current 4-interface framework.
 
 ### 7.4 Bridge Security
 
@@ -1216,29 +1272,208 @@ Caldera, AltLayer, and Conduit offer deployment platforms primarily for optimist
 
 ### 10.1 Current Limitations
 
-1. **Python prover performance.** The pure-Python Groth16 prover (py_ecc) is suitable only for small circuits (< 1,000 constraints). The native prover backend mitigates this but adds an external dependency.
+The following limitations are organized by severity and domain. They represent honest engineering constraints of the reference implementation, not fundamental flaws of the application-specific ZK rollup paradigm itself.
 
-2. **Single sequencer.** The current architecture uses a centralized sequencer. While the ZK proof prevents state forgery, the sequencer can censor transactions. Force inclusion provides a mitigation but adds latency.
+#### 10.1.1 Security and Cryptographic Limitations
 
-3. **Trusted setup.** Groth16 requires a per-circuit trusted setup. While standard MPC ceremonies mitigate this, it remains a trust assumption.
+1. **State root collision from field reduction.** The `_to_field()` function reduces 256-bit keccak256 outputs modulo the BN128 scalar field p ≈ 2^254 (`prover.py:30-33`). While the collision probability is negligible (~2^{-243} for a 64-tx batch, Section 7.2), the mapping is not injective: values in [p, 2^256) alias to [0, 2^256 - p). Poseidon hash, which operates natively within the BN128 field, eliminates this concern entirely for state roots computed with `hash_function: "poseidon"`.
 
-4. **Circuit expressiveness.** The execution-trace chain circuit proves that the prover knows private values consistent with the public state transition. It does not prove the *internal logic* of the STF (e.g., that a token transfer checked balances correctly). The STF correctness is assumed via the execution-trace binding.
+2. **Circuit expressiveness (STF integrity gap).** The execution-trace chain circuit proves that the prover knows private values consistent with the public state transition. It does not prove the *internal logic* of the STF (e.g., that a token transfer checked balances correctly). The STF correctness is assumed via the execution-trace binding. This is the most significant security limitation and is addressed in detail in Section 10.2.1.
 
-5. **No formal verification.** The implementation is validated by 943 tests but not formally verified.
+#### 10.1.2 Proof System and ZK Toolkit Limitations
+
+3. **Python prover performance.** The pure-Python Groth16 prover (py_ecc) is suitable only for small circuits (< 1,000 constraints). The `NativeProverBackend` mitigates this via subprocess-based rapidsnark/snarkjs, but adds an external dependency and platform-specific build requirements.
+
+4. **Trusted setup.** Groth16 requires a per-circuit trusted setup. While standard MPC ceremonies mitigate the toxic waste risk, it remains a trust assumption. The `ProofBackend` interface enables future migration to PLONK (universal setup) or STARKs (no setup).
+
+5. **No batch verification.** Each Groth16 proof is verified independently. Batch verification (verifying N proofs faster than N individual verifications via randomized linear combinations) is not implemented, leaving L1 gas costs at O(N) for N batches.
+
+6. **Single-arity Poseidon.** The Poseidon hash implementation supports only t=3 (2-to-1 hashing). While sufficient for binary Merkle trees, applications requiring wider fan-out (e.g., t=5, t=9) would need additional parameter sets. The circuit encoding is also fixed at t=3 (~240 constraints).
+
+7. **MSM performance bottleneck.** Multi-scalar multiplication in `groth16.py` uses a naive loop (`sum(multiply(g, s) for g, s in zip(bases, scalars))`). Pippenger's algorithm would provide asymptotic improvement from O(N·log(N)) to O(N/log(N)) group operations.
+
+8. **No recursive proof composition.** The prover cannot prove a statement about a previously generated proof. Recursive SNARKs would enable proof aggregation (proving N batch proofs in a single aggregation proof) and incremental verifiable computation.
+
+#### 10.1.3 Sequencer and Transaction Processing Limitations
+
+9. **Single sequencer.** The current architecture uses a centralized sequencer. While the ZK proof prevents state forgery, the sequencer can censor transactions. Force inclusion provides a mitigation but adds latency.
+
+10. **Snapshot/rollback race conditions.** The sequencer's `_execute_single_tx` method performs snapshot, execute, and conditional rollback without synchronization primitives (`sequencer.py:85-95`). In a concurrent environment (e.g., async RPC handlers), interleaved execution could corrupt state.
+
+11. **No sequencer liveness monitoring.** There is no watchdog, heartbeat, or automatic failover mechanism. If the sequencer process halts, no new batches are produced until manual intervention.
+
+#### 10.1.4 State Management Limitations
+
+12. **O(N) state root recomputation.** `L2StateStore.compute_state_root()` iterates over all key-value pairs to build a fresh Merkle trie on every call (`state.py:30-40`). For state sizes beyond ~10K entries, this becomes a significant bottleneck. Incremental (persistent) trie updates would reduce this to O(log N) per state change.
+
+13. **LMDB map size limitation.** `L2PersistentStateStore` uses a fixed `map_size` (default 1 GB) that cannot be dynamically resized at runtime (`persistent_state.py:45`). Once exhausted, the state store fails with `MDB_MAP_FULL`. Dynamic resizing with exponential growth is needed for long-running rollups.
+
+14. **No state pruning or archival.** All historical state is retained indefinitely. There is no mechanism to prune finalized state, archive old batches, or implement state expiry, leading to unbounded storage growth.
+
+15. **WAL replay incomplete.** The Write-Ahead Log covers state mutations and batch records, but does not capture proof results or nonce checkpoints (`persistent_state.py:180-220`). A crash between proof generation and proof persistence loses the proof, requiring expensive re-computation.
+
+#### 10.1.5 Data Availability Limitations
+
+16. **No DA failure recovery.** If `da_provider.submit_batch()` fails, the `BatchSubmitter` raises an exception but does not implement retry logic, dead-letter queuing, or fallback to an alternative DA layer (`submitter.py:35-55`).
+
+17. **Blob expiry window.** EIP-4844 blobs are available for only ~18 days. `BlobDAProvider` does not implement blob archival or migration to permanent storage. After expiry, batch data becomes irrecoverable, compromising the ability to verify historical state transitions.
+
+18. **No DA commitment verification.** `CalldataDAProvider` and `BlobDAProvider` do not verify that the DA commitment matches the submitted data upon retrieval. A corrupted or malicious DA layer could serve altered batch data.
+
+#### 10.1.6 Bridge Limitations
+
+19. **No dispute mechanism.** The bridge accepts relayed messages based on proof verification alone. There is no challenge window or dispute resolution protocol for contested state transitions.
+
+20. **No L1 finality awareness.** `EthL1Backend` submits transactions and checks receipts but does not wait for finality (e.g., 2 epochs on Ethereum PoS). An L1 reorg after batch submission could invalidate the on-chain state, yet the L2 continues building on the assumed-finalized batch.
+
+#### 10.1.7 Operational and Infrastructure Limitations
+
+21. **No graceful shutdown.** The RPC server, sequencer, and submitter lack SIGTERM/SIGINT handlers for graceful shutdown. Abrupt termination can leave in-flight batches in an inconsistent state.
+
+22. **Rate limiter thread safety.** `RateLimitMiddleware` uses a plain `dict` for per-IP token buckets without locking (`middleware.py:45-60`). Under concurrent async requests (the FastAPI default), race conditions can allow burst traffic to exceed configured limits.
+
+23. **Configuration validation gaps.** `RollupConfig` accepts field values without validation (`config.py`). Invalid combinations (e.g., `max_txs_per_batch: 0`, unknown `hash_function` values, negative `batch_timeout`) are not caught at construction time and may cause cryptic runtime failures.
+
+24. **No formal verification.** The implementation is validated by 987 unit tests but not formally verified. Critical components (Groth16 verifier, EVM verifier bytecode generation, field arithmetic) would benefit from machine-checked proofs of correctness.
+
+#### 10.1.8 STF Implementation Considerations
+
+The following items are not framework limitations per se, but depend on the specific STF implementation. Different application domains may require different solutions, and the framework intentionally leaves these decisions to the STF developer.
+
+25. **Transaction authentication.** The framework does not enforce a specific signature scheme. STF developers should implement signature verification in `validate_tx()` — ECDSA for Ethereum-compatible apps, EdDSA for ZK-friendly apps, or ZK proofs for privacy-preserving apps.
+
+26. **Replay protection.** Nonce tracking within a session is provided by the Sequencer, but cross-restart replay protection depends on the STF's state model. STFs using LMDB persistence get automatic nonce recovery; others should implement application-level nullifiers or sequence numbers.
+
+27. **MEV and transaction ordering.** The centralized sequencer determines ordering. STFs sensitive to ordering (DEX, auctions) should implement commit-reveal schemes or batch auction mechanisms within their STF logic.
+
+28. **Transaction expiration.** Whether transactions should expire depends on the application domain. Time-sensitive STFs (auctions, options) should implement TTL checks in `validate_tx()`.
+
+29. **Priority fees and ordering policy.** FIFO ordering may not be optimal for all applications. STFs requiring economic ordering should implement fee fields in their transaction format and sorting in `validate_tx()`.
+
+30. **Token bridging standards.** The bridge provides raw message relay. STFs implementing token contracts should build lock/mint/burn/unlock flows on top of the `CrossDomainMessenger` API.
+
+31. **Message ordering guarantees.** Bridge messages are relayed individually. STFs with causal message dependencies should implement sequence numbers or dependency tracking in their state model.
 
 ### 10.2 Future Directions
+
+#### 10.2.1 Closing the STF Integrity Gap
+
+The most significant limitation of the current architecture is that the ZK circuit proves execution-trace binding but not STF correctness (Section 7.3.1). Three approaches close this gap, and critically, **all three are implementable within the current 4-ABC framework** by swapping only implementation classes — no interface changes are required.
+
+| Approach | Interface Swapped | STF Integrity | Trust Model |
+|---|---|---|---|
+| STF-to-Circuit Compiler | `ProofBackend` | Circuit-enforced | Trustless |
+| Fraud Proof Hybrid | `L1Backend` | Re-execution + challenge | 1-of-N honest challenger |
+| Per-tx Merkle Proof | `StateTransitionFunction` | Client-proved | Trustless |
+
+**Approach 1: STF-to-Circuit Compiler** — swap `ProofBackend`.
+
+The STF code remains identical. A new `ProofBackend` implementation compiles the STF's logic into R1CS constraints during `setup()`, so the circuit proves not just execution-trace binding but the internal correctness of each state transition (e.g., balance checks, access control).
+
+```python
+class CircuitCompilerProofBackend(ProofBackend):
+    def setup(self, stf, max_txs_per_batch):
+        # Compile STF logic into circuit constraints:
+        #   "balance >= amount" → R1CS comparison constraint
+        #   "state[key] -= amount" → Merkle update circuit
+        self._circuit = self._compile_stf_to_circuit(stf, max_txs_per_batch)
+        self._pk, self._vk = groth16.setup(self._circuit)
+
+    def prove(self, old_root, new_root, txs, tx_commitment):
+        # Witness includes Merkle paths + intermediate state values
+        ...
+        return groth16.prove(self._pk, private, public, self._circuit)
+```
+
+Usage — only the prover argument changes:
+
+```python
+rollup = Rollup(stf=token_stf, prover=CircuitCompilerProofBackend())
+```
+
+The `setup(stf, max_txs_per_batch)` signature already receives the STF, enabling the backend to introspect it. Practical implementation would require the STF to be written in a restricted DSL or to expose a `circuit_logic()` method for symbolic tracing, but the ABC contract remains unchanged.
+
+**Approach 2: Fraud Proof Hybrid** — swap `L1Backend`.
+
+The STF and ProofBackend remain identical. A new `L1Backend` adds a challenge window: batches are accepted provisionally after ZK proof verification, and any party can challenge by re-executing the STF against DA data within the window.
+
+```python
+class FraudProofL1Backend(L1Backend):
+    def submit_batch(self, batch_number, old_root, new_root,
+                     proof, tx_commitment, da_commitment=b""):
+        # 1. Verify ZK proof (execution-trace binding)
+        valid = groth16.verify(self._vk, proof, [...])
+        if not valid:
+            return reject
+        # 2. Register batch as "pending" (not finalized)
+        self._pending[batch_number] = {
+            "new_root": new_root, "submitted_at": time.time()}
+        return l1_tx_hash
+
+    def challenge_batch(self, batch_number, stf, da_provider):
+        """Anyone can call — re-execute STF against DA data."""
+        batch = Batch.decode(da_provider.retrieve_batch(batch_number))
+        state = load_state(self._pending[batch_number]["old_root"])
+        for tx in batch.transactions:
+            stf.apply_tx(state, tx)  # same STF ABC
+        if compute_root(state) != self._pending[batch_number]["new_root"]:
+            slash_sequencer()        # fraud proven
+            return "fraud detected"
+
+    def is_batch_verified(self, batch_number):
+        p = self._pending.get(batch_number)
+        if not p or p.get("challenged"):
+            return False
+        return time.time() - p["submitted_at"] >= CHALLENGE_WINDOW
+```
+
+The STF is used in two contexts — by the sequencer during normal execution, and by challengers during fraud detection — via the same `apply_tx()` interface.
+
+**Approach 3: Per-tx Merkle Proof** — swap `StateTransitionFunction`.
+
+The ProofBackend and L1Backend remain identical (or the ProofBackend is optionally replaced with a recursive aggregator). A new STF implementation verifies client-generated ZK proofs instead of executing domain logic directly. (See Appendix D, FAQ 3 for full implementation details.)
+
+```python
+class MerkleProofSTF(StateTransitionFunction):
+    def validate_tx(self, state, tx):
+        proof = tx.data["proof"]
+        if not groth16_verify(self.vk, proof, tx.data["public_inputs"]):
+            return "invalid proof"
+        if tx.data["public_inputs"]["old_root"] != state["root"]:
+            return "stale root"
+        return None
+
+    def apply_tx(self, state, tx):
+        state["root"] = tx.data["public_inputs"]["new_root"]
+        state.setdefault("nullifiers", {})[tx.data["nullifier"]] = True
+        return STFResult(success=True)
+```
+
+The key insight across all three approaches: **none of the four ABCs (`StateTransitionFunction`, `DAProvider`, `ProofBackend`, `L1Backend`) require modification**. The security model is upgraded by swapping implementations behind the interfaces. This validates the pluggable architecture: the same framework supports execution-trace binding (current), full circuit-enforced STF correctness (Approach 1), optimistic verification (Approach 2), and client-side proving (Approach 3).
+
+#### 10.2.2 Other Future Directions
 
 1. **PLONK/STARKs.** Replace Groth16 with PLONK (universal trusted setup, updateable) or STARKs (no trusted setup, post-quantum). The `ProofBackend` interface makes this a drop-in replacement.
 
 2. **Recursive proof aggregation.** Prove N batch proofs within a single aggregation proof, amortizing L1 verification cost across multiple batches.
 
-3. **Decentralized sequencer.** Leader rotation or shared sequencing protocols (e.g., Espresso) can decentralize the sequencer role.
+3. **Decentralized sequencer.** Leader rotation or shared sequencing protocols (e.g., Espresso) can decentralize the sequencer role, addressing MEV exposure and censorship risk (Section 10.1.8, item 27 and Section 10.1.3, item 9).
 
-4. **STF-to-circuit compiler.** Automatically compile the Python STF into an R1CS circuit that proves internal STF logic, not just execution traces. This would close the gap between app-specific and general-purpose security.
+4. **Cross-rollup communication.** Shared bridge infrastructure enabling atomic operations across multiple app-specific rollups.
 
-5. **Cross-rollup communication.** Shared bridge infrastructure enabling atomic operations across multiple app-specific rollups.
+5. **Hardware acceleration.** GPU/FPGA-based provers for BN128 multi-scalar multiplication, addressing the MSM bottleneck (Section 10.1.2, item 7).
 
-6. **Hardware acceleration.** GPU/FPGA-based provers for BN128 multi-scalar multiplication.
+6. **Transaction signature verification.** Enforce ECDSA or EdDSA signature verification at the sequencer layer, closing the sender authentication gap (Section 10.1.8, item 25). This can be implemented as a middleware or within the `validate_tx` hook of the STF.
+
+7. **L1 finality tracking.** Monitor L1 block confirmations and treat batch submissions as pending until sufficient finality is reached (e.g., 2 epochs for Ethereum PoS). Implement L1 reorg detection with automatic rollback to the last finalized batch.
+
+8. **Incremental state root computation.** Replace the O(N) full-trie rebuild with a persistent Merkle trie that applies incremental updates in O(log N) per state change. The Poseidon-enabled `Trie(hash_fn=poseidon_bytes)` provides the foundation for ZK-friendly incremental state roots.
+
+9. **Batch verification for Groth16 proofs.** Implement randomized linear combination batch verification, reducing the marginal verification cost per additional proof from ~200K gas to ~20K gas.
+
+10. **ERC-20/ERC-721 bridge integration.** Implement token-standard-aware lock/mint/burn/unlock flows in the `CrossDomainMessenger`, enabling standard token bridging between L1 and L2.
+
+11. **State pruning and archival.** Implement finality-based state pruning that discards state entries superseded by finalized batches, and blob archival to permanent storage before the EIP-4844 expiry window.
 
 ---
 
@@ -1246,7 +1481,7 @@ Caldera, AltLayer, and Conduit offer deployment platforms primarily for optimist
 
 We have presented application-specific ZK rollups, a framework that achieves the same security properties as general-purpose zkEVMs while reducing circuit complexity by 4–6 orders of magnitude. The core insight is that most L2 applications require only a narrow slice of general-purpose computation, and this slice can be captured in a compact ZK circuit whose constraint count scales linearly with batch size rather than execution complexity.
 
-The py-ethclient reference implementation demonstrates that this framework is practical: 21,442 lines of Python, 943 tests, four pluggable interfaces, three DA strategies, LMDB persistence, an L1–L2 bridge with anti-censorship guarantees, and nine complete example applications verified on the Ethereum Sepolia testnet.
+The py-ethclient reference implementation demonstrates that this framework is practical: 21,884 lines of Python across 88 modules, 987 tests in 41 test files, four pluggable interfaces, a ZK-friendly Poseidon hash with circuit encoding (~240 constraints), three DA strategies, LMDB persistence, an L1–L2 bridge with anti-censorship guarantees, and nine complete example applications verified on the Ethereum Sepolia testnet. Section 10 provides a comprehensive analysis of 31 known limitations across security, proof system, sequencer, state management, data availability, bridge, and operational domains, along with concrete paths toward resolution.
 
 The trade-off — application specificity for circuit efficiency — is favorable for the vast majority of L2 use cases. Tokens, DEXes, name services, voting systems, games, marketplaces, and escrow services can all be deployed as ZK rollups with ~200K gas verification cost and seconds-level proof generation, without requiring the full complexity of a zkEVM.
 
@@ -1289,6 +1524,12 @@ As the Ethereum ecosystem matures toward a rollup-centric roadmap, application-s
 [16] Iden3. "SnarkJS: JavaScript Implementation of ZK-SNARKs." https://github.com/iden3/snarkjs
 
 [17] Iden3. "rapidsnark: Fast ZK-SNARK Prover." https://github.com/iden3/rapidsnark
+
+[18] Tornado Cash. "Tornado Cash Privacy Solution." https://tornado.ws/audits/TornadoCash_whitepaper.pdf
+
+[19] E. Ben-Sasson, A. Chiesa, C. Garman, M. Green, I. Miers, E. Tromer, M. Virza. "Zerocash: Decentralized Anonymous Payments from Bitcoin." IEEE S&P 2014. https://eprint.iacr.org/2014/349
+
+[20] L. Grassi, D. Khovratovich, C. Rechberger, A. Roy, M. Schofnegger. "Poseidon: A New Hash Function for Zero-Knowledge Proof Systems." USENIX Security 2021. https://eprint.iacr.org/2019/458
 
 ---
 
@@ -1380,3 +1621,405 @@ where:
 - e: G₁ × G₂ → G_T is the bilinear pairing on BN128
 
 The pairing is implemented as 4 pairs passed to the ecPairing precompile (EIP-197), which returns 1 if the product of pairings equals the identity element in G_T.
+
+### D. Design FAQ
+
+This appendix addresses common architectural questions about the framework's design decisions and alternative approaches.
+
+#### FAQ 1: Does `validate_tx` Involve ZK Proofs?
+
+**No.** `validate_tx` (`interfaces.py:19–21`) is a **pre-mempool application-logic validation hook**. It has no relation to ZK proofs.
+
+The sequencer calls `validate_tx` at `sequencer.py:61` *before* a transaction enters the mempool:
+
+```
+submit_tx() call chain:
+  → mempool capacity check               (sequencer.py:58)
+  → stf.validate_tx(state, tx)           (sequencer.py:61)  ← app-logic validation
+  → nonce verification                    (sequencer.py:65-69)
+  → mempool insertion                     (sequencer.py:71)
+```
+
+This hook is intended for domain-specific business logic validation. For example, a Token STF might check "is transfer amount > 0?" or "does the sender have sufficient balance?". The default implementation always returns `None` (valid).
+
+**ZK proofs operate at a completely different level** — they are generated per *batch*, not per transaction. After the sequencer has executed all transactions and sealed a batch, `Groth16ProofBackend.prove()` generates a single proof covering the entire batch's state transition. Individual transactions are never ZK-proven.
+
+```
+Transaction Level:   validate_tx() → app logic check (no ZK)
+Batch Level:         prove()       → Groth16 ZK proof (covers all txs)
+```
+
+#### FAQ 2: What Account System Does the L2 Use?
+
+**There is no protocol-level account system.** Unlike Ethereum L1, which enforces a fixed Account model (nonce, balance, storageRoot, codeHash) at the protocol layer, this framework delegates the entire concept of "accounts" to the user's STF.
+
+| Component | Implementation | Description |
+|---|---|---|
+| State | `L2State(dict)` (`types.py:113`) | Plain Python dict subclass |
+| Address | `L2Tx.sender: bytes` (20 bytes) | Included in transaction |
+| Nonce | `Sequencer._nonces` (`sequencer.py:65–69`) | Tracked in-memory by sequencer |
+| Balances/Data | **Defined entirely by STF** | No protocol enforcement |
+
+Each application defines its own state schema:
+
+```python
+# Token STF: balance map
+state["balances"][addr] = amount
+
+# DEX STF: balance map + liquidity pools
+state["balances"][addr] = amount
+state["pools"][pair_id] = {"reserve_a": ..., "reserve_b": ...}
+
+# Voting STF: voter records
+state["votes"][voter_addr] = candidate_id
+
+# NameService STF: name→owner registry
+state["names"][name] = owner_addr
+```
+
+This is the core of "application-specific": a general-purpose zkEVM must reproduce Ethereum's Account model inside the circuit (requiring millions of constraints for Merkle Patricia Trie updates). An app-specific rollup stores only the state its STF needs in a plain dict, making the circuit dramatically simpler.
+
+#### FAQ 3: Can State Be a Merkle Tree Where Each Transaction Is a ZK Proof?
+
+**Yes.** This is a well-known alternative architecture called *per-transaction client-side proving*, used by protocols like Tornado Cash [18], Zcash [19], and Loopring [12].
+
+**Current architecture (batch-level proof):**
+
+```
+State  = Python dict → keccak256 → state_root
+Tx     = plaintext data (sender, op, amount)
+Proof  = per-batch (proves old_root × ∏tx ≡ new_root × commitment)
+Prover = server-side (Prover node)
+```
+
+**Alternative architecture (per-tx Merkle proof):**
+
+```
+State  = Merkle tree (each leaf = account/data entry)
+Tx     = ZK proof (proves valid Merkle path + state transition + authorization)
+Proof  = per-transaction (client generates proof before submission)
+Prover = client-side (user's device)
+```
+
+In the per-tx model, each transaction carries a ZK proof that demonstrates:
+
+1. **Merkle path validity**: "I know a valid path from `old_root` to my leaf"
+2. **State transition correctness**: "balance >= transfer_amount"
+3. **Authorization**: "I know the private key for this leaf"
+4. **New root correctness**: "After updating my leaf, the new root is `new_root`"
+
+The sequencer's role changes from *executing STF logic* to *verifying proofs*:
+
+```python
+# Current: STF executes logic
+class TokenSTF(StateTransitionFunction):
+    def apply_tx(self, state, tx):
+        state["balances"][sender] -= amount  # sequencer executes this
+        state["balances"][to] += amount
+        return STFResult(success=True)
+
+# Alternative: STF verifies proof
+class MerkleProofSTF(StateTransitionFunction):
+    def validate_tx(self, state, tx):
+        proof = deserialize_proof(tx.data["proof"])
+        if not groth16_verify(self.vk, proof, tx.data["public_inputs"]):
+            return "invalid zk proof"
+        return None
+
+    def apply_tx(self, state, tx):
+        # Proof already verified — just apply the new root
+        state["root"] = tx.data["public_inputs"]["new_root"]
+        state["nullifiers"].add(tx.data["public_inputs"]["nullifier"])
+        return STFResult(success=True)
+```
+
+**This is fully compatible with the current 4-interface framework.** The `StateTransitionFunction` interface supports both models — the STF simply performs proof verification instead of direct state manipulation.
+
+**Trade-offs:**
+
+| Aspect | Batch Proof (current) | Per-Tx Merkle Proof |
+|---|---|---|
+| Circuit size | 3 constraints (per batch) | O(log n) hashes per tx |
+| Proof generator | Server (Prover node) | Client (user's device) |
+| Sequencer trust | Executes STF → some trust | Verifies proofs only → minimal trust |
+| Privacy | None (plaintext txs) | Possible (sender/amount hidden in proof) |
+| Client burden | Lightweight (submit tx) | Heavy (generate proof) |
+| In-circuit hash | N/A | Required (Poseidon preferred) |
+| Representative protocols | py-ethclient (current) | Tornado Cash, Zcash, Loopring |
+
+**Key implementation consideration:** Standard hash functions (keccak256, SHA256) are expensive inside ZK circuits (~150,000 constraints for keccak256). Per-tx Merkle proof systems almost always use **ZK-friendly hash functions** like Poseidon (~300 constraints), requiring an additional circuit component in `ethclient/zk/circuit.py`.
+
+**All three patterns are implementable via the existing STF interface.** The `StateTransitionFunction` ABC (`interfaces.py:12–25`) is sufficient for all three per-tx proof architectures — only the internal logic of `validate_tx` and `apply_tx` changes, while the interface itself remains identical:
+
+*Pattern 1 — Account subtree STF:*
+
+```python
+class AccountSubtreeSTF(StateTransitionFunction):
+    def validate_tx(self, state, tx):
+        proof = tx.data["proof"]
+        old_root, new_root = tx.data["old_root"], tx.data["new_root"]
+        if old_root != state["root"]:
+            return "stale root"
+        if not verify_merkle_update(proof, old_root, new_root):
+            return "invalid merkle proof"
+        return None
+
+    def apply_tx(self, state, tx):
+        state["root"] = tx.data["new_root"]
+        return STFResult(success=True)
+```
+
+*Pattern 2 — Nullifier STF:*
+
+```python
+class NullifierSTF(StateTransitionFunction):
+    def validate_tx(self, state, tx):
+        proof, nullifier = tx.data["proof"], tx.data["nullifier"]
+        if nullifier in state.get("nullifiers", {}):
+            return "double spend"
+        if not groth16_verify(self.vk, proof, [state["commitment_root"], nullifier]):
+            return "invalid proof"
+        return None
+
+    def apply_tx(self, state, tx):
+        state.setdefault("nullifiers", {})[tx.data["nullifier"]] = True
+        state["commitment_root"] = tx.data["new_commitment_root"]
+        return STFResult(success=True)
+```
+
+*Pattern 3 — Sequencer-ordered STF:*
+
+```python
+class SequencerOrderedSTF(StateTransitionFunction):
+    def validate_tx(self, state, tx):
+        if tx.data["old_root"] != state["root"]:
+            return "root mismatch — regenerate proof"
+        if not groth16_verify(self.vk, tx.data["proof"], tx.data["public_inputs"]):
+            return "invalid proof"
+        return None
+
+    def apply_tx(self, state, tx):
+        state["root"] = tx.data["new_root"]
+        return STFResult(success=True)
+```
+
+All three follow the same pipeline: `submit_tx() → validate_tx() → mempool → tick() → apply_tx() → seal`. The difference is *where proof generation occurs*:
+
+| | Proof generation | validate_tx | apply_tx | Batch prove() |
+|---|---|---|---|---|
+| **Current (batch)** | Server, post-batch | App logic | Direct state mutation | Full batch proof |
+| **Account subtree** | Client, pre-tx | Merkle proof verify | Root update | Optional aggregation |
+| **Nullifier** | Client, pre-tx | ZK proof + nullifier check | Nullifier record | Optional aggregation |
+| **Sequencer-ordered** | Client, pre-tx | ZK proof + root match | Root update | Optional aggregation |
+
+"Optional aggregation" means: since per-tx proofs already certify each transaction's validity, the batch-level `prove()` is **not mandatory**. However, to save L1 gas, N per-tx proofs can be combined into a single recursive aggregation proof — in which case the `ProofBackend` is reimplemented for aggregation rather than per-batch proving.
+
+The key insight is that **none of the four ABCs need to be modified** — only their implementations are swapped. This is the core value of the pluggable interface design.
+
+#### FAQ 4: How Are Pre-State and Post-State Distinguished?
+
+The answer depends on the proof architecture.
+
+**Current implementation (batch-level):**
+
+The sequencer maintains `_pre_batch_root` (`sequencer.py:36`) and computes `new_root` on seal:
+
+```
+Batch #0:
+  __init__:  _pre_batch_root = compute_state_root()    → S₀
+  tick():    apply_tx(tx₁), apply_tx(tx₂), ...         → state changes
+  seal():    old_root = _pre_batch_root                 → S₀
+             new_root = compute_state_root()            → S₂
+             _pre_batch_root = new_root                 → next batch starts at S₂
+
+Batch #1:
+  old_root = _pre_batch_root                            → S₂ (= previous new)
+  ...
+  new_root = compute_state_root()                       → S₅
+
+Chain invariant: Batch[k].new_root == Batch[k+1].old_root
+```
+
+**Per-tx Merkle proof model — three patterns:**
+
+*Pattern 1: Account-level subtree (Loopring-style).*
+
+State is divided into per-account subtrees. A transaction proves it knows the old leaf and Merkle path, and provides the new leaf. The **same sibling path** validates both roots:
+
+```
+Same Merkle path siblings verify:
+  hash(old_leaf, siblings...) == old_root    ✓ pre-state valid
+  hash(new_leaf, siblings...) == new_root    ✓ post-state valid
+```
+
+Concurrent transactions touching *different* accounts can be parallelized (disjoint subtrees). Transactions touching the *same* account conflict and must be serialized.
+
+*Pattern 2: Nullifier model (Tornado Cash / Zcash-style).*
+
+State is an **append-only** commitment tree. Pre-state is proved via Merkle inclusion; post-state is recorded by appending a nullifier:
+
+```
+Pre-state:  Merkle inclusion proof ("this commitment exists in the tree")
+Post-state: Nullifier append ("this commitment is now spent")
+```
+
+The tree is never modified, only extended — so there are **no conflicts**. This enables full parallelism but restricts the state model to UTXO-like patterns.
+
+*Pattern 3: Sequencer-ordered (extends current design).*
+
+The sequencer assigns the current root to each client, who generates a proof against that specific root. The sequencer applies proofs in order, maintaining the same sequential invariant as the current batch-level design.
+
+| Model | Pre-state | Post-state | Concurrency |
+|---|---|---|---|
+| **Batch (current)** | `_pre_batch_root` saved | `compute_state_root()` called | Sequential within batch |
+| **Account subtree** | Merkle path + old_leaf | Same path + new_leaf | Per-account parallelism |
+| **Nullifier** | Merkle inclusion proof | Nullifier append | Full parallelism (no conflicts) |
+| **Sequencer-ordered** | Sequencer assigns root | Proof's public output | Sequential (same as current) |
+
+### E. Architecture Configuration Tree
+
+The four pluggable interfaces (`StateTransitionFunction`, `ProofBackend`, `DAProvider`, `L1Backend`) can be combined to produce a wide range of rollup architectures. This appendix enumerates all implementation options per interface and the meaningful architectural combinations organized by security model.
+
+#### E.1 Interface Implementation Options
+
+```
+Rollup(stf, da, prover, l1)
+│
+├─ STF (StateTransitionFunction)
+│   ├─ Plain STF (direct execution) ────── Sequencer executes logic
+│   │   ├─ PythonRuntime(callable)         state["balances"][x] -= amount
+│   │   └─ Custom ABC subclass             class MySTF(StateTransitionFunction)
+│   └─ Proof-verifying STF ────────────── Sequencer only verifies, client proves
+│       ├─ AccountSubtreeSTF               Merkle path + old/new leaf
+│       ├─ NullifierSTF                    Commitment tree + nullifier set
+│       └─ SequencerOrderedSTF             Sequencer assigns root, client proves
+│
+├─ ProofBackend
+│   ├─ Execution-trace binding ─────────── old_root × ∏tx ≡ new_root × commit
+│   │   ├─ Groth16ProofBackend (Python)    py_ecc, development/testing
+│   │   └─ NativeProverBackend             rapidsnark subprocess, production
+│   ├─ STF-to-Circuit compiler ─────────── Compiles STF logic into R1CS
+│   │   └─ CircuitCompilerProofBackend     balance check → constraint
+│   ├─ Recursive aggregation ──────────── N per-tx/batch proofs → 1 proof
+│   │   └─ RecursiveAggregationBackend     For per-tx proof aggregation
+│   └─ (future proof systems)
+│       ├─ PLONKProofBackend               Universal setup, updateable
+│       └─ STARKProofBackend               No trusted setup, post-quantum
+│
+├─ DAProvider
+│   ├─ LocalDA                             In-memory, keccak256 commitment
+│   ├─ CalldataDA                          EIP-1559, 16 gas/byte, permanent
+│   └─ BlobDA                              EIP-4844, ~1 gas/byte, ~18 days
+│
+└─ L1Backend
+    ├─ InMemoryL1Backend                   Direct groth16.verify() call
+    ├─ EthL1Backend                        Real Ethereum, EVMVerifier contract
+    └─ FraudProofL1Backend                 ZK + challenge window hybrid
+```
+
+#### E.2 Security Models
+
+The security model — which determines whether the sequencer must be trusted — is the primary architectural decision. It is determined by the combination of STF × ProofBackend × L1Backend. The DAProvider is orthogonal and can be combined with any security model.
+
+```
+Architecture by Security Model
+│
+├─ Model 1: Sequencer Trust (current default)
+│   │
+│   │  STF:    Plain (PythonRuntime)
+│   │  Prover: Execution-trace (Groth16 or Native)
+│   │  L1:     InMemory or EthL1
+│   │  Trust:  Sequencer executes STF honestly
+│   │  STF integrity: DA + off-chain re-execution
+│   │
+│   ├─ 1a. Development / Testing
+│   │   STF=callable, DA=Local, Prover=Python, L1=InMemory
+│   │   → Simplest: 5-line rollup creation
+│   │
+│   ├─ 1b. Sepolia / Mainnet (calldata)
+│   │   STF=callable, DA=Calldata, Prover=Native, L1=EthL1
+│   │   → Production: ~199K gas verification
+│   │
+│   └─ 1c. Sepolia / Mainnet (blob)
+│       STF=callable, DA=Blob, Prover=Native, L1=EthL1
+│       → EIP-4844: lowest DA cost
+│
+├─ Model 2: Optimistic + ZK Hybrid
+│   │
+│   │  STF:    Plain (PythonRuntime) — unchanged
+│   │  Prover: Execution-trace — unchanged
+│   │  L1:     FraudProofL1Backend ← key swap
+│   │  Trust:  1-of-N honest challenger
+│   │  STF integrity: Re-execution + challenge within window
+│   │
+│   ├─ 2a. Short challenge window
+│   │   challenge_window=1 day, DA=Calldata
+│   │   → ZK covers most guarantees + fast finality
+│   │
+│   └─ 2b. Long challenge window
+│       challenge_window=7 days, DA=Blob
+│       → Optimistic rollup-grade security
+│
+├─ Model 3: Circuit-Enforced STF (Trustless)
+│   │
+│   │  STF:    Plain (same code) — unchanged
+│   │  Prover: CircuitCompilerProofBackend ← key swap
+│   │  L1:     EthL1
+│   │  Trust:  None (mathematical)
+│   │  STF integrity: Circuit enforces every STF operation
+│   │
+│   ├─ 3a. DSL-based
+│   │   STF written in restricted DSL, auto-compiled to R1CS
+│   │   → Medium circuit size, fully trustless
+│   │
+│   └─ 3b. Symbolic tracing
+│       Existing Python STF traced via symbolic execution
+│       → Reuses existing code, requires complex compiler
+│
+├─ Model 4: Client-Side Proving (Trustless)
+│   │
+│   │  STF:    Proof-verifying STF ← key swap
+│   │  Prover: Optional aggregation (or pass-through)
+│   │  L1:     EthL1
+│   │  Trust:  None (client generates proofs)
+│   │  STF integrity: Each tx carries its own ZK proof
+│   │
+│   ├─ 4a. Account subtree + batch aggregation
+│   │   STF=AccountSubtreeSTF, Prover=RecursiveAggregation
+│   │   → Loopring model, per-account parallelism
+│   │
+│   ├─ 4b. Nullifier + batch aggregation
+│   │   STF=NullifierSTF, Prover=RecursiveAggregation
+│   │   → Tornado Cash/Zcash model, privacy, full parallelism
+│   │
+│   ├─ 4c. Sequencer-ordered + batch aggregation
+│   │   STF=SequencerOrderedSTF, Prover=RecursiveAggregation
+│   │   → Sequential execution, similar to current structure
+│   │
+│   └─ 4d. Per-tx proof only (no batch proof)
+│       STF=NullifierSTF, Prover=NoOp (pass-through)
+│       → Simplest client-side model, no aggregation
+│
+└─ Model 5: Hybrid Combinations
+    │
+    ├─ 5a. Client proof + Fraud proof
+    │   STF=MerkleProofSTF, L1=FraudProofL1Backend
+    │   → Double protection: client proof + challenge fallback
+    │
+    └─ 5b. STF-to-Circuit + Recursive aggregation
+        Prover=CircuitCompiler + RecursiveAggregation
+        → Fully trustless + L1 gas optimization
+```
+
+#### E.3 Combinatorial Summary
+
+| Interface | Options | Variants |
+|---|---|---|
+| STF | 2 families | 5 total (2 plain + 3 proof-verifying) |
+| ProofBackend | 4 families | 6 total (2 trace + 1 compiler + 1 recursive + 2 future) |
+| DAProvider | 3 | 3 (Local, Calldata, Blob) |
+| L1Backend | 3 | 3 (InMemory, EthL1, FraudProof) |
+
+Theoretical combinatorial space: 5 × 6 × 3 × 3 = **270 combinations**.
+
+Meaningful architectural configurations (Section E.2): **~15 configurations** across 5 security models, with the DA layer orthogonally combinable with any model.

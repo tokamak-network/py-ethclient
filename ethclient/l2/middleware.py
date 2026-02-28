@@ -5,6 +5,7 @@ Provides API key authentication, IP-based rate limiting, and request size limiti
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -78,6 +79,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._rps = rps
         self._burst = burst
         self._buckets: dict[str, TokenBucket] = {}
+        self._lock = asyncio.Lock()
 
     def _get_bucket(self, client_ip: str) -> TokenBucket:
         if client_ip not in self._buckets:
@@ -86,9 +88,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         client_ip = request.client.host if request.client else "unknown"
-        bucket = self._get_bucket(client_ip)
+        async with self._lock:
+            bucket = self._get_bucket(client_ip)
+            allowed = bucket.consume()
 
-        if not bucket.consume():
+        if not allowed:
             return JSONResponse(
                 status_code=429,
                 content={"error": "Rate limit exceeded"},

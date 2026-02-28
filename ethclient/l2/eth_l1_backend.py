@@ -11,6 +11,7 @@ and verifies them on-chain. Reuses existing infrastructure:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 from ethclient.common.crypto import ecdsa_sign, private_key_to_address
@@ -38,6 +39,7 @@ class EthL1Backend(L1Backend):
         chain_id: int = 1,
         gas_multiplier: float = 1.2,
         receipt_timeout: int = 120,
+        confirmations: int = 0,
     ) -> None:
         self._rpc = EthRPCClient(rpc_url)
         self._private_key = private_key
@@ -45,6 +47,7 @@ class EthL1Backend(L1Backend):
         self._gas_multiplier = gas_multiplier
         self._receipt_timeout = receipt_timeout
         self._sender = private_key_to_address(private_key)
+        self._confirmations = confirmations
 
         self._verifier_address: Optional[bytes] = None
         self._evm_verifier: Optional[EVMVerifier] = None
@@ -103,10 +106,26 @@ class EthL1Backend(L1Backend):
             self._verified_batches[batch_number] = new_root
             self._latest_root = new_root
             logger.info("Batch #%d verified on L1 (tx: 0x%s)", batch_number, tx_hash.hex())
+            if self._confirmations > 0:
+                self._wait_for_confirmations(tx_hash, self._confirmations)
         else:
             logger.warning("Batch #%d verification FAILED on L1 (tx: 0x%s)", batch_number, tx_hash.hex())
 
         return tx_hash
+
+    def _wait_for_confirmations(self, tx_hash: bytes, confirmations: int, timeout: int = 600) -> None:
+        """Wait for N block confirmations after tx receipt."""
+        receipt = self._rpc.get_receipt(tx_hash)
+        if receipt is None:
+            return
+        tx_block = int(receipt.get("blockNumber", "0x0"), 16)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            current = self._rpc.get_block_number()
+            if current - tx_block >= confirmations:
+                return
+            time.sleep(12)  # ~1 slot
+        logger.warning("Confirmation timeout for tx 0x%s", tx_hash.hex())
 
     def is_batch_verified(self, batch_number: int) -> bool:
         return batch_number in self._verified_batches

@@ -1,33 +1,33 @@
 ---
-description: "ZK Circuit 빌드 & Groth16 증명 — 회로 설계부터 EVM 검증까지"
+description: "ZK Circuit Build & Groth16 Proofs — from circuit design to EVM verification"
 allowed-tools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "Task"]
-argument-hint: "회로 설명이나 검증 대상"
+argument-hint: "circuit description or verification target"
 user-invocable: true
 ---
 
-# ZK Circuit & Groth16 증명 스킬
+# ZK Circuit & Groth16 Proof Skill
 
-산술 회로 정의 → R1CS → Groth16 Trusted Setup → Prove → Verify → EVM on-chain 검증까지 전체 파이프라인을 안내한다.
+Guides the full pipeline: arithmetic circuit definition → R1CS → Groth16 Trusted Setup → Prove → Verify → EVM on-chain verification.
 
-## 핵심 파일 참조
+## Key File References
 
-| 파일 | 역할 |
+| File | Role |
 |------|------|
-| `ethclient/zk/circuit.py` | Circuit 빌더, Signal 연산, R1CS 변환 |
+| `ethclient/zk/circuit.py` | Circuit builder, Signal operations, R1CS conversion |
 | `ethclient/zk/groth16.py` | Setup, Prove, Verify (pure Python) |
 | `ethclient/zk/types.py` | G1Point, G2Point, Proof, VerificationKey, ProvingKey |
-| `ethclient/zk/evm_verifier.py` | EVMVerifier — on-chain 검증 바이트코드 생성 |
-| `ethclient/zk/r1cs_export.py` | snarkjs .r1cs 바이너리 포맷 내보내기 |
-| `ethclient/zk/snarkjs_compat.py` | snarkjs JSON 파싱/내보내기 |
-| `ethclient/l2/prover.py` | Groth16ProofBackend (L2 rollup용) |
-| `ethclient/l2/native_prover.py` | NativeProverBackend (rapidsnark 연동) |
+| `ethclient/zk/evm_verifier.py` | EVMVerifier — on-chain verification bytecode generation |
+| `ethclient/zk/r1cs_export.py` | snarkjs .r1cs binary format export |
+| `ethclient/zk/snarkjs_compat.py` | snarkjs JSON parsing/export |
+| `ethclient/l2/prover.py` | Groth16ProofBackend (for L2 rollup) |
+| `ethclient/l2/native_prover.py` | NativeProverBackend (rapidsnark integration) |
 
-## 빠른 시작: 곱셈 회로
+## Quick Start: Multiplication Circuit
 
 ```python
 from ethclient.zk import Circuit, groth16
 
-# 1. 회로 정의: x * y == z (x, y는 비밀, z는 공개)
+# 1. Define circuit: x * y == z (x, y are private, z is public)
 c = Circuit()
 x = c.private("x")
 y = c.private("y")
@@ -37,13 +37,13 @@ c.constrain(x * y, z)
 # 2. Trusted Setup
 pk, vk = groth16.setup(c)
 
-# 3. 증명 생성
+# 3. Generate proof
 proof = groth16.prove(pk, private={"x": 3, "y": 5}, public={"z": 15}, circuit=c)
 
-# 4. 검증 (Python)
+# 4. Verify (Python)
 assert groth16.verify(vk, proof, [15])
 
-# 5. EVM 검증
+# 5. EVM verification
 from ethclient.zk.evm_verifier import EVMVerifier
 verifier = EVMVerifier(vk)
 result = verifier.verify_on_evm(proof, [15])
@@ -51,51 +51,51 @@ assert result.success
 print(f"Gas used: {result.gas_used}")
 ```
 
-## Field 산술 (BN128)
+## Field Arithmetic (BN128)
 
 ```python
 FIELD_MODULUS = 21888242871839275222246405745257275088696311157297823662689037894645226208583
 # ~254 bits, BN128 curve order
 
-# 기본 연산
+# Basic operations
 def _field(x): return x % FIELD_MODULUS
 def _field_inv(x): return pow(x, FIELD_MODULUS - 2, FIELD_MODULUS)  # Fermat's little theorem
 ```
 
-모든 회로 연산은 이 유한체 위에서 수행된다. 32바이트 해시값은 `int.from_bytes(data, "big") % FIELD_MODULUS`로 변환.
+All circuit operations are performed over this finite field. 32-byte hash values are converted via `int.from_bytes(data, "big") % FIELD_MODULUS`.
 
 ## Circuit API
 
-### Signal 선언
+### Signal Declaration
 ```python
 c = Circuit()
-x = c.public("x")     # 공개 입력 (검증자가 알고 있음)
-y = c.private("y")     # 비밀 입력 (증명자만 알고 있음)
-tmp = c.intermediate("tmp")  # 중간 변수
+x = c.public("x")     # Public input (known to verifier)
+y = c.private("y")     # Private input (known only to prover)
+tmp = c.intermediate("tmp")  # Intermediate variable
 ```
 
-### Signal 연산
+### Signal Operations
 ```python
-# 덧셈/뺄셈: 제약 없이 선형 결합
+# Addition/subtraction: linear combination without constraints
 a + b       # Signal + Signal
-a + 5       # Signal + 상수
+a + 5       # Signal + constant
 a - b
 
-# 곱셈: R1CS 제약 자동 생성
-a * b       # → 중간 변수 + 제약: a * b = _tmp
-a * 3       # 상수 곱: 제약 없음 (스칼라 곱)
+# Multiplication: auto-generates R1CS constraint
+a * b       # → intermediate variable + constraint: a * b = _tmp
+a * 3       # Constant multiplication: no constraint (scalar mult)
 
-# 부정
--a          # 모든 계수 부정
+# Negation
+-a          # Negate all coefficients
 ```
 
-### 제약 추가
+### Adding Constraints
 ```python
-c.constrain(x * y, z)       # x * y == z (곱셈 결과에서 C 교체)
-c.constrain(a + b, c_var)   # a + b == c (선형 등식: (a+b-c)*1 = 0)
+c.constrain(x * y, z)       # x * y == z (replace C in multiplication result)
+c.constrain(a + b, c_var)   # a + b == c (linear equality: (a+b-c)*1 = 0)
 ```
 
-### R1CS 변환 & 검증
+### R1CS Conversion & Validation
 ```python
 r1cs = c.to_r1cs()
 # R1CS { A, B, C: sparse matrix, num_variables, num_public, num_constraints }
@@ -104,37 +104,37 @@ witness = c.compute_witness(private={"x": 3, "y": 5}, public={"z": 15})
 assert r1cs.check_witness(witness)  # A[i]·w * B[i]·w == C[i]·w for all i
 ```
 
-### Witness 변수 순서
-1. Index 0: 상수 `1`
-2. Index 1..num_public-1: 공개 입력 (선언 순서)
-3. Index num_public..: 비밀 입력, 중간 변수
+### Witness Variable Ordering
+1. Index 0: constant `1`
+2. Index 1..num_public-1: public inputs (declaration order)
+3. Index num_public..: private inputs, intermediate variables
 
-## Groth16 파이프라인
+## Groth16 Pipeline
 
 ### Setup (Trusted Setup)
 ```python
 pk, vk = groth16.setup(circuit)
-# pk: ProvingKey — 증명자 보관 (비밀)
-# vk: VerificationKey — 검증자 공개
+# pk: ProvingKey — kept by prover (secret)
+# vk: VerificationKey — published to verifier
 ```
-- Toxic waste (tau, alpha, beta, gamma, delta) 생성 후 폐기
-- 회로별 1회 수행
+- Toxic waste (tau, alpha, beta, gamma, delta) generated then discarded
+- Performed once per circuit
 
 ### Prove
 ```python
 proof = groth16.prove(pk, private={"x": 3, "y": 5}, public={"z": 15}, circuit=c)
 # proof: Proof(a: G1Point, b: G2Point, c: G1Point)
 ```
-- Witness 계산 → R1CS 검증 → QAP 변환 → 증명 생성
-- 랜덤 blinding factors (r, s) 사용
+- Witness computation → R1CS validation → QAP conversion → proof generation
+- Random blinding factors (r, s) used
 
 ### Verify
 ```python
 valid = groth16.verify(vk, proof, [15])  # public_inputs as list[int]
-# 또는
-valid = groth16.verify(vk, proof, {"z": 15})  # dict 형태도 가능
+# or
+valid = groth16.verify(vk, proof, {"z": 15})  # dict form also supported
 ```
-- 페어링 검사: `e(A,B) == e(alpha,beta) * e(IC_acc,gamma) * e(C,delta)`
+- Pairing check: `e(A,B) == e(alpha,beta) * e(IC_acc,gamma) * e(C,delta)`
 
 ### Debug Verify
 ```python
@@ -142,46 +142,46 @@ result = groth16.debug_verify(vk, proof, [15])
 # result.valid, result.e_ab, result.e_alpha_beta, result.e_ic_gamma, result.e_c_delta
 ```
 
-## EVM on-chain 검증
+## EVM On-Chain Verification
 
-### 바이트코드 생성 & 실행
+### Bytecode Generation & Execution
 ```python
 from ethclient.zk.evm_verifier import EVMVerifier
 
 verifier = EVMVerifier(vk)
-bytecode = verifier.bytecode  # 배포용 바이트코드
+bytecode = verifier.bytecode  # Deployment bytecode
 
-# 로컬 EVM 실행
+# Local EVM execution
 result = verifier.verify_on_evm(proof, [15])
 # EVMResult(success=True, gas_used=..., return_data=...)
 ```
 
-### Gas 프로파일링
+### Gas Profiling
 ```python
 profile = verifier.gas_profile(proof, [15])
 # GasProfile(total_gas, ecadd_gas, ecadd_calls, ecmul_gas, ecmul_calls, ecpairing_gas, ecpairing_calls)
 ```
 
-### Precompile 비용
-| Precompile | 주소 | Gas |
-|------------|------|-----|
+### Precompile Costs
+| Precompile | Address | Gas |
+|------------|---------|-----|
 | ECADD | 0x06 | 150 |
 | ECMUL | 0x07 | 6,000 |
 | ECPAIRING | 0x08 | 45,000 + 34,000 * num_pairs |
 
-총 가스: ~181,000 base + 6,150 per public input
+Total gas: ~181,000 base + 6,150 per public input
 
-### Calldata 레이아웃
+### Calldata Layout
 ```
 [0:64]    proof.A   (x, y)
-[64:192]  proof.B   (x_imag, x_real, y_imag, y_real)  ← G2 EVM 인코딩 주의
+[64:192]  proof.B   (x_imag, x_real, y_imag, y_real)  ← note G2 EVM encoding order
 [192:256] proof.C   (x, y)
-[256:]    public_inputs (각 32바이트)
+[256:]    public_inputs (32 bytes each)
 ```
 
-## snarkjs 호환
+## snarkjs Compatibility
 
-### R1CS 내보내기
+### R1CS Export
 ```python
 from ethclient.zk.r1cs_export import export_r1cs_binary, export_witness_json
 
@@ -192,21 +192,21 @@ with open("circuit.r1cs", "wb") as f:
 witness_json = export_witness_json(public={"z": 15}, private={"x": 3, "y": 5}, circuit=c)
 ```
 
-### snarkjs JSON 파싱
+### snarkjs JSON Parsing
 ```python
 from ethclient.zk.snarkjs_compat import verify_snarkjs, parse_snarkjs_proof
 
-# snarkjs 아티팩트 직접 검증
+# Verify snarkjs artifacts directly
 valid = verify_snarkjs(vkey_json, proof_json, public_json)
 ```
 
-### FQ2 인코딩 주의
+### FQ2 Encoding Note
 - snarkjs: `[c1, c0]` = `[imag, real]`
 - EVM: `x_imag || x_real || y_imag || y_real` (imaginary first)
 
-## L2 Rollup용 회로 구조
+## L2 Rollup Circuit Structure
 
-`Groth16ProofBackend`가 사용하는 회로:
+Circuit used by `Groth16ProofBackend`:
 
 ```
 Public (3): old_state_root, new_state_root, tx_commitment
@@ -218,28 +218,85 @@ Constraints:
   chain_{last} == new_state_root * tx_commitment
 ```
 
-- 128-bit field 절삭: `int.from_bytes(hash, "big") % FIELD_MODULUS`
-- Balance factor: 마지막 슬롯에 `(new_root * tx_commit) / product` 삽입
-- 실제 tx 최대 수 = `max_txs_per_batch - 1`
+- 128-bit field truncation: `int.from_bytes(hash, "big") % FIELD_MODULUS`
+- Balance factor: inserts `(new_root * tx_commit) / product` in last slot
+- Actual max tx count = `max_txs_per_batch - 1`
 
-## 복잡한 회로 예제: 범위 증명
+## Poseidon Circuit
+
+ZK-friendly hash function available as a circuit primitive:
+
+```python
+from ethclient.zk.poseidon import poseidon_circuit
+
+c = Circuit()
+x = c.private("x")
+y = c.private("y")
+out = c.public("out")
+
+# Build Poseidon hash circuit for 2 inputs
+poseidon_circuit(c, inputs=[x, y], output=out)
+# Generates ~240 R1CS constraints
+```
+
+### Poseidon vs keccak256
+
+| Property | Poseidon | keccak256 |
+|----------|----------|-----------|
+| R1CS constraints | ~240 | ~150,000 |
+| ZK-friendliness | Native field operations | Bitwise ops (expensive in R1CS) |
+| Security | 128-bit (conjectured) | 256-bit (standard) |
+| Use case | In-circuit hashing | Out-of-circuit, general purpose |
+
+### Poseidon Parameters
+- **t** = 3 (state width: 2 inputs + 1 capacity)
+- **RF** = 8 (full rounds)
+- **RP** = 57 (partial rounds)
+- **S-box**: x^5 (field-native exponentiation)
+- **Field**: BN128 scalar field
+
+## Complex Circuit Example: Range Proof
 
 ```python
 c = Circuit()
 x = c.private("x")
 bound = c.public("bound")
 
-# x가 0 이상 bound 미만임을 증명
-# (x) * (bound - x - 1) = result, result가 0 이상임을 보장
+# Prove that x is in range [0, bound)
+# (x) * (bound - x - 1) = result, guaranteeing result >= 0
 diff = bound + (-x) + (-Signal.one(c))  # bound - x - 1
 result = c.intermediate("result")
 c.constrain(x * diff, result)
 ```
 
-## 주의사항
+## Security Considerations
 
-1. **Pure Python 성능**: <1000 제약에 적합. 대규모 회로는 NativeProverBackend 사용
-2. **Toxic waste**: setup() 시 랜덤 생성 후 메모리에서만 존재. 프로세스 종료 시 소멸
-3. **Witness 자동 풀이**: `compute_witness()`가 중간 변수를 반복적으로 풀어냄 (고정점 반복)
-4. **G2 바이트 순서**: EVM은 imaginary first. snarkjs도 imaginary first. 일관됨
-5. **다항식 나눗셈**: O(n^2) naive. 대규모 회로에서 병목
+### Field Truncation Security (WHITEPAPER 7.2)
+
+When 32-byte hash values are reduced modulo the BN128 scalar field (`int.from_bytes(hash, "big") % FIELD_MODULUS`), a **field aliasing** risk exists: different hash values could map to the same field element. The collision probability is approximately **2^{-243}**, which is negligible for practical purposes but must be understood.
+
+### Trusted Setup Risk (WHITEPAPER 7.5)
+
+The Groth16 trusted setup generates **toxic waste** (tau, alpha, beta, gamma, delta). If this material is not properly discarded, a party in possession of it can forge arbitrary proofs.
+
+**Mitigations:**
+- Current implementation generates toxic waste in-memory and discards on process exit
+- For production: use an **MPC ceremony** (e.g., Hermez-style) with multiple participants
+- Future alternatives: **PLONK** (universal trusted setup) or **STARKs** (no trusted setup)
+
+### Circuit Expressiveness Limitation (WHITEPAPER 10.1.2 #2)
+
+The L2 rollup circuit proves an **execution-trace chain** only — it verifies that the product of private tx values matches the public state transition commitment. It does **not** verify:
+- Individual transaction validity
+- STF logic correctness
+- Data availability of intermediate states
+
+## Caveats
+
+1. **Pure Python performance**: Suitable for <1000 constraints. Use NativeProverBackend for large circuits
+2. **Toxic waste**: Generated randomly during setup(), exists in memory only. Destroyed on process exit
+3. **Automatic witness solving**: `compute_witness()` iteratively solves intermediate variables (fixed-point iteration)
+4. **G2 byte order**: EVM uses imaginary first. snarkjs also uses imaginary first. Consistent
+5. **Polynomial division**: O(n^2) naive implementation. Bottleneck for large circuits
+6. **Circuit expressiveness**: The rollup circuit proves execution-trace binding only, not individual transaction validity
+7. **No recursive proofs**: The current implementation does not support proof composition or recursive SNARKs

@@ -1,34 +1,34 @@
 ---
-description: "App-Specific ZK Rollup 생성 — STF 정의부터 L1 검증까지"
+description: "App-Specific ZK Rollup — from STF definition to L1 verification"
 allowed-tools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "Task"]
-argument-hint: "앱 이름이나 유스케이스 설명"
+argument-hint: "app name or use case description"
 user-invocable: true
 ---
 
-# L2 ZK Rollup 생성 스킬
+# L2 ZK Rollup Creation Skill
 
-App-Specific ZK Rollup을 생성하고 운영하는 전문 스킬. STF(State Transition Function) 정의 → PythonRuntime 래핑 → Rollup 라이프사이클(setup → submit → batch → prove → L1 verify) 전체를 안내한다.
+Specialized skill for creating and operating App-Specific ZK Rollups. Guides the entire pipeline: STF (State Transition Function) definition → PythonRuntime wrapping → Rollup lifecycle (setup → submit → batch → prove → L1 verify).
 
-## 핵심 파일 참조
+## Key File References
 
-| 파일 | 역할 |
+| File | Role |
 |------|------|
-| `ethclient/l2/rollup.py` | Rollup 오케스트레이터 |
-| `ethclient/l2/runtime.py` | PythonRuntime — callable을 STF로 래핑 |
+| `ethclient/l2/rollup.py` | Rollup orchestrator |
+| `ethclient/l2/runtime.py` | PythonRuntime — wraps callable as STF |
 | `ethclient/l2/types.py` | L2Tx, STFResult, Batch, BatchReceipt, L2State |
-| `ethclient/l2/sequencer.py` | Sequencer — mempool, nonce 추적, batch 조립 |
+| `ethclient/l2/sequencer.py` | Sequencer — mempool, nonce tracking, batch assembly |
 | `ethclient/l2/prover.py` | Groth16ProofBackend (pure Python) |
 | `ethclient/l2/native_prover.py` | NativeProverBackend (rapidsnark/snarkjs) |
-| `ethclient/l2/interfaces.py` | 4 플러거블 인터페이스 정의 |
-| `ethclient/l2/config.py` | L2Config 설정 |
+| `ethclient/l2/interfaces.py` | 4 pluggable interface definitions |
+| `ethclient/l2/config.py` | L2Config settings |
 
-## 빠른 시작 템플릿
+## Quick Start Template
 
 ```python
 from ethclient.l2.types import L2Tx, STFResult
 from ethclient.l2.rollup import Rollup
 
-# 1. STF 정의 — 앱 로직을 순수 Python 함수로 작성
+# 1. Define STF — write app logic as a pure Python function
 def my_stf(state: dict, tx: L2Tx) -> STFResult:
     op = tx.data.get("op")
     if op == "increment":
@@ -36,59 +36,59 @@ def my_stf(state: dict, tx: L2Tx) -> STFResult:
         return STFResult(success=True, output={"counter": state["counter"]})
     return STFResult(success=False, error=f"unknown op: {op}")
 
-# 2. Rollup 생성 (STF가 callable이면 자동으로 PythonRuntime 래핑)
+# 2. Create Rollup (callable STF is auto-wrapped with PythonRuntime)
 rollup = Rollup(stf=my_stf)
 
-# 3. Trusted Setup (ZK circuit + verifier 배포)
+# 3. Trusted Setup (ZK circuit + verifier deployment)
 rollup.setup()
 
-# 4. 트랜잭션 제출
+# 4. Submit transaction
 USER = b"\x01" * 20
 error = rollup.submit_tx(L2Tx(sender=USER, nonce=0, data={"op": "increment"}))
 assert error is None
 
-# 5. Batch 생산 + 증명 + L1 제출
+# 5. Produce batch + prove + submit to L1
 batch = rollup.produce_batch()
 receipt = rollup.prove_and_submit(batch)
 assert receipt.verified
 
-# 6. 상태 확인
+# 6. Check state
 print(rollup.state.get("counter"))  # 1
 ```
 
-## L2Tx 제약사항
+## L2Tx Constraints
 
 ```python
 @dataclass
 class L2Tx:
-    sender: bytes        # 반드시 20바이트 (ValueError if != 20)
+    sender: bytes        # Must be 20 bytes (ValueError if != 20)
     nonce: int = 0       # >= 0 (ValueError if < 0)
-    data: dict = {}      # 값은 str, int, bytes, dict만 허용
+    data: dict = {}      # Values must be str, int, bytes, or dict only
     value: int = 0       # >= 0
     tx_type: L2TxType = L2TxType.CALL  # CALL=0, DEPOSIT=1, WITHDRAWAL=2
     signature: bytes = b""
-    timestamp: int = 0   # 0이면 자동으로 time.time() 설정
+    timestamp: int = 0   # 0 means auto-set to time.time()
 ```
 
-**data 직렬화 규칙**: dict 값은 태그 기반 RLP 인코딩. `\x01`=int, `\x02`=bytes, `\x03`=str, `\x04`=nested dict. 키는 알파벳순 정렬.
+**Data serialization rules**: Dict values use tag-based RLP encoding. `\x01`=int, `\x02`=bytes, `\x03`=str, `\x04`=nested dict. Keys are sorted alphabetically.
 
-## STF 작성 패턴
+## STF Writing Patterns
 
-### 기본 STF (함수만)
+### Basic STF (function only)
 ```python
 def counter_stf(state: dict, tx: L2Tx) -> STFResult:
     state["counter"] = state.get("counter", 0) + 1
     return STFResult(success=True)
 ```
 
-### Validator 포함 STF
+### STF with Validator
 ```python
 from ethclient.l2.runtime import PythonRuntime
 
 def my_validator(state: dict, tx: L2Tx) -> str | None:
     if "op" not in tx.data:
         return "missing 'op' field"
-    return None  # 통과
+    return None  # pass
 
 runtime = PythonRuntime(
     func=my_stf,
@@ -98,38 +98,38 @@ runtime = PythonRuntime(
 rollup = Rollup(stf=runtime)
 ```
 
-### STFResult 구조
+### STFResult Structure
 ```python
 @dataclass
 class STFResult:
     success: bool
-    output: dict = {}    # 성공 시 앱별 반환값
-    error: str | None = None  # 실패 시 에러 메시지
+    output: dict = {}    # App-specific return value on success
+    error: str | None = None  # Error message on failure
 ```
 
-- 함수가 `None` 반환 → `STFResult(success=True)`
-- 함수가 `dict` 반환 → `STFResult(success=True, output=dict)`
-- 함수가 예외 발생 → `STFResult(success=False, error=str(e))`
+- Function returns `None` → `STFResult(success=True)`
+- Function returns `dict` → `STFResult(success=True, output=dict)`
+- Function raises exception → `STFResult(success=False, error=str(e))`
 
-## Nonce 관리
+## Nonce Management
 
-Sequencer는 strict nonce 순서를 강제한다:
-- 각 sender별 예상 nonce = 이전 성공 nonce + 1 (genesis = 0)
-- **갭 불허**: nonce 0 → 1 → 2 순서대로만. nonce 2를 먼저 보내면 거부
-- **중복 불허**: 이미 사용된 nonce 재전송 시 "nonce too low" 에러
+The Sequencer enforces strict nonce ordering:
+- Expected nonce per sender = previous successful nonce + 1 (genesis = 0)
+- **No gaps**: Must submit nonce 0 → 1 → 2 in order. Sending nonce 2 first is rejected
+- **No duplicates**: Resubmitting an already-used nonce returns "nonce too low"
 
 ```python
-# 올바른 패턴
+# Correct pattern
 rollup.submit_tx(L2Tx(sender=ALICE, nonce=0, data=...))  # OK
 rollup.submit_tx(L2Tx(sender=ALICE, nonce=1, data=...))  # OK
-rollup.submit_tx(L2Tx(sender=BOB, nonce=0, data=...))    # OK (다른 sender)
+rollup.submit_tx(L2Tx(sender=BOB, nonce=0, data=...))    # OK (different sender)
 
-# 잘못된 패턴
+# Incorrect pattern
 rollup.submit_tx(L2Tx(sender=ALICE, nonce=2, data=...))  # Error: nonce too high
 rollup.submit_tx(L2Tx(sender=ALICE, nonce=0, data=...))  # Error: nonce too low
 ```
 
-## 2-Batch 체이닝 예제
+## 2-Batch Chaining Example
 
 ```python
 rollup = Rollup(stf=counter_stf)
@@ -144,7 +144,7 @@ batch0 = rollup.produce_batch()
 receipt0 = rollup.prove_and_submit(batch0)
 assert receipt0.verified
 
-# Batch 1 — old_state_root == batch0.new_state_root (자동 체이닝)
+# Batch 1 — old_state_root == batch0.new_state_root (auto-chaining)
 rollup.submit_tx(L2Tx(sender=ALICE, nonce=2, data={"op": "inc"}))
 batch1 = rollup.produce_batch()
 receipt1 = rollup.prove_and_submit(batch1)
@@ -152,7 +152,7 @@ assert receipt1.verified
 assert batch1.old_state_root == batch0.new_state_root
 ```
 
-## L2Config 주요 설정
+## L2Config Key Settings
 
 ```python
 from ethclient.l2.config import L2Config
@@ -160,42 +160,131 @@ from ethclient.l2.config import L2Config
 config = L2Config(
     name="my-rollup",
     chain_id=42170,
-    max_txs_per_batch=32,       # 회로 용량 (기본 32)
-    batch_timeout=5,             # 초 단위 자동 seal (기본 5)
-    mempool_max_size=10000,      # mempool 크기 제한
-    state_backend="memory",      # "memory" 또는 "lmdb"
-    l1_backend="memory",         # "memory" 또는 "eth_rpc"
-    prover_backend="python",     # "python" 또는 "native"
-    # LMDB용
+    max_txs_per_batch=32,        # Circuit capacity (default 32)
+    batch_timeout=5,              # Auto-seal interval in seconds (default 5)
+    mempool_max_size=10000,       # Mempool size limit
+    state_backend="memory",       # "memory" or "lmdb"
+    l1_backend="memory",          # "memory" or "eth_rpc"
+    prover_backend="python",      # "python" or "native"
+    hash_function="keccak256",    # "keccak256" or "poseidon" (ZK-friendly)
+    l1_confirmations=2,           # L1 block confirmations before finality (default 2)
+    rate_limit_rps=100,           # RPC rate limit per IP (requests/sec)
+    max_request_size=1_048_576,   # Max RPC request body size in bytes (1MB)
+    cors_origins=["*"],           # CORS allowed origins
+    enable_metrics=True,          # Enable /metrics endpoint
+    # LMDB settings
     data_dir="./data/my-rollup",
-    # EthL1Backend용
+    # EthL1Backend settings
     l1_rpc_url="https://...",
     l1_private_key="hex...",
     l1_chain_id=11155111,
-    # NativeProverBackend용
+    # NativeProverBackend settings
     prover_binary="rapidsnark",
     prover_working_dir="./prover",
 )
 rollup = Rollup(stf=my_stf, config=config)
 ```
 
-## Rollup 라이프사이클 메서드
+## Rollup Lifecycle Methods
 
-| 메서드 | 반환 | 설명 |
-|--------|------|------|
-| `setup()` | None | ZK circuit setup + verifier 배포. 반드시 prove 전에 호출 |
-| `submit_tx(tx)` | `str\|None` | 에러 시 문자열, 성공 시 None |
-| `produce_batch()` | `Batch` | mempool 처리 + seal. tx 없으면 RuntimeError |
-| `prove_and_submit(batch)` | `BatchReceipt` | 증명 생성 + L1 제출 (원스텝) |
-| `prove_batch(batch)` | `Batch` | 증명만 생성 (L1 미제출) |
-| `submit_batch(batch)` | `BatchReceipt` | 이미 증명된 batch를 L1 제출 |
-| `chain_info()` | `dict` | name, chain_id, state_root, is_setup, pending_txs 등 |
-| `recover()` | None | LMDB WAL에서 crash recovery |
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `setup()` | None | ZK circuit setup + verifier deployment. Must be called before prove |
+| `submit_tx(tx)` | `str\|None` | Error string on failure, None on success |
+| `produce_batch()` | `Batch` | Process mempool + seal. RuntimeError if no txs |
+| `prove_and_submit(batch)` | `BatchReceipt` | Generate proof + submit to L1 (one step) |
+| `prove_batch(batch)` | `Batch` | Generate proof only (no L1 submission) |
+| `submit_batch(batch)` | `BatchReceipt` | Submit already-proven batch to L1 |
+| `chain_info()` | `dict` | name, chain_id, state_root, is_setup, pending_txs, etc. |
+| `recover()` | None | Crash recovery from LMDB WAL |
 
-## 주의사항
+## Security Considerations
 
-1. **`setup()` 필수**: `prove_and_submit()` 전에 반드시 호출. 안 하면 RuntimeError
-2. **tx 최대 개수**: `max_txs_per_batch - 1`개까지. 마지막 슬롯은 balance factor용
-3. **상태 snapshot/rollback**: 실패한 tx는 상태에 영향 없음 (자동 rollback)
-4. **Field modulus 절삭**: 32바이트 해시는 BN128 field modulus로 나머지 연산. 결정적이지만 비직관적
-5. **Zero product 불가**: state_root가 field modulus의 배수이면 증명 실패 (확률 < 1/2^252)
+### STF Integrity Gap (WHITEPAPER 7.3.1)
+
+Groth16 proves **execution-trace binding** only — it guarantees that the claimed state transition matches the computation, but does **not** verify the correctness or safety of the STF logic itself.
+
+The circuit enforces:
+
+```
+old_root × ∏ᵢ private_i ≡ new_root × tx_commitment  (mod p)
+```
+
+This proves: *"The prover knows private values that algebraically connect these three public inputs."*
+
+**What the circuit does NOT enforce:**
+
+- Whether `apply_tx(state, tx)` was executed correctly
+- Whether failed transactions were excluded from the batch
+- Whether balance checks, access control, or any STF logic was honored
+- Whether `new_state_root` is the honest result of applying the STF to `old_state_root`
+
+**Attack scenarios:**
+
+1. **Including failed transactions** — A malicious sequencer skips rollback for failed txs, including them in the batch with incorrect state effects. The proof remains valid because the circuit only checks the algebraic relationship.
+2. **Manipulating the STF** — A malicious sequencer replaces the STF (e.g., skips balance checks, mints tokens), computes a new `new_state_root`, and generates a valid proof for `(old_root, evil_new_root, tx_commitment)`. The L1 verifier accepts it.
+
+**Defense layers:**
+
+| Layer | Mechanism | Trust Model |
+|-------|-----------|-------------|
+| Groth16 proof | Prevents proof forgery for fixed public inputs | Trustless (mathematical) |
+| Data availability | Tx data on L1 (calldata/blob) allows re-execution | DA assumption |
+| Off-chain re-execution | Verifiers re-run STF on DA data, compare `new_root` | 1-of-N honest verifier |
+| Social consensus | Community detects mismatch, responds | Governance |
+
+This is effectively an **optimistic verification model**: the ZK proof guarantees execution-trace binding, but STF correctness relies on off-chain re-execution and data availability.
+
+### STF Security Checklist (WHITEPAPER 10.1.8)
+
+Every production STF should implement these safeguards:
+
+```python
+def secure_stf(state: dict, tx: L2Tx) -> STFResult:
+    # 1. Transaction authentication — verify sender signature
+    if not verify_signature(tx):
+        return STFResult(success=False, error="invalid signature")
+
+    # 2. Replay protection — enforce strict nonce ordering
+    expected = state.get(f"nonce:{tx.sender.hex()}", 0)
+    if tx.nonce != expected:
+        return STFResult(success=False, error="invalid nonce")
+
+    # 3. Input validation — sanitize all data fields
+    if not validate_data(tx.data):
+        return STFResult(success=False, error="invalid data")
+
+    # 4. Access control — check permissions
+    if tx.data.get("op") == "admin_action":
+        if tx.sender != state.get("admin"):
+            return STFResult(success=False, error="unauthorized")
+
+    # 5. MEV prevention — use commit-reveal or ordering rules
+    # 6. Transaction expiry — reject stale transactions
+    if tx.timestamp > 0 and time.time() - tx.timestamp > 3600:
+        return STFResult(success=False, error="tx expired")
+
+    # ... actual app logic ...
+    state[f"nonce:{tx.sender.hex()}"] = tx.nonce + 1
+    return STFResult(success=True)
+```
+
+### Four Security Properties (WHITEPAPER 3.5)
+
+| Property | Guarantee | Limitation |
+|----------|-----------|------------|
+| **Validity** | Groth16 proof ensures state transition matches execution trace | Does not verify STF logic correctness |
+| **Data Availability** | Batch data posted to L1 calldata/blobs | Blob data expires after ~18 days |
+| **Censorship Resistance** | Force inclusion mechanism on L1 (50-block window) | Relies on L1 liveness; no forced execution |
+| **Value Safety** | Escape hatch allows L1 fund recovery if L2 halts | Only recovers ETH deposits with value > 0 |
+
+## Caveats
+
+1. **`setup()` required**: Must be called before `prove_and_submit()`. Otherwise RuntimeError
+2. **Max tx count**: Up to `max_txs_per_batch - 1` txs. The last slot is reserved for balance factor
+3. **State snapshot/rollback**: Failed txs do not affect state (automatic rollback)
+4. **Field modulus truncation**: 32-byte hashes are reduced modulo BN128 field modulus. Deterministic but non-intuitive
+5. **Zero product impossible**: Proof fails if state_root is a multiple of the field modulus (probability < 1/2^252)
+6. **STF integrity gap**: Groth16 proves execution binding only, not STF correctness — secure your STF logic independently
+7. **Poseidon hash**: When using `hash_function="poseidon"`, state roots use Poseidon (~240 R1CS constraints) instead of keccak256 (~150,000). More ZK-friendly but less battle-tested
+8. **L1 finality**: Set `l1_confirmations >= 2` for production. PoS Ethereum requires 2 epoch finality (~13 min); without sufficient confirmations, L1 reorgs may invalidate submitted batches

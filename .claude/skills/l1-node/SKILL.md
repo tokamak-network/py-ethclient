@@ -1,62 +1,62 @@
 ---
-description: "L1 Ethereum 노드 운영 — EVM, eth/68, snap/1, Engine API, P2P"
+description: "L1 Ethereum Node — EVM, eth/68, snap/1, Engine API, P2P"
 allowed-tools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "Task"]
-argument-hint: "노드 관련 작업이나 질문"
+argument-hint: "node-related task or question"
 user-invocable: true
 ---
 
-# L1 Ethereum 노드 운영 스킬
+# L1 Ethereum Node Operation Skill
 
-Python으로 구현된 Ethereum L1 클라이언트의 EVM 실행, eth/68 프로토콜, snap/1 동기화, Engine API, P2P 네트워킹을 안내한다.
+Guides EVM execution, eth/68 protocol, snap/1 synchronization, Engine API, and P2P networking for the Python-based Ethereum L1 client.
 
-## 핵심 파일 참조
+## Key File References
 
-| 디렉토리/파일 | 역할 |
-|---------------|------|
-| `ethclient/vm/` | EVM 실행 엔진 |
-| `ethclient/vm/opcodes.py` | 140+ opcode 구현 |
-| `ethclient/vm/precompiles.py` | 11개 precompile (ecrecover ~ kzg_point_eval) |
-| `ethclient/vm/evm.py` | EVM 인터프리터, CallFrame, ExecutionEnvironment |
-| `ethclient/networking/rlpx/` | RLPx 프로토콜, ECIES 핸드셰이크 |
-| `ethclient/networking/eth/` | eth/68 프로토콜 메시지 |
-| `ethclient/networking/snap/` | snap/1 상태 동기화 |
-| `ethclient/networking/discv4/` | Discovery v4 노드 탐색 |
-| `ethclient/networking/sync/` | Full sync, Snap sync 전략 |
-| `ethclient/blockchain/` | Block, Header, Transaction 관리 |
-| `ethclient/rpc/server.py` | JSON-RPC 2.0 서버 (FastAPI) |
+| Directory/File | Role |
+|----------------|------|
+| `ethclient/vm/` | EVM execution engine |
+| `ethclient/vm/opcodes.py` | 140+ opcode implementations |
+| `ethclient/vm/precompiles.py` | 11 precompiles (ecrecover ~ kzg_point_eval) |
+| `ethclient/vm/evm.py` | EVM interpreter, CallFrame, ExecutionEnvironment |
+| `ethclient/networking/rlpx/` | RLPx protocol, ECIES handshake |
+| `ethclient/networking/eth/` | eth/68 protocol messages |
+| `ethclient/networking/snap/` | snap/1 state synchronization |
+| `ethclient/networking/discv4/` | Discovery v4 node discovery |
+| `ethclient/networking/sync/` | Full sync, Snap sync strategies |
+| `ethclient/blockchain/` | Block, Header, Transaction management |
+| `ethclient/rpc/server.py` | JSON-RPC 2.0 server (FastAPI) |
 | `ethclient/rpc/engine_api.py` | Engine API V1/V2/V3 (PoS) |
 
-## EVM 실행 엔진
+## EVM Execution Engine
 
-### 지원 Opcode (140+)
+### Supported Opcodes (140+)
 
-**산술**: ADD, MUL, SUB, DIV, SDIV, MOD, SMOD, ADDMOD, MULMOD, EXP, SIGNEXTEND
-**비교/비트**: LT, GT, SLT, SGT, EQ, ISZERO, AND, OR, XOR, NOT, BYTE, SHL, SHR, SAR
-**해시**: KECCAK256
-**환경**: ADDRESS, BALANCE, ORIGIN, CALLER, CALLVALUE, CALLDATALOAD, CALLDATASIZE, CALLDATACOPY, CODESIZE, CODECOPY, GASPRICE, EXTCODESIZE, EXTCODECOPY, RETURNDATASIZE, RETURNDATACOPY, EXTCODEHASH, BLOCKHASH, COINBASE, TIMESTAMP, NUMBER, PREVRANDAO, GASLIMIT, CHAINID, SELFBALANCE, BASEFEE, BLOBHASH, BLOBBASEFEE
-**메모리/스토리지**: MLOAD, MSTORE, MSTORE8, SLOAD, SSTORE, MSIZE, MCOPY, TLOAD, TSTORE
-**스택**: POP, PUSH0~PUSH32, DUP1~DUP16, SWAP1~SWAP16
-**흐름**: JUMP, JUMPI, PC, GAS, JUMPDEST, STOP, RETURN, REVERT, INVALID, SELFDESTRUCT
-**로그**: LOG0~LOG4
-**호출**: CALL, CALLCODE, DELEGATECALL, STATICCALL, CREATE, CREATE2
+**Arithmetic**: ADD, MUL, SUB, DIV, SDIV, MOD, SMOD, ADDMOD, MULMOD, EXP, SIGNEXTEND
+**Comparison/Bitwise**: LT, GT, SLT, SGT, EQ, ISZERO, AND, OR, XOR, NOT, BYTE, SHL, SHR, SAR
+**Hash**: KECCAK256
+**Environment**: ADDRESS, BALANCE, ORIGIN, CALLER, CALLVALUE, CALLDATALOAD, CALLDATASIZE, CALLDATACOPY, CODESIZE, CODECOPY, GASPRICE, EXTCODESIZE, EXTCODECOPY, RETURNDATASIZE, RETURNDATACOPY, EXTCODEHASH, BLOCKHASH, COINBASE, TIMESTAMP, NUMBER, PREVRANDAO, GASLIMIT, CHAINID, SELFBALANCE, BASEFEE, BLOBHASH, BLOBBASEFEE
+**Memory/Storage**: MLOAD, MSTORE, MSTORE8, SLOAD, SSTORE, MSIZE, MCOPY, TLOAD, TSTORE
+**Stack**: POP, PUSH0~PUSH32, DUP1~DUP16, SWAP1~SWAP16
+**Flow**: JUMP, JUMPI, PC, GAS, JUMPDEST, STOP, RETURN, REVERT, INVALID, SELFDESTRUCT
+**Log**: LOG0~LOG4
+**Call**: CALL, CALLCODE, DELEGATECALL, STATICCALL, CREATE, CREATE2
 
-### Precompile (11개)
+### Precompiles (11)
 
-| 주소 | 이름 | 기능 |
-|------|------|------|
-| 0x01 | ecrecover | ECDSA 서명 복구 |
-| 0x02 | sha256 | SHA-256 해시 |
-| 0x03 | ripemd160 | RIPEMD-160 해시 |
-| 0x04 | identity | 데이터 복사 |
-| 0x05 | modexp | 모듈러 지수 연산 |
-| 0x06 | ecadd | BN128 G1 점 덧셈 |
-| 0x07 | ecmul | BN128 G1 스칼라 곱셈 |
-| 0x08 | ecpairing | BN128 페어링 체크 |
-| 0x09 | blake2f | BLAKE2b 압축 함수 |
-| 0x0a | kzg_point_eval | KZG 점 평가 (EIP-4844) |
-| 0x100 | p256verify | P-256 서명 검증 (RIP-7212) |
+| Address | Name | Function |
+|---------|------|----------|
+| 0x01 | ecrecover | ECDSA signature recovery |
+| 0x02 | sha256 | SHA-256 hash |
+| 0x03 | ripemd160 | RIPEMD-160 hash |
+| 0x04 | identity | Data copy |
+| 0x05 | modexp | Modular exponentiation |
+| 0x06 | ecadd | BN128 G1 point addition |
+| 0x07 | ecmul | BN128 G1 scalar multiplication |
+| 0x08 | ecpairing | BN128 pairing check |
+| 0x09 | blake2f | BLAKE2b compression function |
+| 0x0a | kzg_point_eval | KZG point evaluation (EIP-4844) |
+| 0x100 | p256verify | P-256 signature verification (RIP-7212) |
 
-### EVM 실행
+### EVM Execution
 
 ```python
 from ethclient.vm.evm import run_bytecode, ExecutionEnvironment, CallFrame
@@ -73,127 +73,127 @@ result = run_bytecode(bytecode=b"\x60\x01\x60\x02\x01", env=env)
 # PUSH1 1, PUSH1 2, ADD → stack top = 3
 ```
 
-## eth/68 프로토콜
+## eth/68 Protocol
 
-### 메시지 타입
+### Message Types
 
-| 코드 | 메시지 | 방향 | 설명 |
-|------|--------|------|------|
-| 0x00 | Status | 양방향 | 핸드셰이크 (network_id, genesis, head, forkid) |
-| 0x01 | NewBlockHashes | → | 새 블록 해시 알림 |
-| 0x02 | Transactions | → | 트랜잭션 전파 |
-| 0x03 | GetBlockHeaders | → | 블록 헤더 요청 |
-| 0x04 | BlockHeaders | ← | 블록 헤더 응답 |
-| 0x05 | GetBlockBodies | → | 블록 바디 요청 |
-| 0x06 | BlockBodies | ← | 블록 바디 응답 |
-| 0x07 | NewBlock | → | 새 블록 전파 |
-| 0x08 | NewPooledTransactionHashes | → | 풀 TX 해시 알림 (eth/68) |
-| 0x09 | GetPooledTransactions | → | 풀 TX 요청 |
-| 0x0a | PooledTransactions | ← | 풀 TX 응답 |
-| 0x0d | GetReceipts | → | 영수증 요청 |
-| 0x0e | Receipts | ← | 영수증 응답 |
+| Code | Message | Direction | Description |
+|------|---------|-----------|-------------|
+| 0x00 | Status | Bidirectional | Handshake (network_id, genesis, head, forkid) |
+| 0x01 | NewBlockHashes | → | New block hash announcement |
+| 0x02 | Transactions | → | Transaction propagation |
+| 0x03 | GetBlockHeaders | → | Block header request |
+| 0x04 | BlockHeaders | ← | Block header response |
+| 0x05 | GetBlockBodies | → | Block body request |
+| 0x06 | BlockBodies | ← | Block body response |
+| 0x07 | NewBlock | → | New block propagation |
+| 0x08 | NewPooledTransactionHashes | → | Pool TX hash announcement (eth/68) |
+| 0x09 | GetPooledTransactions | → | Pool TX request |
+| 0x0a | PooledTransactions | ← | Pool TX response |
+| 0x0d | GetReceipts | → | Receipt request |
+| 0x0e | Receipts | ← | Receipt response |
 
-### eth/68 Status 핸드셰이크
+### eth/68 Status Handshake
 ```python
-# Status 메시지 필드:
+# Status message fields:
 # version: 68
-# network_id: 1 (mainnet) 또는 11155111 (sepolia)
+# network_id: 1 (mainnet) or 11155111 (sepolia)
 # td: total difficulty
 # head: best block hash
 # genesis: genesis hash
 # forkid: [fork_hash(4B), fork_next(8B)]
 ```
 
-## snap/1 동기화
+## snap/1 Synchronization
 
-### 메시지
+### Messages
 
-| 코드 | 메시지 | 설명 |
-|------|--------|------|
-| 0x00 | GetAccountRange | 계정 범위 요청 (root, origin, limit, bytes) |
-| 0x01 | AccountRange | 계정 범위 응답 + proof |
-| 0x02 | GetStorageRanges | 스토리지 범위 요청 |
-| 0x03 | StorageRanges | 스토리지 범위 응답 |
-| 0x04 | GetByteCodes | 코드 해시로 바이트코드 요청 |
-| 0x05 | ByteCodes | 바이트코드 응답 |
-| 0x06 | GetTrieNodes | trie 노드 경로 요청 |
-| 0x07 | TrieNodes | trie 노드 응답 |
+| Code | Message | Description |
+|------|---------|-------------|
+| 0x00 | GetAccountRange | Account range request (root, origin, limit, bytes) |
+| 0x01 | AccountRange | Account range response + proof |
+| 0x02 | GetStorageRanges | Storage range request |
+| 0x03 | StorageRanges | Storage range response |
+| 0x04 | GetByteCodes | Bytecode request by code hash |
+| 0x05 | ByteCodes | Bytecode response |
+| 0x06 | GetTrieNodes | Trie node path request |
+| 0x07 | TrieNodes | Trie node response |
 
-### Snap Sync 전략
-1. 피봇 블록 결정 (head - 64)
-2. GetAccountRange로 계정 트리 다운로드
-3. GetStorageRanges로 스토리지 다운로드
-4. GetByteCodes로 컨트랙트 코드 다운로드
-5. GetTrieNodes로 누락 노드 보충
-6. 피봇 이후 블록 full sync
+### Snap Sync Strategy
+1. Determine pivot block (head - 64)
+2. Download account trie via GetAccountRange
+3. Download storage via GetStorageRanges
+4. Download contract code via GetByteCodes
+5. Fill missing nodes via GetTrieNodes
+6. Full sync for blocks after pivot
 
 ## Discovery v4
 
-### 프로토콜
+### Protocol
 
-| 패킷 | 타입 | 설명 |
-|------|------|------|
-| Ping | 0x01 | 생존 확인 (version, from, to, expiration, enr_seq) |
-| Pong | 0x02 | Ping 응답 (to, ping_hash, expiration, enr_seq) |
-| FindNode | 0x03 | 타겟에 가까운 노드 탐색 |
-| Neighbours | 0x04 | FindNode 응답 |
+| Packet | Type | Description |
+|--------|------|-------------|
+| Ping | 0x01 | Liveness check (version, from, to, expiration, enr_seq) |
+| Pong | 0x02 | Ping response (to, ping_hash, expiration, enr_seq) |
+| FindNode | 0x03 | Find nodes close to target |
+| Neighbours | 0x04 | FindNode response |
 
-### Kademlia 라우팅 테이블
+### Kademlia Routing Table
 ```python
-BUCKET_SIZE = 16      # k-bucket 용량
+BUCKET_SIZE = 16      # k-bucket capacity
 NUM_BUCKETS = 256     # 256-bit node ID
-ALPHA = 3             # 동시 조회 수
-MAX_REPLACEMENTS = 10 # 교체 리스트 크기
+ALPHA = 3             # Concurrent lookups
+MAX_REPLACEMENTS = 10 # Replacement list size
 ```
 
-- 거리 = keccak256(pubkey_A) XOR keccak256(pubkey_B)
-- log_distance: 0 (동일) ~ 256
+- Distance = keccak256(pubkey_A) XOR keccak256(pubkey_B)
+- log_distance: 0 (same) ~ 256
 
 ## Engine API (PoS)
 
-### V1 메서드
-- `engine_newPayloadV1(payload)` — 새 실행 페이로드 검증
-- `engine_forkchoiceUpdatedV1(state, attrs)` — 포크 선택 업데이트
-- `engine_getPayloadV1(id)` — 블록 빌드 결과 반환
+### V1 Methods
+- `engine_newPayloadV1(payload)` — Validate new execution payload
+- `engine_forkchoiceUpdatedV1(state, attrs)` — Fork choice update
+- `engine_getPayloadV1(id)` — Return block build result
 
-### V2 메서드 (Shanghai/Capella)
-- `engine_newPayloadV2` — withdrawals 포함
+### V2 Methods (Shanghai/Capella)
+- `engine_newPayloadV2` — Includes withdrawals
 - `engine_forkchoiceUpdatedV2`
 - `engine_getPayloadV2`
 
-### V3 메서드 (Cancun/Deneb)
-- `engine_newPayloadV3` — blob versioned hashes 포함
+### V3 Methods (Cancun/Deneb)
+- `engine_newPayloadV3` — Includes blob versioned hashes
 - `engine_forkchoiceUpdatedV3`
 - `engine_getPayloadV3`
 
-### JWT 인증
+### JWT Authentication
 ```python
 rpc = RPCServer()
 rpc.set_engine_jwt_secret(secret_bytes)
-# engine_* 메서드 호출 시 Bearer JWT 필수
-# JWT: HS256, iat 기반, 120초 skew 허용
+# engine_* methods require Bearer JWT
+# JWT: HS256, iat-based, 120s skew tolerance
 ```
 
-## RPC 서버
+## RPC Server
 
 ```python
 from ethclient.rpc.server import RPCServer
 
-rpc = RPCServer()  # FastAPI 기반
+rpc = RPCServer()  # FastAPI-based
 
-# 메서드 등록
+# Register methods
 rpc.register("eth_blockNumber", lambda: hex(chain.height))
 
 @rpc.method("eth_getBalance")
 def get_balance(address: str, block: str = "latest"):
     return hex(state.get_balance(address))
 
-# 실행
+# Run
 import uvicorn
 uvicorn.run(rpc.app, host="0.0.0.0", port=8545)
 ```
 
-## 부트노드 정보
+## Bootnode Information
 
 ### Sepolia (EF DevOps)
 ```
@@ -202,17 +202,17 @@ uvicorn.run(rpc.app, host="0.0.0.0", port=8545)
 ```
 
 ### Mainnet
-- TOO_MANY_PEERS 빈번 → discv4 discovery 사용 권장
+- TOO_MANY_PEERS is frequent → use discv4 discovery instead
 - Geth v1.17.0+: eth/68 + eth/69 + snap/1
 
-## 동기화 전략
+## Sync Strategies
 
 ### Full Sync
 ```python
 from ethclient.networking.sync.full_sync import FullSync
 
 syncer = FullSync(chain, peer_pool)
-# GetBlockHeaders → GetBlockBodies → EVM 실행 → 상태 갱신
+# GetBlockHeaders → GetBlockBodies → EVM execution → state update
 ```
 
 ### Snap Sync
@@ -220,15 +220,15 @@ syncer = FullSync(chain, peer_pool)
 from ethclient.networking.sync.snap_sync import SnapSync
 
 syncer = SnapSync(chain, peer_pool)
-# 피봇 블록 → 계정 다운로드 → 스토리지 → 바이트코드 → full sync
+# Pivot block → account download → storage → bytecode → full sync
 ```
 
-## 주의사항
+## Caveats
 
-1. **Snappy 압축 필수**: Geth v1.17.0+ 와 통신 시 `conn.use_snappy = True`
-2. **eth/68 vs eth/69**: 최신 Geth는 둘 다 지원. py-ethclient는 eth/68 구현
-3. **EVM gas 계산**: Berlin/London/Shanghai 가격표 반영
-4. **EIP-2929**: 접근 목록(access list) 지원 — warm/cold 스토리지 슬롯
-5. **EIP-4844**: blob tx, kzg_point_eval precompile 지원
-6. **Transient Storage**: TLOAD/TSTORE (EIP-1153) 지원
-7. **MCOPY**: EIP-5656 메모리 복사 opcode 지원
+1. **Snappy compression required**: Must set `conn.use_snappy = True` when communicating with Geth v1.17.0+
+2. **eth/68 vs eth/69**: Latest Geth supports both. py-ethclient implements eth/68
+3. **EVM gas calculation**: Reflects Berlin/London/Shanghai price tables
+4. **EIP-2929**: Access list support — warm/cold storage slots
+5. **EIP-4844**: Blob tx, kzg_point_eval precompile support
+6. **Transient Storage**: TLOAD/TSTORE (EIP-1153) support
+7. **MCOPY**: EIP-5656 memory copy opcode support

@@ -1,38 +1,38 @@
 ---
-description: "L1↔L2 Bridge 구축 — CrossDomainMessenger, force inclusion, escape hatch"
+description: "L1↔L2 Bridge — CrossDomainMessenger, force inclusion, escape hatch"
 allowed-tools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "Task"]
-argument-hint: "브릿지 유스케이스나 방향(L1→L2 또는 L2→L1)"
+argument-hint: "bridge use case or direction (L1→L2 or L2→L1)"
 user-invocable: true
 ---
 
-# L1↔L2 Bridge 구축 스킬
+# L1↔L2 Bridge Construction Skill
 
-CrossDomainMessenger 기반의 L1↔L2 양방향 메시지 패싱, 5종 relay handler, force inclusion/escape hatch 안전장치를 안내한다.
+Guides bidirectional L1↔L2 message passing based on CrossDomainMessenger, 5 relay handler types, and force inclusion/escape hatch safety mechanisms.
 
-## 핵심 파일 참조
+## Key File References
 
-| 파일 | 역할 |
+| File | Role |
 |------|------|
-| `ethclient/bridge/messenger.py` | CrossDomainMessenger — 메시지 송수신 |
-| `ethclient/bridge/relay_handlers.py` | 5종 RelayHandler 구현 |
+| `ethclient/bridge/messenger.py` | CrossDomainMessenger — message send/receive |
+| `ethclient/bridge/relay_handlers.py` | 5 RelayHandler implementations |
 | `ethclient/bridge/types.py` | CrossDomainMessage, Domain, RelayResult, StateUpdate |
-| `ethclient/bridge/watcher.py` | BridgeWatcher — 자동 릴레이 |
-| `ethclient/bridge/environment.py` | BridgeEnvironment — 통합 테스트 환경 |
+| `ethclient/bridge/watcher.py` | BridgeWatcher — automatic relay |
+| `ethclient/bridge/environment.py` | BridgeEnvironment — integration test harness |
 | `ethclient/l2/l1_backend.py` | InMemoryL1Backend |
-| `ethclient/l2/eth_l1_backend.py` | EthL1Backend (실제 Ethereum) |
+| `ethclient/l2/eth_l1_backend.py` | EthL1Backend (real Ethereum) |
 
-## 빠른 시작: EVM 브릿지
+## Quick Start: EVM Bridge
 
 ```python
 from ethclient.bridge.environment import BridgeEnvironment
 
-# 1. EVM 릴레이 기반 브릿지 환경 생성
+# 1. Create bridge environment with EVM relay
 env = BridgeEnvironment.with_evm(l1_chain_id=1, l2_chain_id=42170)
 
 ALICE = b"\x01" * 20
 L2_CONTRACT = b"\xca\xfe" + b"\x00" * 18
 
-# 2. L1 → L2 예금 (ETH 전송)
+# 2. L1 → L2 deposit (ETH transfer)
 msg = env.send_l1(
     sender=ALICE,
     target=L2_CONTRACT,
@@ -40,172 +40,199 @@ msg = env.send_l1(
     value=1_000_000,    # wei
 )
 
-# 3. 릴레이 실행 (Watcher가 L1 outbox → L2 relay)
+# 3. Execute relay (Watcher drains L1 outbox → L2 relay)
 result = env.relay()
 assert result.all_success
 
-# 4. L2 잔액 확인
+# 4. Check L2 balance
 assert env.l2_balance(L2_CONTRACT) == 1_000_000
 ```
 
-## 메시지 구조
+## Message Structure
 
 ```python
 @dataclass
 class CrossDomainMessage:
-    nonce: int              # 도메인별 자동 증가, 리플레이 방지
-    sender: bytes           # 20바이트 발신자
-    target: bytes           # 20바이트 수신자
-    data: bytes             # 임의 calldata (ABI 인코딩)
-    value: int = 0          # ETH 전송량 (수신 도메인에서 mint)
+    nonce: int              # Auto-incremented per domain, prevents replay
+    sender: bytes           # 20-byte sender
+    target: bytes           # 20-byte recipient
+    data: bytes             # Arbitrary calldata (ABI encoded)
+    value: int = 0          # ETH transfer amount (minted on receiving domain)
     gas_limit: int = 1_000_000
-    source_domain: Domain   # Domain.L1 또는 Domain.L2
-    block_number: int = 0   # 발신 블록 (messenger 설정)
+    source_domain: Domain   # Domain.L1 or Domain.L2
+    block_number: int = 0   # Send block (set by messenger)
     message_hash: bytes     # keccak256(RLP([nonce, sender, target, ...]))
 ```
 
-## 5종 Relay Handler
+## 5 Relay Handler Types
 
-### 1. EVMRelayHandler (기본)
+### 1. EVMRelayHandler (default)
 ```python
 env = BridgeEnvironment.with_evm()
 ```
-- EVM 바이트코드 실행, 스마트 컨트랙트 호출
-- `msg.value > 0`이면 target에 잔액 mint
-- 성공 시 상태 변경 커밋, 실패 시 전체 롤백
-- 30M gas limit, MESSENGER_ADDRESS(`0x4200...42`)를 caller로 사용
+- Executes EVM bytecode, smart contract calls
+- If `msg.value > 0`, mints balance to target
+- Commits state changes on success, full rollback on failure
+- 30M gas limit, uses MESSENGER_ADDRESS (`0x4200...42`) as caller
 
 ### 2. MerkleProofHandler
 ```python
 env = BridgeEnvironment.with_merkle_proof()
 ```
-- L1 state root에 대한 Merkle proof 검증 후 상태 적용
-- `add_trusted_root(root)` → 신뢰 루트 등록 필수
-- Data 포맷: `RLP([state_root, address, account_rlp, [proof_nodes], [storage_proofs]])`
+- Verifies Merkle proof against L1 state root, then applies state
+- Must register trusted root via `add_trusted_root(root)`
+- Data format: `RLP([state_root, address, account_rlp, [proof_nodes], [storage_proofs]])`
 
 ### 3. ZKProofHandler
 ```python
 from ethclient.zk.types import VerificationKey
 env = BridgeEnvironment.with_zk_proof(vk=my_verification_key)
 ```
-- Groth16 증명 검증 후 상태 업데이트 적용
-- Data 포맷: `RLP([proof_a(64B), proof_b(128B), proof_c(64B), [public_inputs], [state_updates]])`
+- Verifies Groth16 proof, then applies state updates
+- Data format: `RLP([proof_a(64B), proof_b(128B), proof_c(64B), [public_inputs], [state_updates]])`
 
 ### 4. DirectStateHandler
 ```python
 env = BridgeEnvironment.with_direct_state()
 ```
-- 검증 없이 직접 상태 적용 (신뢰 relayer 가정)
-- 테스트/프로토타입용
+- Applies state directly without verification (assumes trusted relayer)
+- For testing/prototyping only
 
 ### 5. TinyDBHandler
 ```python
 from ethclient.bridge.relay_handlers import TinyDBHandler
 handler = TinyDBHandler()
 ```
-- JSON document DB에 상태 저장 (비EVM 런타임)
-- `get_account(address)` → dict 조회
+- Stores state in JSON document DB (non-EVM runtime)
+- `get_account(address)` → dict lookup
 
-## Deposit/Withdrawal 플로우
+## Deposit/Withdrawal Flows
 
 ### L1 → L2 Deposit
 ```
 User → l1_messenger.send_message(target=L2_contract, value=ETH)
-  → L1 outbox에 메시지 큐잉
-  → Watcher가 drain_outbox() 후 l2_messenger.relay_message(msg) 호출
-  → EVMRelayHandler: target에 value mint + calldata 실행
-  → 리플레이 방지 마킹
+  → Message queued in L1 outbox
+  → Watcher calls drain_outbox() then l2_messenger.relay_message(msg)
+  → EVMRelayHandler: mint value to target + execute calldata
+  → Mark as relayed (replay prevention)
 ```
 
 ### L2 → L1 Withdrawal
 ```
 L2_contract → l2_messenger.send_message(target=User, value=ETH)
-  → L2 outbox에 메시지 큐잉
-  → Watcher가 l1_messenger.relay_message(msg) 호출
-  → L1에서 value mint + 실행
+  → Message queued in L2 outbox
+  → Watcher calls l1_messenger.relay_message(msg)
+  → Mint value + execute on L1
 ```
 
-## Force Inclusion (검열 저항)
+## Force Inclusion (Censorship Resistance)
 
-L2 오퍼레이터가 메시지 릴레이를 거부할 때 사용자가 직접 강제 포함:
+When the L2 operator refuses to relay a message, users can force include directly:
 
 ```python
-# FORCE_INCLUSION_WINDOW = 50 블록 (하드코딩)
+# FORCE_INCLUSION_WINDOW = 50 blocks (hardcoded)
 
-# 1. L1에 강제 포함 등록
+# 1. Register force inclusion on L1
 entry = env.force_include(msg)
 
-# 2. 50 블록 대기
+# 2. Wait 50 blocks
 env.advance_l1_block(50)
 
-# 3. 누구나 강제 릴레이 실행 가능
+# 3. Anyone can execute forced relay
 result = env.force_relay(msg)
 assert result.success
 ```
 
-## Escape Hatch (최후 수단)
+## Escape Hatch (Last Resort)
 
-L2가 완전히 다운되어 릴레이 불가능할 때 L1에서 예금 회수:
+When L2 is completely down and relay is impossible, recover deposits on L1:
 
 ```python
-# 조건: force_include 완료 + 50블록 경과 + msg.value > 0
+# Conditions: force_include done + 50 blocks elapsed + msg.value > 0
 result = env.escape_hatch(msg)
 assert result.success
-# → msg.sender의 L1 잔액에 msg.value 환불
+# → msg.sender's L1 balance refunded with msg.value
 ```
 
-**에러 케이스:**
+**Error cases:**
 - "message not in force queue"
 - "force inclusion window not elapsed"
 - "already resolved (relayed or escaped)"
-- "no value to recover" (value=0인 메시지)
+- "no value to recover" (value=0 message)
 
-## BridgeWatcher 직접 사용
+## BridgeWatcher Direct Usage
 
 ```python
 from ethclient.bridge.watcher import BridgeWatcher
 
 watcher = BridgeWatcher(l1_messenger, l2_messenger)
 
-# 한 사이클: L1→L2 + L2→L1 + force queue 처리
+# One cycle: L1→L2 + L2→L1 + force queue processing
 result = watcher.tick()
 # BatchRelayResult { l1_to_l2, l2_to_l1, forced, all_success, total_relayed }
 ```
 
-## StateUpdate 구조
+## StateUpdate Structure
 
-MerkleProof, ZKProof, DirectState 핸들러가 사용:
+Used by MerkleProof, ZKProof, and DirectState handlers:
 
 ```python
 @dataclass
 class StateUpdate:
-    address: bytes              # 20바이트
-    balance: int | None = None  # 변경할 잔액
-    nonce: int | None = None    # 변경할 nonce
+    address: bytes              # 20 bytes
+    balance: int | None = None  # Balance to set
+    nonce: int | None = None    # Nonce to set
     storage: dict[int, int] = {}  # slot → value
 
-# 인코딩/디코딩
+# Encoding/decoding
 from ethclient.bridge.types import encode_state_updates, decode_state_updates
 data = encode_state_updates([StateUpdate(address=ALICE, balance=1000)])
 ```
 
-## 상태 조회
+## State Queries
 
 ```python
-env.l1_balance(ALICE)           # L1 잔액
-env.l2_balance(ALICE)           # L2 잔액
-env.l1_storage(contract, slot)  # L1 스토리지
-env.l2_storage(contract, slot)  # L2 스토리지
-env.l1_state_root()             # L1 상태 루트
-env.l2_state_root()             # L2 상태 루트
+env.l1_balance(ALICE)           # L1 balance
+env.l2_balance(ALICE)           # L2 balance
+env.l1_storage(contract, slot)  # L1 storage
+env.l2_storage(contract, slot)  # L2 storage
+env.l1_state_root()             # L1 state root
+env.l2_state_root()             # L2 state root
 ```
 
-## 주의사항
+## Security Considerations
 
-1. **Value는 mint**: escrow가 아닌 목적 도메인에서 mint. 단일 오퍼레이터 신뢰 모델
-2. **Outbox drain은 파괴적**: `drain_outbox()` 후 실패 시 메시지 소실. 프로덕션에선 영속 큐 필요
-3. **Block number 수동**: `advance_l1_block(n)` 호출 필요. JSON-RPC 블록 높이와 자동 동기화 안 됨
-4. **Nonce는 도메인별 독립**: L1, L2 각각 0부터 시작
-5. **EVM relay atomicity**: 전체 성공 또는 전체 롤백. 부분 상태 업데이트 없음
-6. **Trusted root 만료 없음**: `add_trusted_root()`로 등록된 루트는 영구 유효
-7. **Gas limit**: EVM relay는 msg.gas_limit 사용, 비EVM handler는 gas_used=0 보고
+### Security Mechanisms (WHITEPAPER 7.4)
+
+| Mechanism | Description | Implementation |
+|-----------|-------------|----------------|
+| **Replay protection** | Domain-scoped nonce prevents message replay | `message_hash` checked in `relayed_messages` set |
+| **Force inclusion** | Users bypass censoring operator after 50-block window | `force_include()` → `force_relay()` on L1 |
+| **Escape hatch** | L1 fund recovery when L2 is fully down | Refunds `msg.value` to sender on L1 |
+| **Proof-based relay** | MerkleProof/ZKProof handlers verify before state application | Cryptographic verification before state mutation |
+
+### Known Security Limitations (WHITEPAPER 10.1.6)
+
+- **No dispute mechanism**: Once a batch is submitted and verified, there is no challenge period or fraud proof mechanism to contest invalid state transitions
+- **L1 finality unawareness**: The bridge does not track L1 finality status — messages relayed before L1 finality may be invalidated by L1 reorgs
+- **Blob DA expiry**: If batch data is posted as EIP-4844 blobs, it expires after ~18 days. Historical state reconstruction requires archival storage
+- **Single operator trust**: Value bridging uses mint/burn (not escrow), assuming a single trusted operator
+
+### STF-side Bridge Security (WHITEPAPER 10.1.8)
+
+When the STF processes bridge-related transactions (deposits/withdrawals):
+- **Token bridging**: Ensure mint/burn amounts match cross-domain messages exactly
+- **Message ordering**: Process deposits in nonce order to prevent reordering attacks
+- **Deposit validation**: Verify deposit messages originate from the trusted L1 messenger contract
+
+## Caveats
+
+1. **Value is minted**: Not escrowed — minted on destination domain. Single operator trust model
+2. **Outbox drain is destructive**: Messages are removed from outbox after `drain_outbox()`. Production needs persistent queue
+3. **Block number is manual**: Must call `advance_l1_block(n)`. No auto-sync with JSON-RPC block height
+4. **Nonces are domain-independent**: L1 and L2 each start from 0
+5. **EVM relay atomicity**: All-or-nothing. No partial state updates
+6. **Trusted root has no expiry**: Roots registered via `add_trusted_root()` remain valid indefinitely
+7. **Gas limit**: EVM relay uses msg.gas_limit, non-EVM handlers report gas_used=0
+8. **L1 reorg risk**: Messages relayed before L1 finality (~13 min for PoS) may be invalidated by chain reorganizations
+9. **No dispute mechanism**: Submitted batches cannot be challenged — there is no fraud proof or challenge period

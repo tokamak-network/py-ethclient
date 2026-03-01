@@ -1,82 +1,84 @@
 ---
-description: "테스트 실행 & 작성 — pytest 실행, 새 테스트 작성, coverage 확인"
+description: "Test Execution & Writing — run pytest, write new tests, check coverage"
 allowed-tools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "Task"]
-argument-hint: "테스트 대상 모듈이나 기능"
+argument-hint: "target module or feature"
 user-invocable: true
 ---
 
-# 테스트 실행 & 작성 스킬
+# Test Execution & Writing Skill
 
-py-ethclient의 943개 테스트 실행, 새 테스트 작성, coverage 확인을 안내한다.
+Guides running the 1,031 tests in py-ethclient, writing new tests, and checking coverage.
 
-## 핵심 참조
+## Key References
 
-| 항목 | 값 |
-|------|-----|
-| 테스트 디렉토리 | `tests/` |
-| 테스트 파일 수 | 40개 |
-| 총 테스트 수 | 943개 |
-| 프레임워크 | pytest >= 8.0 |
+| Item | Value |
+|------|-------|
+| Test directory | `tests/` |
+| Test file count | 42 |
+| Total tests | 1,031 |
+| Framework | pytest >= 8.0 |
 | Python | >= 3.12 |
 
-## 테스트 실행 명령
+## Test Execution Commands
 
 ```bash
-# 전체 테스트
+# Full test suite
 python -m pytest tests/ -v
 
-# 특정 모듈
+# Specific module
 python -m pytest tests/test_l2_integration.py -v
 
-# 특정 클래스
+# Specific class
 python -m pytest tests/test_l2_integration.py::TestFullCycleCounter -v
 
-# 특정 테스트
+# Specific test
 python -m pytest tests/test_l2_integration.py::TestFullCycleCounter::test_single_batch -v
 
-# 키워드 필터링
+# Keyword filtering
 python -m pytest tests/ -k "sequencer" -v
 python -m pytest tests/ -k "bridge and not escape" -v
 
-# 실패 시 즉시 중단
+# Stop on first failure
 python -m pytest tests/ -x
 
-# 병렬 실행 (pytest-xdist 설치 필요)
+# Parallel execution (requires pytest-xdist)
 python -m pytest tests/ -n auto
 
-# 상세 출력 (실패 정보)
+# Verbose output (failure details)
 python -m pytest tests/ -v --tb=short
 
 # Coverage
 python -m pytest tests/ --cov=ethclient --cov-report=term-missing
 ```
 
-## 테스트 파일 구조
+## Test File Structure
 
 ```
 tests/
-├── test_crypto.py          # keccak256, ECDSA, 주소 변환
-├── test_rlp.py             # RLP 인코딩/디코딩
-├── test_evm.py             # EVM opcodes, 실행
-├── test_trie.py            # Merkle Patricia Trie
-├── test_p2p.py             # RLPx, devp2p, full sync
-├── test_snap_sync.py       # snap/1 동기화
-├── test_discv4.py          # Discovery v4
-├── test_l2_integration.py  # L2 전체 사이클
-├── test_l2_sequencer.py    # Sequencer, mempool, batch
-├── test_l2_state.py        # L2 상태 관리
-├── test_l2_persistent_state.py  # LMDB 상태
-├── test_l2_eth_l1_backend.py    # EthL1Backend (mock)
-├── test_l2_rpc.py          # L2 RPC API
-├── test_l2_cli.py          # L2 CLI
-├── test_bridge_*.py        # Bridge 테스트들
-├── test_zk_*.py            # ZK 회로/증명 테스트들
+├── test_crypto.py              # keccak256, ECDSA, address conversion
+├── test_rlp.py                 # RLP encoding/decoding
+├── test_evm.py                 # EVM opcodes, execution
+├── test_trie.py                # Merkle Patricia Trie
+├── test_p2p.py                 # RLPx, devp2p, full sync
+├── test_snap_sync.py           # snap/1 synchronization
+├── test_discv4.py              # Discovery v4
+├── test_l2_integration.py      # L2 full cycle
+├── test_l2_sequencer.py        # Sequencer, mempool, batch
+├── test_l2_state.py            # L2 state management
+├── test_l2_persistent_state.py # LMDB state
+├── test_l2_eth_l1_backend.py   # EthL1Backend (mock)
+├── test_l2_rpc.py              # L2 RPC API
+├── test_l2_cli.py              # L2 CLI
+├── test_l2_framework_hardening.py  # Config validation, thread safety, liveness, LMDB resize
+├── test_poseidon.py            # Poseidon hash circuit tests
+├── test_bridge_*.py            # Bridge tests
+├── test_zk_*.py                # ZK circuit/proof tests
 └── ...
 ```
 
-## 네이밍 규칙
+## Naming Conventions
 
-### 파일
+### Files
 ```
 tests/test_<module>.py
 tests/test_l2_<feature>.py
@@ -84,29 +86,29 @@ tests/test_bridge_<feature>.py
 tests/test_zk_<feature>.py
 ```
 
-### 클래스 & 메서드
+### Classes & Methods
 ```python
 class Test<Feature>:
-    """기능 그룹별 테스트."""
+    """Tests grouped by feature."""
 
     def test_<scenario>_<expectation>(self):
-        """하나의 시나리오, 하나의 검증."""
+        """One scenario, one assertion."""
         pass
 
     def test_<scenario>_raises(self):
-        """에러 케이스."""
+        """Error case."""
         with pytest.raises(SomeException, match="pattern"):
             ...
 ```
 
-예시:
+Examples:
 - `class TestKeccak256: test_empty, test_hello, test_deterministic`
 - `class TestSequencer: test_submit_tx, test_force_seal, test_nonce_enforcement`
 - `class TestDeployVerifier: test_successful_deployment, test_deployment_revert`
 
-## 테스트 작성 패턴
+## Test Writing Patterns
 
-### L2 Integration 테스트
+### L2 Integration Test
 
 ```python
 from ethclient.l2.types import L2Tx, STFResult
@@ -156,7 +158,7 @@ class TestMyFeature:
         assert batch1.old_state_root == batch0.new_state_root
 ```
 
-### Mock RPC 패턴 (EthL1Backend 테스트)
+### Mock RPC Pattern (EthL1Backend Tests)
 
 ```python
 from unittest.mock import MagicMock
@@ -189,13 +191,13 @@ class TestDeployVerifier:
 
     def test_successful_deployment(self):
         backend = self._setup_backend()
-        vk = _make_vk()  # 테스트용 VerificationKey 생성
+        vk = _make_vk()  # Create test VerificationKey
         addr = backend.deploy_verifier(vk)
         assert len(addr) == 20
         backend._rpc.send_raw_transaction.assert_called_once()
 ```
 
-### RPC 테스트 패턴
+### RPC Test Pattern
 
 ```python
 from ethclient.l2.l2_api import register_l2_api
@@ -224,7 +226,7 @@ class TestL2RPC:
         assert "error" in result
 ```
 
-### Bridge 테스트 패턴
+### Bridge Test Pattern
 
 ```python
 from ethclient.bridge.environment import BridgeEnvironment
@@ -242,27 +244,76 @@ class TestDeposit:
         assert env.l2_balance(TARGET) == 1000
 ```
 
-## 테스트 상수
+## Security Test Patterns
 
 ```python
-# 테스트용 주소
+import pytest
+from ethclient.l2.types import L2Tx, STFResult
+from ethclient.l2.rollup import Rollup
+
+
+class TestSTFSecurity:
+    """Security-focused tests for STF implementations."""
+
+    def test_replay_protection(self):
+        """Verify that replaying a transaction with the same nonce is rejected."""
+        rollup = Rollup(stf=_counter_stf)
+        rollup.setup()
+        sender = b"\x01" * 20
+        assert rollup.submit_tx(L2Tx(sender=sender, nonce=0, data={})) is None
+        rollup.produce_batch()
+        rollup.prove_and_submit(rollup.produce_batch() if False else
+                                 rollup._last_batch)
+        # Replay same nonce
+        error = rollup.submit_tx(L2Tx(sender=sender, nonce=0, data={}))
+        assert error is not None and "nonce" in error.lower()
+
+    def test_invalid_sender_length(self):
+        """Verify that sender address must be exactly 20 bytes."""
+        with pytest.raises(ValueError):
+            L2Tx(sender=b"\x01" * 19, nonce=0, data={})
+
+    def test_negative_nonce_rejected(self):
+        """Verify that negative nonces are rejected."""
+        with pytest.raises(ValueError):
+            L2Tx(sender=b"\x01" * 20, nonce=-1, data={})
+
+    def test_stf_exception_does_not_corrupt_state(self):
+        """Verify that an STF exception triggers rollback."""
+        def failing_stf(state, tx):
+            state["dirty"] = True
+            raise RuntimeError("intentional failure")
+
+        rollup = Rollup(stf=failing_stf)
+        rollup.setup()
+        sender = b"\x01" * 20
+        rollup.submit_tx(L2Tx(sender=sender, nonce=0, data={}))
+        batch = rollup.produce_batch()
+        # State should not contain "dirty" after rollback
+        assert "dirty" not in rollup.state
+```
+
+## Test Constants
+
+```python
+# Test addresses
 ALICE = b"\x01" * 20
 BOB = b"\x02" * 20
 CHARLIE = b"\x03" * 20
 
-# 테스트용 키
+# Test keys
 TEST_PRIVATE_KEY = b"\x01" * 32
 
-# Gas 값 (mock)
+# Gas values (mock)
 BASE_FEE = 1_000_000_000       # 1 gwei
 PRIORITY_FEE = 100_000_000     # 0.1 gwei
 ```
 
-## 주의사항
+## Caveats
 
-1. **pytest 설정**: `pyproject.toml`에 `[tool.pytest]` 섹션 없음 — pytest 기본값 사용
-2. **fixture 미사용**: 대부분 헬퍼 함수 + setup 메서드 패턴 사용
-3. **Mock 패턴**: `unittest.mock.MagicMock`으로 RPC 클라이언트 대체
-4. **ZK 테스트 속도**: Groth16 setup/prove가 느릴 수 있음 (pure Python). `-x`로 실패 즉시 중단 권장
-5. **LMDB 테스트**: `test_l2_persistent_state.py`는 임시 디렉토리 사용
-6. **Live 테스트**: `tests/live/` 디렉토리는 실제 네트워크 연결 필요 (환경변수 설정)
+1. **pytest config**: No `[tool.pytest]` section in `pyproject.toml` — uses pytest defaults
+2. **No fixtures**: Most tests use helper functions + setup methods pattern
+3. **Mock pattern**: `unittest.mock.MagicMock` used to replace RPC clients
+4. **ZK test speed**: Groth16 setup/prove can be slow (pure Python). Use `-x` to stop on first failure
+5. **LMDB tests**: `test_l2_persistent_state.py` uses temporary directories
+6. **Live tests**: `tests/live/` directory requires real network connections (environment variables)

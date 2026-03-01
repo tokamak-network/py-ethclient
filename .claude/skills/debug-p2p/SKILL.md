@@ -1,63 +1,63 @@
 ---
-description: "P2P 네트워킹 디버깅 — RLPx, devp2p, 동기화 문제 진단"
+description: "P2P Networking Debug — RLPx, devp2p, sync issue diagnosis"
 allowed-tools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "Task"]
-argument-hint: "P2P 에러 메시지나 증상"
+argument-hint: "P2P error message or symptom"
 user-invocable: true
 ---
 
-# P2P 네트워킹 디버깅 스킬
+# P2P Networking Debug Skill
 
-RLPx 연결, devp2p 핸드셰이크, 동기화 문제를 진단하고 해결하는 전문 스킬.
+Specialized skill for diagnosing and resolving RLPx connections, devp2p handshakes, and synchronization issues.
 
-## 핵심 파일 참조
+## Key File References
 
-| 파일 | 역할 |
+| File | Role |
 |------|------|
-| `ethclient/networking/rlpx/transport.py` | RLPx 연결, ECIES 핸드셰이크 |
-| `ethclient/networking/rlpx/ecies.py` | ECIES 암호화/복호화 |
-| `ethclient/networking/rlpx/protocol.py` | devp2p 프로토콜 메시지 |
-| `ethclient/networking/eth/protocol.py` | eth/68 메시지 인코딩/디코딩 |
-| `ethclient/networking/snap/protocol.py` | snap/1 메시지 |
+| `ethclient/networking/rlpx/transport.py` | RLPx connection, ECIES handshake |
+| `ethclient/networking/rlpx/ecies.py` | ECIES encryption/decryption |
+| `ethclient/networking/rlpx/protocol.py` | devp2p protocol messages |
+| `ethclient/networking/eth/protocol.py` | eth/68 message encoding/decoding |
+| `ethclient/networking/snap/protocol.py` | snap/1 messages |
 | `ethclient/networking/discv4/` | Discovery v4 (Kademlia) |
-| `ethclient/networking/sync/full_sync.py` | Full sync 전략 |
-| `ethclient/networking/sync/snap_sync.py` | Snap sync 전략 |
+| `ethclient/networking/sync/full_sync.py` | Full sync strategy |
+| `ethclient/networking/sync/snap_sync.py` | Snap sync strategy |
 
-## 디버깅 체크리스트
+## Debug Checklist
 
-### 연결 실패
+### Connection Failures
 
-- [ ] **TCP 연결**: 포트 30303 접근 가능한지 확인 (방화벽, NAT)
-- [ ] **ECIES 핸드셰이크**: auth-msg → auth-ack → frame cipher 초기화
-- [ ] **Hello 메시지**: devp2p 버전, 클라이언트 ID, 캡 목록 교환
-- [ ] **Snappy 압축**: Geth v1.17.0+ 연결 시 `conn.use_snappy = True` 필수
-- [ ] **프로토콜 캡**: `["eth/68", "snap/1"]` 매칭 확인
+- [ ] **TCP connection**: Verify port 30303 is accessible (firewall, NAT)
+- [ ] **ECIES handshake**: auth-msg → auth-ack → frame cipher initialization
+- [ ] **Hello message**: devp2p version, client ID, capability list exchange
+- [ ] **Snappy compression**: Must set `conn.use_snappy = True` for Geth v1.17.0+
+- [ ] **Protocol capabilities**: Verify `["eth/68", "snap/1"]` matching
 
 ### TOO_MANY_PEERS (0x04)
 
-가장 빈번한 연결 거부 사유:
+Most common connection refusal reason:
 
 ```python
 from ethclient.networking.rlpx.protocol import DisconnectReason
 # DisconnectReason.TOO_MANY_PEERS == 0x04
 ```
 
-**대응 전략:**
-1. **Discovery v4 사용**: 부트노드 직접 연결 대신 discv4로 여러 노드 탐색
-2. **Sepolia 사용**: Mainnet 부트노드보다 Sepolia가 연결 성공률 높음
-3. **재시도 로직**: 5-10초 간격 재시도, 최대 10회
-4. **다수 부트노드**: 여러 부트노드에 동시 시도
+**Mitigation strategies:**
+1. **Use Discovery v4**: Instead of connecting directly to bootnodes, discover multiple peers via discv4
+2. **Use Sepolia**: Higher connection success rate than Mainnet bootnodes
+3. **Retry logic**: Retry at 5-10 second intervals, maximum 10 attempts
+4. **Multiple bootnodes**: Attempt connections to several bootnodes simultaneously
 
 ```python
-# Sepolia 부트노드 (EF DevOps, 연결 성공률 높음)
+# Sepolia bootnodes (EF DevOps, high connection success rate)
 SEPOLIA_BOOTNODES = [
     ("138.197.51.181", 30303),
     ("146.190.1.103", 30303),
 ]
 ```
 
-### 핸드셰이크 실패
+### Handshake Failures
 
-**ECIES 핸드셰이크 플로우:**
+**ECIES Handshake Flow:**
 ```
 Initiator                    Responder
     |                            |
@@ -74,45 +74,45 @@ Initiator                    Responder
     |<--- Status (eth/68) ------|
 ```
 
-**일반적 실패 원인:**
-- `MAC mismatch`: ECIES 키 파생 오류. 로컬 키 확인
-- `Unexpected message`: Hello 전에 다른 메시지 수신. 프레임 파싱 확인
-- `Protocol version mismatch`: devp2p v5 필수
+**Common failure causes:**
+- `MAC mismatch`: ECIES key derivation error. Check local key
+- `Unexpected message`: Non-Hello message received before Hello. Check frame parsing
+- `Protocol version mismatch`: devp2p v5 required
 - `Network ID mismatch`: Mainnet=1, Sepolia=11155111
-- `Genesis hash mismatch`: 네트워크에 맞는 genesis 사용
+- `Genesis hash mismatch`: Use correct genesis for the network
 
-### Snappy 압축 문제
+### Snappy Compression Issues
 
 ```python
-# Geth v1.17.0+에서 필수
+# Required for Geth v1.17.0+
 conn.use_snappy = True
 
-# 증상: 메시지 디코딩 실패, RLP 파싱 에러
-# 원인: snappy 압축/해제 누락
-# 해결: python-snappy 패키지 설치 확인
+# Symptoms: message decoding failure, RLP parsing errors
+# Cause: missing snappy compress/decompress
+# Fix: verify python-snappy package is installed
 #   pip install python-snappy
 ```
 
-## RLPx 연결 상세
+## RLPx Connection Details
 
 ### ECIES (Elliptic Curve Integrated Encryption Scheme)
 
 ```python
 from ethclient.networking.rlpx.ecies import ecies_encrypt, ecies_decrypt
 
-# auth-msg 생성
-# 1. 임시 키쌍 생성
-# 2. 정적 키로 서명
-# 3. ECIES로 암호화 (상대 공개키 사용)
-# 4. 전송
+# auth-msg creation
+# 1. Generate ephemeral keypair
+# 2. Sign with static key
+# 3. Encrypt with ECIES (using remote public key)
+# 4. Send
 
-# auth-ack 처리
-# 1. ECIES로 복호화 (내 비밀키 사용)
-# 2. 공유 비밀 파생 (ECDH)
-# 3. frame cipher 키 생성 (KDF)
+# auth-ack processing
+# 1. Decrypt with ECIES (using local private key)
+# 2. Derive shared secret (ECDH)
+# 3. Generate frame cipher keys (KDF)
 ```
 
-### 프레임 구조
+### Frame Structure
 
 ```
 [header (16B, AES-CTR encrypted)]
@@ -123,16 +123,16 @@ from ethclient.networking.rlpx.ecies import ecies_encrypt, ecies_decrypt
 header: [frame-size (3B big-endian)] [header-data (13B)]
 ```
 
-### devp2p Hello 메시지
+### devp2p Hello Message
 
 ```python
-# p2p 메시지 코드
+# p2p message codes
 HELLO = 0x00
 DISCONNECT = 0x01
 PING = 0x02
 PONG = 0x03
 
-# Hello 필드:
+# Hello fields:
 # version: 5
 # client_id: "py-ethclient/1.0"
 # caps: [["eth", 68], ["snap", 1]]
@@ -140,123 +140,123 @@ PONG = 0x03
 # node_id: 64-byte public key
 ```
 
-## Disconnect 사유
+## Disconnect Reasons
 
 ```python
 class DisconnectReason(IntEnum):
-    REQUESTED = 0x00           # 정상 종료
-    TCP_ERROR = 0x01           # TCP 에러
-    BREACH_OF_PROTOCOL = 0x02  # 프로토콜 위반
-    USELESS_PEER = 0x03        # 쓸모없는 피어
-    TOO_MANY_PEERS = 0x04      # 피어 수 초과 ★
-    ALREADY_CONNECTED = 0x05   # 이미 연결됨
-    INCOMPATIBLE_VERSION = 0x06 # 호환 불가 버전
-    INVALID_IDENTITY = 0x07    # 잘못된 ID
-    CLIENT_QUITTING = 0x08     # 클라이언트 종료
-    UNEXPECTED_IDENTITY = 0x09 # 예상치 못한 ID
-    CONNECTED_TO_SELF = 0x0a   # 자기 자신 연결
-    TIMEOUT = 0x0b             # 타임아웃
-    SUBPROTOCOL_ERROR = 0x10   # 서브프로토콜 에러
+    REQUESTED = 0x00           # Normal shutdown
+    TCP_ERROR = 0x01           # TCP error
+    BREACH_OF_PROTOCOL = 0x02  # Protocol violation
+    USELESS_PEER = 0x03        # Useless peer
+    TOO_MANY_PEERS = 0x04      # Peer limit exceeded ★
+    ALREADY_CONNECTED = 0x05   # Already connected
+    INCOMPATIBLE_VERSION = 0x06 # Incompatible version
+    INVALID_IDENTITY = 0x07    # Invalid identity
+    CLIENT_QUITTING = 0x08     # Client quitting
+    UNEXPECTED_IDENTITY = 0x09 # Unexpected identity
+    CONNECTED_TO_SELF = 0x0a   # Connected to self
+    TIMEOUT = 0x0b             # Timeout
+    SUBPROTOCOL_ERROR = 0x10   # Subprotocol error
 ```
 
-## eth/68 Status 디버깅
+## eth/68 Status Debugging
 
 ```python
-# Status 메시지 교환 후 검증 항목:
-# 1. networkId 일치 (1=mainnet, 11155111=sepolia)
-# 2. genesisHash 일치
-# 3. forkID 호환성 (fork_hash + fork_next)
+# Post-Status exchange validation items:
+# 1. networkId match (1=mainnet, 11155111=sepolia)
+# 2. genesisHash match
+# 3. forkID compatibility (fork_hash + fork_next)
 
-# ForkID 계산:
+# ForkID calculation:
 # fork_hash = CRC32(genesis_hash + fork_block_numbers)
-# fork_next = 다음 예정된 하드포크 블록
+# fork_next = next scheduled hard fork block
 
-# 불일치 시: DISCONNECT(SUBPROTOCOL_ERROR)
+# On mismatch: DISCONNECT(SUBPROTOCOL_ERROR)
 ```
 
-## Discovery v4 디버깅
+## Discovery v4 Debugging
 
-### 패킷 구조
+### Packet Structure
 ```
 [hash (32B)] [signature (65B)] [type (1B)] [data (RLP)]
 hash = keccak256(signature || type || data)
 ```
 
-### 일반적 문제
+### Common Issues
 
-1. **UDP 미수신**: 포트 30303/UDP 방화벽 확인
-2. **Ping 미응답**: NAT 뒤에서는 외부 IP 올바르게 설정
-3. **라우팅 테이블 비어있음**: 부트노드에 먼저 Ping 전송 필요
-4. **시간 만료**: expiration 필드가 미래 시점이어야 함 (현재 + 20초 권장)
+1. **UDP not received**: Check port 30303/UDP firewall
+2. **No Ping response**: Set external IP correctly behind NAT
+3. **Empty routing table**: Must send Ping to bootnodes first
+4. **Expiration timeout**: Expiration field must be a future timestamp (current + 20s recommended)
 
-### 부트노드 연결
+### Bootnode Connection
 
 ```python
 from ethclient.networking.discv4.routing import Node, RoutingTable
 
-# 부트노드를 테이블에 추가
+# Add bootnode to table
 boot = Node(id=boot_pubkey, ip="138.197.51.181", udp_port=30303, tcp_port=30303)
 table.add_node(boot)
 
-# FindNode로 주변 노드 탐색
+# Discover nearby nodes via FindNode
 closest = table.closest_nodes(target_id=my_node_id, count=16)
 ```
 
-## Sync 디버깅
+## Sync Debugging
 
-### Full Sync 문제
+### Full Sync Issues
 
-| 증상 | 원인 | 해결 |
-|------|------|------|
-| 헤더 다운로드 멈춤 | 피어 응답 없음 | 다른 피어 시도, 타임아웃 조정 |
-| 바디 누락 | 피어가 데이터 없음 | 여러 피어에 분산 요청 |
-| EVM 실행 실패 | 상태 불일치 | 이전 블록부터 재실행 |
-| 느린 동기화 | 블록별 순차 처리 | snap sync 사용 |
+| Symptom | Cause | Resolution |
+|---------|-------|------------|
+| Header download stalls | No peer response | Try different peer, adjust timeout |
+| Missing bodies | Peer lacks data | Distribute requests across peers |
+| EVM execution failure | State mismatch | Re-execute from earlier block |
+| Slow synchronization | Sequential block processing | Use snap sync |
 
-### Snap Sync 문제
+### Snap Sync Issues
 
-| 증상 | 원인 | 해결 |
-|------|------|------|
-| AccountRange 빈 응답 | 피봇 블록 너무 오래됨 | 최신 피봇으로 재시작 |
-| proof 검증 실패 | 상태 변경됨 | 피봇 블록 갱신 |
-| 바이트코드 누락 | 해시 불일치 | 다른 피어에 재요청 |
-| 타임아웃 | 피어 느림 | adaptive timeout 사용 |
+| Symptom | Cause | Resolution |
+|---------|-------|------------|
+| Empty AccountRange response | Pivot block too old | Restart with fresh pivot |
+| Proof verification failure | State changed | Update pivot block |
+| Missing bytecodes | Hash mismatch | Re-request from different peer |
+| Timeouts | Slow peer | Use adaptive timeout |
 
 ```python
-# Snap sync 타임아웃 상수
-SNAP_TIMEOUT = 15  # 초 (기본)
-PEER_WAIT_TIMEOUT = 30  # 피어 대기
-# adaptive_timeout: 느린 피어에 대해 자동 증가
+# Snap sync timeout constants
+SNAP_TIMEOUT = 15  # seconds (default)
+PEER_WAIT_TIMEOUT = 30  # peer wait
+# adaptive_timeout: automatically increases for slow peers
 ```
 
-## 로깅 설정
+## Logging Configuration
 
 ```python
 import logging
 
-# P2P 디버깅 로그
+# P2P debug logging
 logging.getLogger("ethclient.networking.rlpx").setLevel(logging.DEBUG)
 logging.getLogger("ethclient.networking.eth").setLevel(logging.DEBUG)
 logging.getLogger("ethclient.networking.discv4").setLevel(logging.DEBUG)
 logging.getLogger("ethclient.networking.sync").setLevel(logging.DEBUG)
 ```
 
-## 네트워크별 설정
+## Network-Specific Settings
 
-| 항목 | Mainnet | Sepolia |
+| Item | Mainnet | Sepolia |
 |------|---------|---------|
 | Network ID | 1 | 11155111 |
 | Chain ID | 1 | 11155111 |
-| 부트노드 성공률 | 낮음 (TOO_MANY_PEERS) | 높음 |
-| eth 프로토콜 | eth/68, eth/69 | eth/68, eth/69 |
-| snap 프로토콜 | snap/1 | snap/1 |
-| Snappy | 필수 | 필수 |
+| Bootnode success rate | Low (TOO_MANY_PEERS) | High |
+| eth protocol | eth/68, eth/69 | eth/68, eth/69 |
+| snap protocol | snap/1 | snap/1 |
+| Snappy | Required | Required |
 
-## 주의사항
+## Caveats
 
-1. **Snappy 필수**: 2024년 이후 모든 Geth 노드에서 snappy 압축 필수
-2. **Mainnet 연결 어려움**: TOO_MANY_PEERS가 대부분. discv4로 우회
-3. **ECIES 키 관리**: 노드 키는 secp256k1. 64바이트 비압축 공개키 (0x04 접두사 제외)
-4. **프레임 크기**: 최대 16MB. 큰 응답은 분할 필요
-5. **ping/pong 주기**: 15초 간격 권장. 미응답 시 연결 종료
-6. **ForkID 검증**: 호환 불가 포크면 즉시 disconnect
+1. **Snappy required**: All Geth nodes since 2024 require snappy compression
+2. **Mainnet connection difficulty**: TOO_MANY_PEERS is predominant. Use discv4 to work around
+3. **ECIES key management**: Node key is secp256k1. 64-byte uncompressed public key (excluding 0x04 prefix)
+4. **Frame size**: Maximum 16MB. Large responses need to be chunked
+5. **Ping/pong interval**: 15 seconds recommended. Connection closed on non-response
+6. **ForkID validation**: Incompatible forks cause immediate disconnect
